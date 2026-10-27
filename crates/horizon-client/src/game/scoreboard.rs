@@ -141,7 +141,10 @@ impl Game<'_> {
             | Target::Cart(id)
             | Target::Other(id) => Some(uuid_text(self.uuid_for(id))),
             // Orbs and projectiles are addressed by index and have no UUID here.
-            Target::Orb(_) | Target::Projectile(_) => None,
+            Target::Orb(_)
+            | Target::Projectile(_)
+            | Target::Crystal(_)
+            | Target::Dragon(_) => None,
         }
     }
     fn holder_for(&mut self, t: Target) -> Option<Holder> {
