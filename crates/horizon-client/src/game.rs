@@ -2394,12 +2394,19 @@ impl Game<'_> {
             .items()
             .get(&stack.item)
             .map_or(64, |i| i.max_stack);
-        // Prefer the selected slot, then the hotbar, then the main inventory.
+        // getSlotWithRemainingSpace: the selected slot, the off hand, then
+        // the hotbar and the main inventory.
         let order: Vec<usize> = std::iter::once(self.selected)
+            .chain(std::iter::once(shield::OFFHAND_SLOT))
             .chain((0..36).filter(|&i| i != self.selected))
             .collect();
         for &i in &order {
-            if let Some(slot) = &mut self.inventory[i]
+            let slot = if i == shield::OFFHAND_SLOT {
+                &mut self.offhand
+            } else {
+                &mut self.inventory[i]
+            };
+            if let Some(slot) = slot
                 && slot.same_item_same_components(&stack)
                 && slot.count < max
             {
@@ -4409,6 +4416,10 @@ impl Game<'_> {
                 self.swing_arm();
                 return Ok(true);
             }
+            if self.use_redstone_ore(hit.pos, held.as_ref())? {
+                self.swing_arm();
+                return Ok(true);
+            }
             match self.use_respawn_anchor(hit.pos, held.as_ref())? {
                 respawn_anchor::AnchorUse::Charged => {
                     self.swing_arm();
@@ -5900,6 +5911,16 @@ impl Game<'_> {
             rotation.turn(xo * zoom, yo * zoom);
             self.yaw = rotation.y_rot;
             self.pitch = rotation.x_rot;
+            // Entity.turn ends in AbstractBoat.onPassengerTurned: clampRotation
+            // keeps the view within 105 degrees of the boat at every turn, not
+            // only at the tick, so it never swings past and back.
+            if let Some(b) = self
+                .riding
+                .and_then(|id| self.boats.iter().find(|b| b.id == id))
+            {
+                let delta = (self.yaw - b.yaw + 180.0).rem_euclid(360.0) - 180.0;
+                self.yaw += delta.clamp(-105.0, 105.0) - delta;
+            }
         }
     }
     /// `Minecraft.pause`: a single-player game with a pausing screen open.
@@ -6074,30 +6095,31 @@ impl Game<'_> {
     /// highlight (its count yellow when the slot caps it), and hides while
     /// it is the drag's only slot.
     fn draw_slot_item(
-        &mut self,
+        &self,
         batch: &mut HudBatch,
         drag: Option<&DragView>,
         slot: usize,
-        stack: Option<ItemStack>,
+        stack: &Option<ItemStack>,
         x: f32,
         y: f32,
     ) {
+        let carried;
         let (stack, capped) = match drag.and_then(|d| d.slots.get(&slot)) {
             Some(None) => return,
             Some(Some((count, capped))) => {
                 batch.fill(&self.gui.atlas, x, y, 16.0, 16.0, rgba(255, 255, 255, 128));
-                let carried = self
+                carried = self
                     .carried
                     .clone()
                     .map(|c| ItemStack { count: *count, ..c });
-                (carried, *capped)
+                (carried.as_ref(), *capped)
             }
-            None => (stack, false),
+            None => (stack.as_ref(), false),
         };
         if let Some(stack) = stack {
-            self.draw_item_model(batch, &stack, x, y);
+            self.draw_item_model(batch, stack, x, y);
             let text = capped.then(|| format!("\u{a7}e{}", stack.count));
-            self.draw_item_decorations(batch, &stack, x, y, text);
+            self.draw_item_decorations(batch, stack, x, y, text);
         }
     }
     /// `extractCarriedItem`: the carried stack at the cursor, showing what a
@@ -6725,7 +6747,7 @@ impl Game<'_> {
                 );
             }
             let stack = self.slot_view(i);
-            self.draw_slot_item(batch, drag.as_ref(), i, stack, ox + sx, oy + sy);
+            self.draw_slot_item(batch, drag.as_ref(), i, &stack, ox + sx, oy + sy);
         }
     }
     fn draw_inventory(&mut self, batch: &mut HudBatch) {
@@ -8730,7 +8752,9 @@ impl Game<'_> {
         let reach: f64 = if self.creative { 5.0 } else { 3.0 };
         let mut best: Option<(usize, f64)> = None;
         for (i, m) in self.mobs.iter().enumerate() {
-            if !m.alive() {
+            // ProjectileUtil.getEntityHitResult: the mob the player rides
+            // shares its root vehicle and is never the hit.
+            if !m.alive() || Some(m.id) == self.riding {
                 continue;
             }
             if let Some(t) = ray_box(eye, dir, reach, m.bounds())
@@ -10761,10 +10785,9 @@ impl Game<'_> {
         {
             a.ignite_for_seconds(seconds);
         }
-        let (velocity, on_ground) = self
-            .player
-            .as_ref()
-            .map_or((Vec3::ZERO, true), |pl| (pl.velocity, pl.ground.on_ground));
+        let (velocity, on_ground) = self.player.as_ref().map_or((Vec3::ZERO, true), |pl| {
+            (self.known_player_movement(), pl.ground.on_ground)
+        });
         arrow.shoot_from_rotation(
             &mut self.world.random,
             self.pitch,
@@ -11446,7 +11469,7 @@ impl Game<'_> {
         let selected = self.creative_screen.selected;
         // Only what is drawn of the tabs: their stacks stay where they are.
         let tabs = self.creative_screen.tab_headers();
-        let tab = tabs[selected.min(tabs.len() - 1)].clone();
+        let tab = &tabs[selected.min(tabs.len() - 1)];
         let tab_sprite = |t: &horizon_client::creative::Tab, on: bool| {
             format!(
                 "gui/sprites/container/creative_inventory/tab_{}_{}_{}",
@@ -11482,8 +11505,8 @@ impl Game<'_> {
             r.v1 = r.v0 + (r.v1 - r.v0) * Creative::HEIGHT / r.h as f32;
             batch.rect_uv(ox, oy, Creative::WIDTH, Creative::HEIGHT, r, u32::MAX);
         }
-        let (tx, ty) = Creative::tab_position(&tab);
-        batch.sprite(&self.gui.atlas, &tab_sprite(&tab, true), ox + tx, oy + ty);
+        let (tx, ty) = Creative::tab_position(tab);
+        batch.sprite(&self.gui.atlas, &tab_sprite(tab, true), ox + tx, oy + ty);
         for t in &tabs {
             let (tx, ty) = Creative::tab_position(t);
             let stack = ItemStack {
@@ -11501,7 +11524,7 @@ impl Game<'_> {
         }
         let atlas = &self.gui.atlas;
         if !tab.inventory {
-            let title = self.creative_tab_title(&tab);
+            let title = self.creative_tab_title(tab);
             batch.text(
                 atlas,
                 &title,
@@ -11580,15 +11603,14 @@ impl Game<'_> {
             let drag = self.drag_view();
             for c in 0..9 {
                 let (x, y) = (ox + 9.0 + c as f32 * 18.0, oy + 112.0);
-                let stack = self.inventory[c].clone();
-                self.draw_slot_item(batch, drag.as_ref(), c, stack.clone(), x, y);
+                self.draw_slot_item(batch, drag.as_ref(), c, &self.inventory[c], x, y);
                 if self.cursor.0 >= x
                     && self.cursor.0 < x + 16.0
                     && self.cursor.1 >= y
                     && self.cursor.1 < y + 16.0
                 {
                     batch.fill(&self.gui.atlas, x, y, 16.0, 16.0, rgba(255, 255, 255, 128));
-                    hovered = stack;
+                    hovered = self.inventory[c].clone();
                 }
             }
             let scrollable = self.creative_screen.rows(&self.pack.names) > 5;
@@ -12590,7 +12612,8 @@ impl Game<'_> {
             KeyCode::KeyL if self.screen == Screen::Playing => self.open_advancements(false),
             KeyCode::KeyL if self.screen == Screen::Advancements => self.close_advancements(),
             KeyCode::Slash if self.screen == Screen::Playing => self.open_chat("/"),
-            KeyCode::F1 => self.toggle_hide_gui(),
+            // key.toggleGui is a KeyMapping: it clicks only with no screen open.
+            KeyCode::F1 if self.screen == Screen::Playing => self.toggle_hide_gui(),
             KeyCode::F11 => self.toggle_fullscreen(),
             KeyCode::F2 => self.take_screenshot(),
             KeyCode::F5 if self.screen == Screen::Playing => self.cycle_camera(),

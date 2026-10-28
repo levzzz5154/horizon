@@ -1279,14 +1279,18 @@ impl Game<'_> {
                     owner,
                 } => self.add_fangs(at, yaw, delay, owner),
                 MobEvent::Shoot(..) => {}
-                MobEvent::ExplosionSource { mob, charged } => {
+                MobEvent::ExplosionSource { mob, charged, name } => {
                     self.combat.explosion_source = Some(mob);
+                    // The creeper causes the blast's damage, but it is out of
+                    // the mob list already: its name comes with the event.
+                    self.note_named_attacker("minecraft:explosion", mob, name);
                     if charged {
                         self.combat.charged_exploders.push(mob);
                     }
                 }
                 MobEvent::Explode(at, radius, species) => {
                     // The exploding mob causes the damage (Creeper.explodeCreeper).
+                    let noted = self.combat.explosion_source.is_some();
                     let source_mob = self.combat.explosion_source.or_else(|| {
                         self.mobs
                             .iter()
@@ -1297,7 +1301,7 @@ impl Game<'_> {
                             .map(|m| m.id)
                             .next()
                     });
-                    if let Some(id) = source_mob {
+                    if !noted && let Some(id) = source_mob {
                         self.note_attacker("minecraft:explosion", id);
                     }
                     self.combat.explosion_source = source_mob;
@@ -4273,7 +4277,10 @@ impl Game<'_> {
         let Some(p) = self.player.as_ref() else {
             return Ok(false);
         };
-        let (velocity, on_ground) = (p.velocity, p.ground.on_ground);
+        // Projectile.shootFromRotation adds getKnownMovement: what the thrower
+        // last moved, not a velocity the server kept for a guest.
+        let on_ground = p.ground.on_ground;
+        let velocity = self.known_player_movement();
         let start = Vec3::new(eye[0], eye[1] - 0.1, eye[2]);
         let mut proj = Projectile::new(kind.clone(), start, Some(Who::Player));
         proj.shoot_from_rotation(
