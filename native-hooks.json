@@ -253,10 +253,6 @@
       "target": "horizon_client::game::native_claimed_items::Game<'_>::native_poll"
     },
     {
-      "name": "set_item_entity",
-      "target": "horizon_client::game::native_hooks::Game<'_>::native_set_item_entity"
-    },
-    {
       "name": "update_output_neighbors",
       "target": "horizon_client::game::native_hooks::Game<'_>::native_update_output_neighbors"
     },
@@ -3633,16 +3629,6 @@
       }
     },
     {
-      "name": "player_change_main_hand",
-      "version": 1,
-      "target": "horizon_client::game::native_hooks::Game<'_>::native_player_change_main_hand",
-      "neoforge": "none (NeoForge has no such event)",
-      "side": "server",
-      "mod_api": {
-        "contract": "listen"
-      }
-    },
-    {
       "name": "player_client_loaded_world",
       "version": 1,
       "target": "horizon_client::game::native_hooks::Game<'_>::native_player_client_loaded_world",
@@ -3784,16 +3770,6 @@
       "version": 1,
       "target": "horizon_client::game::native_hooks::Game<'_>::native_player_level_change",
       "neoforge": "none (NeoForge has no such event; Bukkit's PlayerLevelChangeEvent)",
-      "side": "server",
-      "mod_api": {
-        "contract": "listen"
-      }
-    },
-    {
-      "name": "player_locale_change",
-      "version": 1,
-      "target": "horizon_client::game::native_hooks::Game<'_>::native_player_locale_change",
-      "neoforge": "none (NeoForge has no such event)",
       "side": "server",
       "mod_api": {
         "contract": "listen"

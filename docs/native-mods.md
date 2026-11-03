@@ -283,9 +283,8 @@ API 41 adds bundles' data files (`native_data!`, `native_built_data`; "Data file
 API 42 adds the item entities near a block, for machines that pick up items as a hopper does:
 `native_item_entities(dimension, min, max)` lists those whose box meets `min`..`max` (vanilla's
 `Level.getEntitiesOfClass(ItemEntity.class, box)`), each with its entity ID, position, stack and pickup delay, and
-`native_set_item_entity(dimension, id, stack)` changes one's stack, or removes it when the stack is empty, as a hopper
-does with what it takes. Both act on the level in place, as `native_set_block` does. Bundles that use them need
-`"hooks": 42`.
+`ItemEntityRef::set_stack` changes one's nonempty stack; discarding an entity is a separate operation. The query acts on
+the level in place. Bundles that use it need `"hooks": 42`.
 
 API 43 adds `native_level_random(dimension)`, the server level's own random (vanilla's `Level.random`, NeoForge mods'
 `level.getRandom()`): a mod draws from the stream vanilla's explosions and block drops use, so its draws shift theirs
@@ -1330,7 +1329,6 @@ API 253 adds A server player caught a bucketable mob: `native_player_bucket_enti
 
 API 254 adds A server player's selected beacon effects were stored: `native_player_change_beacon_effect(player, name, pos, primary, secondary)`. Empty effect ids mean none is selected. Bundles need "hooks": 254.
 
-API 255 adds A server player's client option changed their dominant hand; `native_player_change_main_hand(player, name, left)` reports whether the left hand is dominant. Bundles need "hooks": 255.
 
 API 256 adds A server player counts as deeply asleep after 100 ticks in a bed: `native_player_deep_sleep(player, name)` fires once at that point. Helpers looking the guest up through `self.lan` may find nothing during its tick. Bundles need "hooks": 256.
 
@@ -1348,7 +1346,6 @@ API 262 adds An item cooldown about to start for a server player: `native_player
 
 API 263 adds A server player selected a different hotbar slot: `native_player_item_held(player, name, from_slot, to_slot, cancel)` is called after the slot range check and before the selected slot changes. Set `cancel` to keep the old slot; the client is sent that slot again. The player's state is not swapped in, so helpers that look them up through `self.lan` may find nothing while a guest packet is handled. Bundles need "hooks": 263.
 
-API 264 adds A server player changed their client language option (`native_player_locale_change(player, name, locale)`), after the new locale is stored. Bundles need "hooks": 264.
 
 API 265 adds A server player selected loom pattern button `pattern`, after the menu accepted it: `native_player_loom_pattern_select(player, name, pattern)`. Bundles need "hooks": 265.
 
@@ -2153,7 +2150,6 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
 - **`native_player_bucket_entity(player, name, entity_id, entity)`**: a server player caught a bucketable mob after the mob was removed and the filled bucket was put in the player's hand or inventory. `entity` is the mob species id.
 - **`native_player_change_beacon_effect(player, name, pos, primary, secondary)`**: a server player's beacon selection was stored. Effect values are ids, empty when none is selected.
 - **`native_player_deep_sleep(player, name)`**: a server player reached 100 ticks asleep in a bed and now counts as deeply asleep for the night-skip check. Helpers looking up the guest through `self.lan` may find nothing during its tick.
-- **`native_player_change_main_hand(player, name, left)`**: a server player's client options changed their dominant hand; `left` is true for left-handed. Helpers looking up the guest through `self.lan` may find nothing during packet handling.
 - **`native_player_egg_throw(player, name)`**: a server player threw an egg after its projectile was launched and its use applied.
 - **`native_player_elytra_boost(player, name)`**: a server player used a firework rocket to boost while gliding, after the rocket was launched and consumed.
 - **`native_player_flower_pot_manipulate(player, name, pos, plant)`**: a server player put `plant` into the flower pot at `pos`, after its state changed and the item was consumed. Helpers looking up the guest through `self.lan` may find nothing during packet handling.
@@ -2185,7 +2181,6 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
 - **`native_player_teleport_end_gateway(player, name, gateway, cancel)`**: a player is about to travel through the End gateway at `gateway`. Set `cancel` to leave them at the entrance; the gateway does not start its cooldown. The player is not swapped in, so helpers may find no guest through `self.lan`.
 - **`native_player_recipe_book_click(player, name, recipe, all)`**: a server player requests a known recipe be placed in their crafting grid through the recipe book. `all` is true for the shift click form. The player is not swapped in, so helpers may find no guest through `self.lan`.
 - **`native_player_exp_cooldown_change(player, name, ticks)`**: the player’s XP orb pickup cooldown changed, after its new value is stored. This includes the two tick delay after an orb is picked up and each tick it counts down. The player is not swapped in, so helpers may find no guest through `self.lan`.
-- **`native_player_locale_change(player, name, locale)`**: a server player changed their client language option. It fires after the new locale is stored. The player is not swapped in, so helpers may find no guest through `self.lan`.
 - **`native_entity_enter_block(entity, kind, pos, block)`**: a bee was stored in the beehive or nest at `pos`.
 - **`native_entity_change_block(entity, kind, pos, from, to)`**: a mob changed a block, after the new state was applied.
 - **`native_entity_break_door(entity, kind, pos)`**: a mob finished breaking a door at `pos`, after the block was removed.
@@ -3190,8 +3185,10 @@ once, as `SnapshotJournal.onRootCommit`: `setChanged` and comparators, a jukebox
 block update, and an item dropped at a block, thrown by a player (what a filled bucket's split no longer fits) or
 by an entity. An abort puts every storage back quietly, so nothing outside saw the
 change. A panic unwinding out of the closure aborts that transaction as it passes, and the one around it stays open. `host.transaction` is the only way to open one: the raw `transaction_open` and `transaction_close` helpers take a `TransactionSeal` that only it makes. A handler keeps no journal of its own:
-its state is the game's, so the game's journal covers it. An item entity's stack isn't covered: what a transaction
-changes there is final at once.
+its state is the game's, so the game's journal covers it. Direct writes are not covered: an item entity's stack,
+`LivingRef::set_equipment`, and the player and armor-stand `slot_set` paths take effect and are final at once, even
+inside a transaction. Any equip/unequip event and equip sound from `set_equipment` also happen immediately; an
+abort does not undo them. This differs from writes through journaled capability handlers.
 
 `ItemPlace::EntitySlot { entity, slot }` is slot `slot` of such an entity's inventory (NeoForge's
 `Capabilities.Item.ENTITY`), read and written through `place_stack` and `set_place_stack` like any other place.
