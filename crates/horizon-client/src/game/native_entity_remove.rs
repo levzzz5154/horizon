@@ -94,6 +94,9 @@ impl Game<'_> {
             return;
         }
         let items = std::mem::take(items);
+        // `Containers.dropContents(level, entity, container)` passes the
+        // exact position, and `dropItemStack` floors it (`Math.floor(x)`):
+        // the block position is the same spill.
         let at = BlockPos {
             x: at.x.floor() as i32,
             y: at.y.floor() as i32,
@@ -120,8 +123,78 @@ impl Game<'_> {
                 t => {
                     self.spill_vehicle(t);
                     self.kill_target_in_level(t);
+                    // A display, marker or interaction isn't saved either.
+                    if let Target::Other(id) = t {
+                        self.persist.raw.remove(&id);
+                    }
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{commands::Target, native_entity_refs::tests::with_game};
+    use horizon_client::chunk::Chunk;
+    use horizon_world::nbt::{Compound, Tag};
+    use std::sync::Arc;
+
+    /// Spawns `kind` at `pos` from `nbt`, as `/summon` loads it: its id.
+    fn summon(game: &mut super::Game<'_>, kind: &str, pos: [f64; 3], mut nbt: Compound) -> u32 {
+        nbt.insert("id".into(), Tag::String(kind.into()));
+        let pos = pos.map(|v| Tag::Double(v.to_bits())).to_vec();
+        nbt.insert("Pos".into(), Tag::List(pos));
+        match game.spawn_entity_from_nbt(Tag::Compound(nbt)) {
+            Some(Target::Other(id) | Target::Boat(id)) => id,
+            t => panic!("{kind} spawned as {t:?}"),
+        }
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_removed_handle_is_gone_before_the_sweep_and_a_chest_boat_spills_where_it_stood() {
+        with_game(|game| {
+            game.world
+                .chunks
+                .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+            let marker = summon(game, "minecraft:marker", [2.5, 70.0, 2.5], Compound::new());
+            let handle = game.native_entity(marker).unwrap();
+            assert!(game.native_entity_discard(handle));
+            // `isRemoved` from the call on, though the sweep hasn't run.
+            assert!(game.native_entity(marker).is_none());
+            assert!(game.others.iter().any(|o| o.id == marker));
+            assert!(!game.native_entity_discard(handle));
+            game.native_removals_flush();
+            assert!(!game.others.iter().any(|o| o.id == marker));
+            assert!(!game.persist.raw.contains_key(&marker));
+
+            let mut nbt = Compound::new();
+            nbt.insert(
+                "Items".into(),
+                Tag::List(vec![Tag::compound([
+                    ("Slot", Tag::Byte(0)),
+                    ("id", Tag::String("minecraft:diamond".into())),
+                    ("count", Tag::Int(5)),
+                ])]),
+            );
+            let boat = summon(game, "minecraft:oak_chest_boat", [5.7, 70.2, 9.3], nbt);
+            let handle = game.native_entity(boat).unwrap();
+            let before = game.dropped.len();
+            assert!(game.native_entity_discard(handle));
+            assert!(game.native_entity(boat).is_none());
+            game.native_removals_flush();
+            assert!(!game.boats.iter().any(|b| b.id == boat));
+            let spilled = &game.dropped[before..];
+            assert_eq!(spilled.iter().map(|i| i.stack.count).sum::<u32>(), 5);
+            for item in spilled {
+                assert_eq!(&*item.stack.item, "minecraft:diamond");
+                // `dropItemStack` floors the boat's position, then spreads
+                // the item inside that block.
+                assert_eq!(item.position.x.floor(), 5.0);
+                assert_eq!(item.position.y.floor(), 70.0);
+                assert_eq!(item.position.z.floor(), 9.0);
+            }
+        });
     }
 }

@@ -37,20 +37,12 @@
       "target": "horizon_client::game::native_mobs::Game<'_>::native_kill_mob"
     },
     {
-      "name": "remove_mob",
-      "target": "horizon_client::game::native_mobs::Game<'_>::native_remove_mob"
-    },
-    {
       "name": "summon",
       "target": "horizon_client::game::native_entities::Game<'_>::native_summon"
     },
     {
       "name": "move_entity",
       "target": "horizon_client::game::native_entities::Game<'_>::native_move_entity"
-    },
-    {
-      "name": "remove_entity",
-      "target": "horizon_client::game::native_entities::Game<'_>::native_remove_entity"
     },
     {
       "name": "server_players",
