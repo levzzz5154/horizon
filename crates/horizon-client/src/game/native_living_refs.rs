@@ -123,9 +123,8 @@ impl Game<'_> {
 
     /// The stack in `slot` (`LivingEntity.getItemBySlot`). Players, guests,
     /// mobs and armor stands store main hand, off hand, head, chest, legs and
-    /// feet. Players, guests and mobs also store body and saddle. Dragon
-    /// equipment and armor-stand body and saddle storage are not yet
-    /// modeled. None means
+    /// feet. Every kind also stores body and saddle, the dragon all eight
+    /// slots. None means
     /// empty, unsupported or stale. API @API:living_refs@.
     pub(super) fn native_living_equipment(
         &self,
@@ -160,8 +159,15 @@ impl Game<'_> {
                 .iter()
                 .find(|a| a.id == id)?
                 .equipment
-                .get(slot as usize)?
-                .clone(),
+                .get(slot as usize)
+                .cloned(),
+            Target::Dragon(id) => self
+                .dragon
+                .as_ref()
+                .filter(|d| d.id == id)?
+                .equipment
+                .get(slot as usize)
+                .cloned(),
             _ => None,
         }
     }
@@ -180,12 +186,15 @@ impl Game<'_> {
     }
     /// Puts `stack` in `slot` (`LivingEntity.setItemSlot`); None, air or a
     /// zero count empties it. Players, guests, mobs and armor stands store
-    /// main hand, off hand, head, chest, legs and feet. Players, guests and
-    /// mobs also store body and saddle. Dragon equipment and armor-stand body
-    /// and saddle storage are not yet modeled. False means unsupported or stale.
+    /// main hand, off hand, head, chest, legs and feet. Every kind also
+    /// stores body and saddle, the dragon all eight slots. Armor stands take
+    /// body and saddle too: vanilla's `ArmorStand.canUseSlot` refuses them
+    /// only for interaction, and `setItemSlot` stores them. False means
+    /// unsupported or stale. Armor stand and dragon writes make no equip
+    /// sound or game event.
     /// This is a direct write: it takes effect and is final immediately, even
-    /// inside `host.transaction`. Any equip/unequip event and equip sound also
-    /// happen immediately. API @API:living_refs@.
+    /// inside `host.transaction`. For a player or mob, any equip/unequip event
+    /// and equip sound also happen immediately. API @API:living_refs@.
     pub(super) fn native_living_set_equipment(
         &mut self,
         living: LivingRef,
@@ -256,6 +265,13 @@ impl Game<'_> {
                 );
             }
             return true;
+        }
+        if let Target::Dragon(id) = t {
+            return self
+                .dragon
+                .as_mut()
+                .filter(|d| d.id == id)
+                .is_some_and(|d| d.equipment.set(slot as usize, stack));
         }
         match self
             .slots_named(&Owner::Entity(t), slot_name(slot))
@@ -448,11 +464,47 @@ mod tests {
             dragon.id = 15;
             game.dragon = Some(dragon);
             let dragon = game.native_living(game.native_entity(15).unwrap()).unwrap();
-            assert!(!game.native_living_set_equipment(
-                dragon,
-                EquipmentSlot::Saddle,
-                Some(ItemStack::new("minecraft:saddle", 1))
-            ));
+            for slot in EquipmentSlot::ALL {
+                let stack = ItemStack::new("minecraft:stone", 2);
+                assert!(game.native_living_set_equipment(dragon, slot, Some(stack.clone())));
+                assert_eq!(game.native_living_equipment(dragon, slot), Some(stack));
+            }
+            assert!(game.native_living_set_equipment(dragon, EquipmentSlot::Saddle, None));
+            assert_eq!(
+                game.native_living_equipment(dragon, EquipmentSlot::Saddle),
+                None
+            );
+            // The dragon keeps its equipment through a save.
+            let saved = game.dragon.as_ref().unwrap().to_nbt([0; 4], None);
+            assert!(saved.get("equipment").unwrap().get("body").is_some());
+            assert!(saved.get("equipment").unwrap().get("saddle").is_none());
+            let loaded = super::super::dragon::Dragon::from_nbt(&saved, 0).unwrap();
+            assert_eq!(loaded.equipment, game.dragon.as_ref().unwrap().equipment);
+            // An armor stand stores every slot and saves them with the rest.
+            let mut stand = horizon_client::entities::ArmorStand::new(16, Vec3::ZERO, 0.0);
+            stand.id = 16;
+            game.armor_stands.push(stand);
+            let stand = game.native_living(game.native_entity(16).unwrap()).unwrap();
+            for slot in EquipmentSlot::ALL {
+                let stack = ItemStack::new("minecraft:stone", 3);
+                assert!(game.native_living_set_equipment(stand, slot, Some(stack.clone())));
+                assert_eq!(game.native_living_equipment(stand, slot), Some(stack));
+            }
+            let stored = game.armor_stands.last().unwrap();
+            let saved = horizon_client::entity_nbt::armor_stand_to_nbt(stored, [0; 4], None);
+            let loaded = horizon_client::entity_nbt::armor_stand_from_nbt(&saved, 16).unwrap();
+            assert_eq!(loaded.equipment, stored.equipment);
+            assert!(
+                loaded
+                    .equipment
+                    .get(horizon_client::equipment::SADDLE)
+                    .is_some()
+            );
+            assert!(game.native_living_set_equipment(stand, EquipmentSlot::Saddle, None));
+            assert_eq!(
+                game.native_living_equipment(stand, EquipmentSlot::Saddle),
+                None
+            );
         });
     }
 

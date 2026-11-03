@@ -346,6 +346,9 @@ pub(super) struct Dragon {
     pub(super) flame_ended: bool,
     flame_count: i32,
     sitting_damage: f32,
+    /// `LivingEntity.equipment`. Nothing in the fight reads it; it is kept
+    /// for mods and saves.
+    pub equipment: horizon_client::equipment::Equipment,
     growl: i32,
     /// `Mob.ambientSoundTime`.
     ambient_time: i32,
@@ -484,6 +487,7 @@ impl Dragon {
             flame_ended: false,
             flame_count: 0,
             sitting_damage: 0.0,
+            equipment: Default::default(),
             growl: 100,
             ambient_time: 0,
             ticks: 0,
@@ -3245,6 +3249,10 @@ impl Dragon {
                 "sitting_damage_received".into(),
                 Tag::Float(self.sitting_damage.to_bits()),
             );
+            match self.equipment.write() {
+                Some(Tag::Compound(equipment)) => horizon_client::equipment::store(map, equipment),
+                _ => horizon_client::equipment::store(map, Default::default()),
+            }
         }
         tag
     }
@@ -3262,6 +3270,9 @@ impl Dragon {
             d.death_time = *t;
         }
         d.persistent = horizon_client::entity_nbt::flag(tag, "PersistenceRequired");
+        if let Some(equipment) = tag.get("equipment") {
+            d.equipment = horizon_client::equipment::Equipment::read(equipment);
+        }
         Some(d)
     }
 }

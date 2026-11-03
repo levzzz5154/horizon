@@ -3109,18 +3109,12 @@ pub fn armor_stand_to_nbt(a: &ArmorStand, uuid: [i32; 4], raw: Option<&Tag>) -> 
         fall_distance: 0.0,
     };
     let mut tag = base.tag(raw);
-    let equipment: Vec<(&str, Tag)> = ArmorStand::SLOTS
-        .iter()
-        .zip(&a.equipment)
-        .filter_map(|(slot, stack)| Some((*slot, item_to_nbt(stack.as_ref()?))))
-        .collect();
     // `equipment` is saved only when something is worn, `Marker` only when set.
-    if equipment.is_empty() {
-        if let Tag::Compound(map) = &mut tag {
-            map.remove(&"equipment".into());
+    if let Tag::Compound(map) = &mut tag {
+        match a.equipment.write() {
+            Some(Tag::Compound(equipment)) => crate::equipment::store(map, equipment),
+            _ => crate::equipment::store(map, Compound::new()),
         }
-    } else {
-        put(&mut tag, "equipment", Tag::compound(equipment));
     }
     put(&mut tag, "DisabledSlots", Tag::Int(a.disabled_slots));
     for (key, value) in [
@@ -3197,9 +3191,7 @@ pub fn armor_stand_from_nbt(tag: &Tag, id: u32) -> Option<ArmorStand> {
     a.custom_name = tag.get("CustomName").map(name_text);
     a.name_visible = flag(tag, "CustomNameVisible");
     if let Some(eq) = tag.get("equipment") {
-        for (i, slot) in ArmorStand::SLOTS.iter().enumerate() {
-            a.equipment[i] = eq.get(slot).and_then(item_from_nbt);
-        }
+        a.equipment = crate::equipment::Equipment::read(eq);
     }
     a.small = flag(tag, "Small");
     a.show_arms = flag(tag, "ShowArms");

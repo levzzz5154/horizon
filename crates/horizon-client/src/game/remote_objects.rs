@@ -289,9 +289,7 @@ impl Game<'_> {
             .collect();
         if let Some(a) = self.armor_stands.iter_mut().find(|a| a.id == id as u32) {
             for (slot, item) in items {
-                if let Some(s) = a.equipment.get_mut(slot) {
-                    *s = item;
-                }
+                a.equipment.set(slot, item);
             }
         }
     }

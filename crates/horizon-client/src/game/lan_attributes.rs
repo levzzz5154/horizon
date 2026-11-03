@@ -285,7 +285,7 @@ impl Game<'_> {
     pub(super) fn stand_attributes(
         &self,
         id: u32,
-        equipment: &[Option<horizon_client::items::ItemStack>; 6],
+        equipment: &horizon_client::equipment::Equipment,
     ) -> Vec<AttributeSnapshot> {
         const KIND: &str = "minecraft:armor_stand";
         let mut out = Vec::new();

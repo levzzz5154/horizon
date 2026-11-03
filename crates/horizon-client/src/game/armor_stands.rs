@@ -1691,9 +1691,11 @@ mod burn_drop_tests {
             .push(("minecraft:vanishing_curse".into(), 1));
         stand.equipment[0] = Some(kept.clone());
         stand.equipment[1] = Some(vanished);
+        let saddle = ItemStack::new("minecraft:saddle", 1);
+        stand.equipment[crate::equipment::SADDLE] = Some(saddle.clone());
         let (pos, drops) = broken_armor_stand_equipment(stand);
         assert_eq!(pos, [-1, 5, 0]);
-        assert_eq!(drops, vec![kept]);
+        assert_eq!(drops, vec![kept, saddle]);
     }
 }
 #[cfg(test)]
