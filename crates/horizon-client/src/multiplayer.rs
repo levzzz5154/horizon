@@ -1521,20 +1521,21 @@ impl Screen {
                 }
             }
             // deleteCallback: yes removes the server and clears the
-            // selection; either answer returns to the list as it was.
+            // selection; either answer returns to the list. The kept list
+            // takes the edit, as the callback edits the screen's own
+            // `servers`: a mod that keeps this screen open still sees it.
             (Self::ConfirmDelete { list, .. }, Some(id @ (58 | 59))) => {
-                let mut list = (**list).clone();
                 if id == 58
                     && let Self::List {
                         servers, selected, ..
-                    } = &mut list
+                    } = &mut **list
                     && let Some(i) = selected.take()
                     && i < servers.len()
                 {
                     servers.remove(i);
                     save_servers(&servers_file(saves), servers);
                 }
-                return Outcome::Open(Box::new(list));
+                return Outcome::Open(list.clone());
             }
             (Self::List { .. }, Some(45)) => return Outcome::Open(Box::new(Self::list(saves))),
             (Self::List { .. }, Some(46)) => return Outcome::Back,
@@ -2589,6 +2590,18 @@ mod tests {
         assert_eq!(names(), ["Keep", "Gone"]);
         // Delete removes it, saves, and clears the selection.
         click(&mut screen, Some(44), 0.0, 0.0, size, &saves);
+        // A mod that cancels the return keeps the confirmation open; its
+        // list already lacks the server, as vanilla's callback edits it.
+        let mut kept = screen.clone();
+        assert!(matches!(
+            kept.click(Some(58), 0.0, 0.0, size, &saves),
+            Outcome::Open(_)
+        ));
+        assert!(matches!(
+            &kept,
+            Screen::ConfirmDelete { list, .. }
+                if matches!(&**list, Screen::List { servers, .. } if servers.len() == 1)
+        ));
         click(&mut screen, Some(58), 0.0, 0.0, size, &saves);
         assert!(
             matches!(&screen, Screen::List { selected: None, servers, .. } if servers.len() == 1)
