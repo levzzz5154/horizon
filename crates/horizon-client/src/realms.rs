@@ -1274,20 +1274,7 @@ impl Screen {
                 }
                 Outcome::None
             }
-            // The tab bar draws its own tabs (`MenuTabBar`), so a click there carries no
-            // button id: the tab bar's geometry decides.
-            None if matches!(self.subscreen, SubScreen::Configure { .. }) => {
-                let (bar_x, tab_w) = tab_geometry(w);
-                if y < TAB_HEIGHT && x >= bar_x {
-                    let index = ((x - bar_x) / tab_w).floor() as usize;
-                    if let SubScreen::Configure { server, tab, .. } = &mut self.subscreen
-                        && let Some(wanted) = ConfigureTab::ALL.get(index)
-                        && wanted.enabled(server.expired)
-                    {
-                        *tab = *wanted;
-                    }
-                    return Outcome::None;
-                }
+            None if matches!(self.subscreen, SubScreen::SlotOptions { .. }) => {
                 // RealmsSlotOptionsScreen's spawn-protection slider: a click on the track
                 // sets the value (there is no drag event on this screen yet).
                 if let SubScreen::SlotOptions {
@@ -1305,6 +1292,22 @@ impl Screen {
                         *spawn_protection = (value * 16.0).round() as i32;
                         return Outcome::None;
                     }
+                }
+                Outcome::None
+            }
+            // The tab bar draws its own tabs (`MenuTabBar`), so a click there carries no
+            // button id: the tab bar's geometry decides.
+            None if matches!(self.subscreen, SubScreen::Configure { .. }) => {
+                let (bar_x, tab_w) = tab_geometry(w);
+                if y < TAB_HEIGHT && x >= bar_x {
+                    let index = ((x - bar_x) / tab_w).floor() as usize;
+                    if let SubScreen::Configure { server, tab, .. } = &mut self.subscreen
+                        && let Some(wanted) = ConfigureTab::ALL.get(index)
+                        && wanted.enabled(server.expired)
+                    {
+                        *tab = *wanted;
+                    }
+                    return Outcome::None;
                 }
                 // RealmsWorldsTab's slot buttons: a different slot asks before switching.
                 let switch = match &self.subscreen {
@@ -2599,6 +2602,48 @@ mod tests {
             leaving: None,
             last_click: None,
         }
+    }
+
+    #[test]
+    fn slot_options_spawn_protection_track_handles_clicks_only_when_enabled() {
+        let mut realm = server(7, None);
+        realm.world_type = "NORMAL".into();
+        let mut screen = listed(vec![]);
+        screen.subscreen = SubScreen::SlotOptions {
+            server: realm,
+            slot: RealmSlot::default(),
+            name: String::new(),
+            difficulty: 0,
+            game_mode: 0,
+            force_game_mode: false,
+            spawn_protection: 8,
+            job: None,
+            error: None,
+        };
+        let value = |screen: &Screen| match &screen.subscreen {
+            SubScreen::SlotOptions {
+                spawn_protection, ..
+            } => *spawn_protection,
+            _ => panic!("expected slot options"),
+        };
+        screen.click(None, 550.0, 128.0, (800.0, 600.0));
+        assert_eq!(value(&screen), 16);
+        screen.click(None, 406.0, 128.0, (800.0, 600.0));
+        assert_eq!(value(&screen), 0);
+        if let SubScreen::SlotOptions { slot, .. } = &mut screen.subscreen {
+            slot.settings.push(client::RealmSetting {
+                name: "hardcore".into(),
+                value: "true".into(),
+            });
+        }
+        screen.click(None, 550.0, 128.0, (800.0, 600.0));
+        assert_eq!(value(&screen), 0);
+        if let SubScreen::SlotOptions { server, slot, .. } = &mut screen.subscreen {
+            slot.settings.clear();
+            server.world_type = "MINIGAME".into();
+        }
+        screen.click(None, 550.0, 128.0, (800.0, 600.0));
+        assert_eq!(value(&screen), 0);
     }
 
     #[test]
