@@ -2914,37 +2914,6 @@ mod tests {
         assert_eq!(tab_geometry(300.0), (14.0, 68.0));
     }
 
-    /// `RealmsWorldsTab`'s four slot buttons: the active slot is 80 square, the others 50,
-    /// spaced 16 and centred (`GridLayout.spacing(16)`).
-    fn slot_boxes(w: f32, active_slot: i32) -> [(f32, f32, i32); 4] {
-        let sizes: [f32; 4] = std::array::from_fn(|i| {
-            if i as i32 + 1 == active_slot {
-                80.0
-            } else {
-                50.0
-            }
-        });
-        let total: f32 = sizes.iter().sum::<f32>() + 16.0 * 3.0;
-        let mut x = ((w - total) / 2.0).floor();
-        std::array::from_fn(|i| {
-            let at = (x, sizes[i], i as i32 + 1);
-            x += sizes[i] + 16.0;
-            at
-        })
-    }
-
-    /// `RealmsWorldOptions.getSlotName`: the player's own name, else the empty marker, else
-    /// "World N" by the slot's number.
-    fn slot_name(options: &RealmWorldOptions, slot: i32) -> String {
-        if !options.slot_name.trim().is_empty() {
-            return options.slot_name.clone();
-        }
-        if options.empty {
-            return crate::lang::get("mco.configure.world.slot.empty");
-        }
-        crate::lang::tr("mco.configure.world.slot", &[&slot])
-    }
-
     /// `RealmsSubscriptionTab.daysLeftPresentation`, compared with the same translations
     /// so the check reads in any language.
     #[test]
