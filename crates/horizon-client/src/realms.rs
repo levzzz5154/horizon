@@ -324,6 +324,7 @@ pub struct Screen {
     /// Leaving a Realm (`RealmsMainScreen.leaveServer`): the list reloads when it's done.
     leaving: Option<Job<Result<(), RealmsError>>>,
     pub last_click: Option<(usize, SystemTime)>,
+    players_offset: usize,
 }
 
 pub enum Outcome {
@@ -331,6 +332,11 @@ pub enum Outcome {
     Back,
     Connect(String),
     OpenUri(String),
+}
+
+// Player row button IDs 100..=200 leave room for 33 complete rows.
+fn player_rows(height: f32) -> usize {
+    (((height - 108.0) / ROW_HEIGHT).floor().max(0.0) as usize).min(33)
 }
 
 impl Default for Screen {
@@ -373,6 +379,35 @@ fn centered(batch: &mut HudBatch, atlas: &HudAtlas, text: &str, cx: f32, y: f32,
 }
 
 impl Screen {
+    /// Scroll the visible player rows without changing which player an action targets.
+    pub fn wheel(&mut self, delta: f32, cursor: (f32, f32), (w, h): (f32, f32)) {
+        let SubScreen::Configure {
+            tab: ConfigureTab::Players,
+            detail: Some(Ok(detail)),
+            ..
+        } = &self.subscreen
+        else {
+            return;
+        };
+        let left = ((w - ROW_WIDTH) / 2.0).floor();
+        if delta == 0.0
+            || cursor.0 < left
+            || cursor.0 >= left + ROW_WIDTH
+            || cursor.1 < 60.0
+            || cursor.1 >= h - 48.0
+        {
+            return;
+        }
+        let max = detail.players.len().saturating_sub(player_rows(h));
+        let current = self.players_offset.min(max);
+        let steps = delta.abs().ceil() as usize;
+        self.players_offset = if delta > 0.0 {
+            current.saturating_sub(steps)
+        } else {
+            current.saturating_add(steps).min(max)
+        };
+    }
+
     pub fn new() -> Self {
         let mut screen = Self {
             state: FetchState::Unauthenticated,
@@ -381,6 +416,7 @@ impl Screen {
             joining: None,
             leaving: None,
             last_click: None,
+            players_offset: 0,
         };
         screen.refresh();
         screen
@@ -783,6 +819,7 @@ impl Screen {
             Some(2) => Outcome::Back,
             Some(10) => {
                 if let Some(server) = self.selected_server().cloned() {
+                    self.players_offset = 0;
                     self.subscreen = SubScreen::Configure {
                         server,
                         tab: ConfigureTab::Worlds,
@@ -963,7 +1000,14 @@ impl Screen {
                         member_job,
                         ..
                     } if *tab == ConfigureTab::Players && member_job.is_none() => {
-                        let index = usize::from((btn - 100) / 3);
+                        let count = detail
+                            .as_ref()
+                            .and_then(|d| d.as_ref().ok())
+                            .map_or(0, |d| d.players.len());
+                        let index = self
+                            .players_offset
+                            .min(count.saturating_sub(player_rows(h)))
+                            + usize::from((btn - 100) / 3);
                         let which = (btn - 100) % 3;
                         let player = match detail {
                             Some(Ok(detail)) => detail.players.get(index).cloned(),
@@ -1270,7 +1314,16 @@ impl Screen {
                     && let Some(Ok(detail)) = detail
                 {
                     let rx = ((w - ROW_WIDTH) / 2.0).floor();
-                    for (i, player) in detail.players.iter().enumerate() {
+                    let offset = self
+                        .players_offset
+                        .min(detail.players.len().saturating_sub(player_rows(h)));
+                    for (i, player) in detail
+                        .players
+                        .iter()
+                        .skip(offset)
+                        .take(player_rows(h))
+                        .enumerate()
+                    {
                         let row_y = 36.0 + 22.0 + 2.0 + i as f32 * ROW_HEIGHT;
                         if row_y + ROW_HEIGHT > h - 48.0 {
                             break;
@@ -1726,7 +1779,16 @@ impl Screen {
                             );
                             centered(batch, atlas, &invited, cx, 26.0, u32::MAX);
                             let rx = ((w - ROW_WIDTH) / 2.0).floor();
-                            for (i, player) in detail.players.iter().enumerate() {
+                            let offset = self
+                                .players_offset
+                                .min(detail.players.len().saturating_sub(player_rows(h)));
+                            for (i, player) in detail
+                                .players
+                                .iter()
+                                .skip(offset)
+                                .take(player_rows(h))
+                                .enumerate()
+                            {
                                 let row_y = 36.0 + 22.0 + 2.0 + i as f32 * ROW_HEIGHT;
                                 if row_y + ROW_HEIGHT > h - 48.0 {
                                     break;
@@ -2055,6 +2117,7 @@ mod tests {
             joining: None,
             leaving: None,
             last_click: None,
+            players_offset: 0,
         }
     }
 
@@ -2274,6 +2337,46 @@ mod tests {
         );
     }
 
+    #[test]
+    fn player_list_scroll_reaches_and_targets_offscreen_rows() {
+        let mut screen = listed(vec![server(7, None)]);
+        let mut detail = server(7, None);
+        detail.players = (0..100)
+            .map(|i| PlayerInfo {
+                name: format!("Player{i}"),
+                uuid: Some(format!("{i:032x}")),
+                ..Default::default()
+            })
+            .collect();
+        screen.subscreen = SubScreen::Configure {
+            server: server(7, None),
+            tab: ConfigureTab::Players,
+            subscription: None,
+            subscription_job: None,
+            detail: Some(Ok(detail)),
+            detail_job: None,
+            deleting: None,
+            member_job: None,
+            error: None,
+            job: None,
+        };
+        let size = (800.0, 240.0);
+        screen.wheel(-100.0, (400.0, 100.0), size);
+        let first_visible = 100 - player_rows(size.1);
+        assert_eq!(screen.players_offset, first_visible);
+        assert!(
+            screen
+                .buttons(size.0, size.1)
+                .iter()
+                .any(|b| b.5 == 102 && b.4)
+        );
+        screen.click(Some(102), 0.0, 0.0, size);
+        let SubScreen::Popup(Popup::Uninvite { player, .. }) = &screen.subscreen else {
+            panic!("expected the selected player's confirmation");
+        };
+        assert_eq!(player.name, format!("Player{first_visible}"));
+    }
+
     /// `RealmsInviteScreen.onInvite`: a blank name and one already invited are refused
     /// before any request.
     #[test]
@@ -2295,6 +2398,7 @@ mod tests {
             joining: None,
             leaving: None,
             last_click: None,
+            players_offset: 0,
         };
         screen.invite_clicked();
         let SubScreen::Invite { error, job, .. } = &screen.subscreen else {
