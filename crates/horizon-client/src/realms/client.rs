@@ -68,8 +68,23 @@ pub struct RealmServer {
     #[serde(default, deserialize_with = "nullable")]
     pub players: Vec<PlayerInfo>,
     /// The world slots: only in the detail answer too.
-    #[serde(default, deserialize_with = "nullable")]
+    #[serde(default = "empty_slots", deserialize_with = "slots_from_wire")]
     pub slots: std::collections::HashMap<i32, RealmSlot>,
+}
+
+fn empty_slots() -> std::collections::HashMap<i32, RealmSlot> {
+    (1..=3).map(|id| (id, RealmSlot::empty(id))).collect()
+}
+
+fn slots_from_wire<'de, D: Deserializer<'de>>(
+    d: D,
+) -> Result<std::collections::HashMap<i32, RealmSlot>, D::Error> {
+    let slots = Option::<Vec<RealmSlot>>::deserialize(d)?.unwrap_or_default();
+    let mut result = empty_slots();
+    for slot in slots {
+        result.insert(slot.slot_id, slot);
+    }
+    Ok(result)
 }
 
 /// `PlayerInfo`: a Realm's invited player.
@@ -110,30 +125,52 @@ pub struct RealmSetting {
 pub struct RealmSlot {
     #[serde(default, deserialize_with = "nullable")]
     pub slot_id: i32,
-    #[serde(default, deserialize_with = "nullable")]
+    #[serde(default, deserialize_with = "options_from_wire")]
     pub options: RealmWorldOptions,
     #[serde(default, deserialize_with = "nullable")]
     pub settings: Vec<RealmSetting>,
 }
 
 impl RealmSlot {
+    fn empty(slot_id: i32) -> Self {
+        Self {
+            slot_id,
+            options: RealmWorldOptions {
+                empty: true,
+                ..Default::default()
+            },
+            settings: Vec::new(),
+        }
+    }
+
     /// `RealmsSlot.isHardcore`: `RealmsSetting.isHardcore` of the settings.
     pub fn is_hardcore(&self) -> bool {
         self.settings
             .iter()
-            .any(|s| s.name == "hardcore" && s.value == "true")
+            .find(|s| s.name == "hardcore")
+            .is_some_and(|s| s.value.eq_ignore_ascii_case("true"))
+    }
+}
+
+fn options_from_wire<'de, D: Deserializer<'de>>(d: D) -> Result<RealmWorldOptions, D::Error> {
+    let json = Option::<String>::deserialize(d)?;
+    match json {
+        Some(json) => serde_json::from_str::<Option<RealmWorldOptions>>(&json)
+            .map(|options| options.unwrap_or_default())
+            .map_err(serde::de::Error::custom),
+        None => Ok(RealmWorldOptions::default()),
     }
 }
 
 /// `RealmsWorldOptions`: a slot's options.
-#[derive(Clone, Debug, Deserialize, Default, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RealmWorldOptions {
     #[serde(default, deserialize_with = "nullable")]
     pub spawn_protection: i32,
     #[serde(default, deserialize_with = "nullable")]
     pub force_game_mode: bool,
-    #[serde(default, deserialize_with = "nullable")]
+    #[serde(default = "default_difficulty")]
     pub difficulty: i32,
     #[serde(default, deserialize_with = "nullable")]
     pub game_mode: i32,
@@ -141,14 +178,46 @@ pub struct RealmWorldOptions {
     pub slot_name: String,
     #[serde(default, deserialize_with = "nullable")]
     pub version: String,
-    #[serde(default, deserialize_with = "nullable")]
+    #[serde(
+        default = "default_compatibility",
+        deserialize_with = "nullable_compatibility"
+    )]
     pub compatibility: String,
-    #[serde(default, deserialize_with = "nullable")]
+    #[serde(rename = "worldTemplateId", default = "default_template_id")]
     pub template_id: i64,
-    #[serde(default, deserialize_with = "nullable")]
-    pub template_image: String,
-    #[serde(default, deserialize_with = "nullable")]
+    #[serde(rename = "worldTemplateImage", default)]
+    pub template_image: Option<String>,
+    #[serde(skip)]
     pub empty: bool,
+}
+
+fn default_difficulty() -> i32 {
+    2
+}
+fn default_template_id() -> i64 {
+    -1
+}
+fn default_compatibility() -> String {
+    "UNVERIFIABLE".to_owned()
+}
+fn nullable_compatibility<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    Ok(Option::<String>::deserialize(d)?.unwrap_or_else(default_compatibility))
+}
+impl Default for RealmWorldOptions {
+    fn default() -> Self {
+        Self {
+            spawn_protection: 0,
+            force_game_mode: false,
+            difficulty: default_difficulty(),
+            game_mode: 0,
+            slot_name: String::new(),
+            version: String::new(),
+            compatibility: default_compatibility(),
+            template_id: default_template_id(),
+            template_image: None,
+            empty: false,
+        }
+    }
 }
 
 impl RealmServer {
@@ -556,11 +625,11 @@ impl RealmsClient {
             "forceGameMode": slot.options.force_game_mode,
             "difficulty": slot.options.difficulty,
             "gameMode": slot.options.game_mode,
-            "slotName": slot.options.slot_name,
+            "slotName": super::slot_name(&slot.options, slot.slot_id),
             "version": slot.options.version,
             "compatibility": slot.options.compatibility,
-            "templateId": slot.options.template_id,
-            "templateImage": slot.options.template_image,
+            "worldTemplateId": slot.options.template_id,
+            "worldTemplateImage": slot.options.template_image,
             "hardcore": slot.is_hardcore(),
         })
         .to_string();
@@ -625,6 +694,72 @@ mod tests {
 
     const TOKEN: &str = "eyJsecret.token.value";
     const UUID: u128 = 0x0123_4567_89ab_cdef_0123_4567_89ab_cdef;
+
+    #[test]
+    fn realm_slots_read_service_array_and_string_options() {
+        let json = r#"{"id":7,"slots":[{"slotId":2,"options":"{\"slotName\":\"Base\",\"worldTemplateId\":12,\"worldTemplateImage\":\"image\"}","settings":[{"name":"hardcore","value":"true"}]}]}"#;
+        let realm: RealmServer = serde_json::from_str(json).unwrap();
+        let slot = &realm.slots[&2];
+        assert_eq!(slot.options.slot_name, "Base");
+        assert_eq!(slot.options.difficulty, 2);
+        assert_eq!(slot.options.template_id, 12);
+        assert_eq!(slot.options.template_image.as_deref(), Some("image"));
+        assert!(slot.is_hardcore());
+        assert!(realm.slots[&1].options.empty);
+        assert!(realm.slots[&3].options.empty);
+        assert!(!slot.options.empty);
+        let missing: RealmServer = serde_json::from_str("{}").unwrap();
+        assert!(missing.slots[&1].options.empty);
+        assert_eq!(missing.slots[&1].options.template_id, -1);
+    }
+
+    #[test]
+    fn slot_update_uses_vanillas_template_field_names() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buf = [0; 4096];
+            let (end, length) = loop {
+                let n = stream.read(&mut buf).unwrap();
+                assert_ne!(n, 0);
+                request.extend_from_slice(&buf[..n]);
+                if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&request[..end]);
+                    let length: usize =
+                        header(&headers, "content-length").unwrap().parse().unwrap();
+                    break (end + 4, length);
+                }
+            };
+            while request.len() < end + length {
+                let n = stream.read(&mut buf).unwrap();
+                assert_ne!(n, 0);
+                request.extend_from_slice(&buf[..n]);
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .unwrap();
+            serde_json::from_slice::<serde_json::Value>(&request[end..end + length]).unwrap()
+        });
+        let slot = RealmSlot {
+            slot_id: 2,
+            options: RealmWorldOptions {
+                template_id: 12,
+                template_image: Some("img".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        client(&base).update_slot(7, &slot).unwrap();
+        let body = server.join().unwrap();
+        assert_eq!(body["worldTemplateId"], 12);
+        assert_eq!(body["worldTemplateImage"], "img");
+        assert!(body.get("templateId").is_none());
+        assert!(body.get("templateImage").is_none());
+    }
 
     /// One HTTP exchange on a local port: the request as the server read it.
     fn serve_once(answer: &'static str) -> (String, std::thread::JoinHandle<String>) {
