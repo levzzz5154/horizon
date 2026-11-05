@@ -419,6 +419,8 @@ pub enum SubScreen {
         regions: Vec<RegionDataDto>,
         /// The highlighted row: `(preference, region)`.
         selected: Option<(String, Option<String>)>,
+        /// First row visible in the list (two automatic rows, then manual regions).
+        scroll: usize,
     },
     /// `RealmsInviteScreen`: a name to invite to the Realm.
     Invite {
@@ -500,7 +502,34 @@ fn centered(batch: &mut HudBatch, atlas: &HudAtlas, text: &str, cx: f32, y: f32,
     batch.text(atlas, text, cx - (w / 2.0).floor(), y, color, true);
 }
 
+/// Whole rows between the title and the footer, keeping buttons outside the list.
+fn region_visible_rows(height: f32) -> usize {
+    (((height - 86.0) / 16.0).floor() as usize).max(1)
+}
+
 impl Screen {
+    /// Scroll the region list when the pointer is over it.
+    pub fn wheel(&mut self, delta: f32, (x, y): (f32, f32), (w, h): (f32, f32)) {
+        if let SubScreen::RegionPreference {
+            regions, scroll, ..
+        } = &mut self.subscreen
+        {
+            let visible = region_visible_rows(h);
+            if delta != 0.0
+                && (w / 2.0 - 150.0..w / 2.0 + 150.0).contains(&x)
+                && (40.0..40.0 + visible as f32 * 16.0).contains(&y)
+            {
+                let max_scroll = (regions.len() + 2).saturating_sub(visible);
+                *scroll = (*scroll).min(max_scroll);
+                let steps = delta.abs().ceil() as usize;
+                *scroll = if delta > 0.0 {
+                    scroll.saturating_sub(steps)
+                } else {
+                    scroll.saturating_add(steps).min(max_scroll)
+                };
+            }
+        }
+    }
     pub fn new() -> Self {
         let mut screen = Self {
             state: FetchState::Unauthenticated,
@@ -1054,6 +1083,7 @@ impl Screen {
             settings,
             regions,
             selected,
+            scroll: 0,
         };
     }
 
@@ -1405,6 +1435,7 @@ impl Screen {
                                 settings: draft,
                                 regions,
                                 selected,
+                                scroll: 0,
                             };
                         }
                     } else if let SubScreen::Configure { regions_job, .. } = &mut self.subscreen
@@ -1560,6 +1591,39 @@ impl Screen {
                 }
                 Outcome::None
             }
+            None if matches!(self.subscreen, SubScreen::RegionPreference { .. }) => {
+                // RealmsPreferredRegionSelectionScreen: a row is the preference (the region
+                // rows are MANUAL + that region).
+                if let SubScreen::RegionPreference {
+                    regions,
+                    selected,
+                    scroll,
+                    ..
+                } = &mut self.subscreen
+                {
+                    let rows: Vec<(String, Option<String>)> =
+                        std::iter::once(("AUTOMATIC_PLAYER".to_owned(), None))
+                            .chain(std::iter::once(("AUTOMATIC_OWNER".to_owned(), None)))
+                            .chain(
+                                regions
+                                    .iter()
+                                    .map(|r| ("MANUAL".to_owned(), Some(r.region.clone()))),
+                            )
+                            .collect();
+                    let top = 40.0;
+                    let offset = (*scroll).min(rows.len().saturating_sub(region_visible_rows(h)));
+                    let row = ((y - top) / 16.0).floor() as usize + offset;
+                    if (w / 2.0 - 150.0..w / 2.0 + 150.0).contains(&x)
+                        && y >= top
+                        && y < top + region_visible_rows(h) as f32 * 16.0
+                        && let Some(pick) = rows.get(row)
+                    {
+                        *selected = Some(pick.clone());
+                    }
+                    return Outcome::None;
+                }
+                Outcome::None
+            }
             // The tab bar draws its own tabs (`MenuTabBar`), so a click there carries no
             // button id: the tab bar's geometry decides.
             None if matches!(self.subscreen, SubScreen::Configure { .. }) => {
@@ -1610,30 +1674,6 @@ impl Screen {
                             return Outcome::None;
                         }
                     }
-                }
-                // RealmsPreferredRegionSelectionScreen: a row is the preference (the region
-                // rows are MANUAL + that region).
-                if let SubScreen::RegionPreference {
-                    regions, selected, ..
-                } = &mut self.subscreen
-                {
-                    let rows: Vec<(String, Option<String>)> =
-                        std::iter::once(("AUTOMATIC_PLAYER".to_owned(), None))
-                            .chain(std::iter::once(("AUTOMATIC_OWNER".to_owned(), None)))
-                            .chain(
-                                regions
-                                    .iter()
-                                    .map(|r| ("MANUAL".to_owned(), Some(r.region.clone()))),
-                            )
-                            .collect();
-                    let top = 40.0;
-                    let row = ((y - top) / 16.0).floor() as usize;
-                    if y >= top
-                        && let Some(pick) = rows.get(row)
-                    {
-                        *selected = Some(pick.clone());
-                    }
-                    return Outcome::None;
                 }
                 // RealmsSlotOptionsScreen's spawn-protection slider: a click on the track
                 // sets the value (there is no drag event on this screen yet).
@@ -2680,7 +2720,10 @@ impl Screen {
                 }
             }
             SubScreen::RegionPreference {
-                regions, selected, ..
+                regions,
+                selected,
+                scroll,
+                ..
             } => {
                 // `RealmsPreferredRegionSelectionScreen`: the preference rows, then the
                 // MANUAL rows per region.
@@ -2703,7 +2746,13 @@ impl Screen {
                         )
                         .collect();
                 let left = ((w - 300.0) / 2.0).floor();
-                for (i, (preference, region)) in rows.iter().enumerate() {
+                let offset = (*scroll).min(rows.len().saturating_sub(region_visible_rows(h)));
+                for (i, (preference, region)) in rows
+                    .iter()
+                    .skip(offset)
+                    .take(region_visible_rows(h))
+                    .enumerate()
+                {
                     let y = top + i as f32 * 16.0;
                     let picked = selected
                         .as_ref()
@@ -3269,6 +3318,44 @@ mod tests {
             owner.preference_key(),
             "mco.configure.world.region_preference.automatic_owner"
         );
+    }
+
+    #[test]
+    fn region_list_scroll_selects_the_last_region_without_hitting_the_footer() {
+        let mut screen = Screen::new();
+        let server = RealmServer::default();
+        let regions: Vec<_> = (0..27)
+            .map(|i| RegionDataDto {
+                region: format!("region-{i}"),
+                ..Default::default()
+            })
+            .collect();
+        screen.subscreen = SubScreen::RegionPreference {
+            settings: SettingsDraft::of(&server),
+            server,
+            regions,
+            selected: None,
+            scroll: 0,
+        };
+        let size = (400.0, 240.0);
+        screen.wheel(-100.0, (200.0, 100.0), size);
+        let row = region_visible_rows(size.1) - 1;
+        screen.click(None, 200.0, 40.0 + row as f32 * 16.0 + 4.0, size);
+        let SubScreen::RegionPreference {
+            selected, scroll, ..
+        } = &screen.subscreen
+        else {
+            panic!("region screen")
+        };
+        assert_eq!(*scroll, 29 - region_visible_rows(size.1));
+        assert_eq!(selected.as_ref().unwrap().1.as_deref(), Some("region-26"));
+        // Scrolling outside the list does not move it.
+        let old = *scroll;
+        screen.wheel(100.0, (5.0, 220.0), size);
+        let SubScreen::RegionPreference { scroll, .. } = &screen.subscreen else {
+            panic!("region screen")
+        };
+        assert_eq!(*scroll, old);
     }
 
     /// `RealmsWorldOptions.getSlotName`: the player's name, else the empty marker, else
