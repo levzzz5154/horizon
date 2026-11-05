@@ -133,7 +133,7 @@ impl RealmSlot {
 #[derive(Clone, Debug, Deserialize, Serialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RegionSelectionPreferenceDto {
-    #[serde(default, deserialize_with = "nullable")]
+    #[serde(default, deserialize_with = "region_preference")]
     pub region_selection_preference: String,
     #[serde(default)]
     pub preferred_region: Option<String>,
@@ -143,16 +143,35 @@ pub struct RegionSelectionPreferenceDto {
 #[derive(Clone, Debug, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RegionDataDto {
-    #[serde(default, deserialize_with = "nullable")]
+    #[serde(default, rename = "regionName", deserialize_with = "nullable")]
     pub region: String,
     #[serde(default, deserialize_with = "nullable")]
-    pub service_quality: String,
+    pub service_quality: i32,
 }
 
 #[derive(Clone, Debug, Deserialize, Default)]
 struct PreferredRegionsResponse {
-    #[serde(default, deserialize_with = "nullable")]
+    #[serde(default, rename = "regionDataList", deserialize_with = "nullable")]
     region_data: Vec<RegionDataDto>,
+}
+
+/// The service encodes `RegionSelectionPreference` as an integer, not its enum name.
+fn region_preference<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    let id = Option::<i32>::deserialize(d)?.unwrap_or(0);
+    Ok(match id {
+        1 => "AUTOMATIC_OWNER",
+        2 => "MANUAL",
+        _ => "AUTOMATIC_PLAYER",
+    }
+    .into())
+}
+
+fn preference_id(preference: &str) -> i32 {
+    match preference {
+        "AUTOMATIC_OWNER" => 1,
+        "MANUAL" => 2,
+        _ => 0,
+    }
 }
 
 /// `RealmsWorldOptions`: a slot's options.
@@ -629,22 +648,22 @@ impl RealmsClient {
         slot: &RealmSlot,
     ) -> Result<(), RealmsError> {
         let body = serde_json::json!({
-            "slot": {
+            "options": {
                 "slotId": slot.slot_id,
                 "spawnProtection": slot.options.spawn_protection,
                 "forceGameMode": slot.options.force_game_mode,
                 "difficulty": slot.options.difficulty,
                 "gameMode": slot.options.game_mode,
-                "slotName": slot.options.slot_name,
+                "slotName": super::slot_name(&slot.options, slot.slot_id),
                 "version": slot.options.version,
                 "compatibility": slot.options.compatibility,
-                "templateId": slot.options.template_id,
-                "templateImage": slot.options.template_image,
+                "worldTemplateId": slot.options.template_id,
+                "worldTemplateImage": slot.options.template_image,
                 "hardcore": slot.is_hardcore(),
             },
             "settings": slot.settings,
             "regionSelectionPreference": {
-                "regionSelectionPreference": preference,
+                "regionSelectionPreference": preference_id(preference),
                 "preferredRegion": region,
             },
             "description": { "name": name, "description": description },
@@ -720,6 +739,24 @@ mod tests {
                 }
                 seen.extend_from_slice(&buf[..n]);
             }
+            let header_end = seen.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+            let headers = String::from_utf8_lossy(&seen[..header_end]);
+            let length = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("Content-Length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+                .unwrap_or(0);
+            while seen.len() < header_end + length {
+                let n = stream.read(&mut buf).unwrap();
+                if n == 0 {
+                    break;
+                }
+                seen.extend_from_slice(&buf[..n]);
+            }
             stream.write_all(answer.as_bytes()).unwrap();
             String::from_utf8_lossy(&seen).into_owned()
         });
@@ -728,6 +765,57 @@ mod tests {
 
     fn client(base: &str) -> RealmsClient {
         RealmsClient::new(base, base, &AuthSession::new("Steve", UUID, TOKEN))
+    }
+
+    #[test]
+    fn preferred_regions_read_service_field_names_and_numeric_preferences() {
+        let response: PreferredRegionsResponse = serde_json::from_str(
+            r#"{"regionDataList":[{"regionName":"WestEurope","serviceQuality":2}]}"#,
+        )
+        .unwrap();
+        assert_eq!(response.region_data.len(), 1);
+        assert_eq!(response.region_data[0].region, "WestEurope");
+        assert_eq!(response.region_data[0].service_quality, 2);
+        for (id, expected) in [
+            (0, "AUTOMATIC_PLAYER"),
+            (1, "AUTOMATIC_OWNER"),
+            (2, "MANUAL"),
+            (9, "AUTOMATIC_PLAYER"),
+        ] {
+            let data =
+                format!(r#"{{"regionSelectionPreference":{id},"preferredRegion":"WestEurope"}}"#);
+            let pref: RegionSelectionPreferenceDto = serde_json::from_str(&data).unwrap();
+            assert_eq!(pref.region_selection_preference, expected);
+        }
+    }
+
+    #[test]
+    fn configuration_update_sends_vanillas_wire_shape() {
+        let (base, server) =
+            serve_once("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        let mut slot = RealmSlot::default();
+        slot.slot_id = 2;
+        slot.options.template_id = 31;
+        slot.options.template_image = "pic".into();
+        client(&base)
+            .update_configuration(7, "Realm", "desc", "MANUAL", Some("WestEurope"), &slot)
+            .unwrap();
+        let request = server.join().unwrap();
+        assert!(request.starts_with("POST /worlds/7/configuration "));
+        let body: serde_json::Value =
+            serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert!(body.get("slot").is_none());
+        assert_eq!(body["options"]["slotId"], 2);
+        assert_eq!(body["options"]["worldTemplateId"], 31);
+        assert_eq!(body["options"]["worldTemplateImage"], "pic");
+        assert_eq!(
+            body["regionSelectionPreference"]["regionSelectionPreference"],
+            2
+        );
+        assert_eq!(
+            body["regionSelectionPreference"]["preferredRegion"],
+            "WestEurope"
+        );
     }
 
     fn header<'a>(request: &'a str, name: &str) -> Option<&'a str> {
