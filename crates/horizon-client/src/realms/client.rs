@@ -460,31 +460,33 @@ impl RealmsClient {
         serde_json::from_str(&json).map_err(|_| RealmsError::Parse)
     }
 
-    /// `RealmsClient.op`: `POST worlds/{id}/{uuid}` with an empty body, then the ops.
+    /// `RealmsClient.op`: `POST ops/{id}/{uuid}` with an empty body, then the ops.
     pub fn op_player(&self, realm_id: i64, uuid: &str) -> Result<Ops, RealmsError> {
-        let url = self.url(&format!("worlds/{realm_id}/{}", undashed(uuid)?));
+        let url = self.url(&format!("ops/{realm_id}/{}", undashed(uuid)?));
         let json = Self::execute(self.request("POST", &url, READ_TIMEOUT), Some(""))?;
         serde_json::from_str(&json).map_err(|_| RealmsError::Parse)
     }
 
-    /// `RealmsClient.deop`: `DELETE worlds/{id}/{uuid}`, then the ops.
+    /// `RealmsClient.deop`: `DELETE ops/{id}/{uuid}`, then the ops.
     pub fn deop_player(&self, realm_id: i64, uuid: &str) -> Result<Ops, RealmsError> {
-        let url = self.url(&format!("worlds/{realm_id}/{}", undashed(uuid)?));
+        let url = self.url(&format!("ops/{realm_id}/{}", undashed(uuid)?));
         let json = Self::execute(self.request("DELETE", &url, READ_TIMEOUT), None)?;
         serde_json::from_str(&json).map_err(|_| RealmsError::Parse)
     }
 
-    /// `RealmsClient.invite`: `POST worlds/{id}` with the player's name, then the players.
+    /// `RealmsClient.invite`: `POST invites/{id}`; the response is a Realm with players.
     pub fn invite_player(&self, realm_id: i64, name: &str) -> Result<Vec<PlayerInfo>, RealmsError> {
         let body = serde_json::json!({"name": name}).to_string();
-        let url = self.url(&format!("worlds/{realm_id}"));
+        let url = self.url(&format!("invites/{realm_id}"));
         let json = Self::execute(self.request("POST", &url, READ_TIMEOUT), Some(&body))?;
-        serde_json::from_str::<Vec<PlayerInfo>>(&json).map_err(|_| RealmsError::Parse)
+        serde_json::from_str::<RealmServer>(&json)
+            .map(|realm| realm.players)
+            .map_err(|_| RealmsError::Parse)
     }
 
-    /// `RealmsClient.uninvite`: `DELETE worlds/{id}/invite/{uuid}`.
+    /// `RealmsClient.uninvite`: `DELETE invites/{id}/invite/{uuid}`.
     pub fn uninvite_player(&self, realm_id: i64, uuid: &str) -> Result<(), RealmsError> {
-        let url = self.url(&format!("worlds/{realm_id}/invite/{}", undashed(uuid)?));
+        let url = self.url(&format!("invites/{realm_id}/invite/{}", undashed(uuid)?));
         Self::execute(self.request("DELETE", &url, READ_TIMEOUT), None).map(drop)
     }
 
@@ -569,6 +571,45 @@ mod tests {
             let (k, v) = l.split_once(':')?;
             k.eq_ignore_ascii_case(name).then(|| v.trim())
         })
+    }
+
+    #[test]
+    fn player_operations_use_vanilla_paths_and_invite_reads_realm_players() {
+        const UUID: &str = "01234567-89ab-cdef-0123-456789abcdef";
+        const RESPONSE: &str = "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{\"ops\":[]}";
+        let (base, server) = serve_once(RESPONSE);
+        client(&base).op_player(7, UUID).unwrap();
+        assert!(
+            server
+                .join()
+                .unwrap()
+                .starts_with("POST /ops/7/0123456789abcdef0123456789abcdef ")
+        );
+
+        let (base, server) = serve_once(RESPONSE);
+        client(&base).deop_player(7, UUID).unwrap();
+        assert!(
+            server
+                .join()
+                .unwrap()
+                .starts_with("DELETE /ops/7/0123456789abcdef0123456789abcdef ")
+        );
+
+        let (base, server) = serve_once(
+            "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{\"id\":7,\"players\":[{\"name\":\"Alex\"}]}",
+        );
+        let players = client(&base).invite_player(7, "Alex").unwrap();
+        assert_eq!(players[0].name, "Alex");
+        assert!(server.join().unwrap().starts_with("POST /invites/7 "));
+
+        let (base, server) = serve_once("HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n");
+        client(&base).uninvite_player(7, UUID).unwrap();
+        assert!(
+            server
+                .join()
+                .unwrap()
+                .starts_with("DELETE /invites/7/invite/0123456789abcdef0123456789abcdef ")
+        );
     }
 
     #[test]

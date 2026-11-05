@@ -491,7 +491,12 @@ impl Screen {
                     *member_job = None;
                     match result {
                         // `updateOps`: the list reads again with the new operators.
-                        Ok(()) => refetch_detail = true,
+                        Ok(()) => {
+                            // Discard any request started before the mutation completed.
+                            // Its response may have observed the old player list.
+                            *detail_job = None;
+                            refetch_detail = true;
+                        }
                         Err(e) => *error = Some(e.text()),
                     }
                 }
@@ -2233,6 +2238,40 @@ mod tests {
         let enabled = |id| buttons.iter().find(|b| b.5 == id).map(|b| b.4);
         assert_eq!(enabled(14), Some(false), "Join Realm");
         assert_eq!(enabled(15), Some(false), "invites");
+    }
+
+    #[test]
+    fn completed_member_change_discards_an_older_pending_detail_request() {
+        let mut screen = listed(vec![server(7, None)]);
+        let old_detail: Job<Result<RealmServer, RealmsError>> = Arc::new(Mutex::new(None));
+        screen.subscreen = SubScreen::Configure {
+            server: server(7, None),
+            tab: ConfigureTab::Players,
+            subscription: None,
+            subscription_job: None,
+            detail: None,
+            detail_job: Some(Arc::clone(&old_detail)),
+            deleting: None,
+            member_job: Some(Arc::new(Mutex::new(Some(Ok(()))))),
+            error: None,
+            job: None,
+        };
+        screen.poll();
+        // A response to the older request arrives after the mutation succeeded.
+        *old_detail.lock().unwrap() = Some(Ok(server(7, None)));
+        screen.poll();
+        let SubScreen::Configure {
+            detail, detail_job, ..
+        } = &screen.subscreen
+        else {
+            panic!("expected configure screen");
+        };
+        assert!(detail.is_none());
+        assert!(
+            detail_job
+                .as_ref()
+                .is_none_or(|job| !Arc::ptr_eq(job, &old_detail))
+        );
     }
 
     /// `RealmsInviteScreen.onInvite`: a blank name and one already invited are refused
