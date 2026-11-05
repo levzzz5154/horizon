@@ -52,6 +52,22 @@ const GAME_MODES: [&str; 3] = [
 const DIFFICULTY_DEFAULT: usize = 2;
 const GAME_MODE_DEFAULT: usize = 0;
 
+/// `SwitchSlotTask.run`: a false response retries, and RetryCallException waits before retrying.
+fn switch_slot_with_retry(
+    mut attempt: impl FnMut() -> Result<bool, RealmsError>,
+    mut pause: impl FnMut(u64),
+) -> Result<(), RealmsError> {
+    for _ in 0..25 {
+        match attempt() {
+            Ok(true) => return Ok(()),
+            Ok(false) => {}
+            Err(RealmsError::Retry(delay)) => pause(delay),
+            Err(error) => return Err(error),
+        }
+    }
+    Err(RealmsError::Timeout)
+}
+
 /// `CommonLinks.BUY_REALMS`.
 const BUY_REALMS: &str = "https://aka.ms/BuyJavaRealms";
 /// `CommonLinks.EXTEND_REALMS_LINK`.
@@ -556,7 +572,10 @@ impl Screen {
                     match result {
                         // `updateOps`: the list reads again with the new operators.
                         Ok(()) => refetch_detail = true,
-                        Err(e) => *error = Some(e.text()),
+                        Err(e) => {
+                            *error = Some(e.text());
+                            refetch_detail = true;
+                        }
                     }
                 }
                 if let Some(result) = deleting.as_ref().and_then(take) {
@@ -1369,12 +1388,16 @@ impl Screen {
                     detail: None,
                     detail_job: None,
                     deleting: None,
-                    member_job: Some(spawn(move || client.switch_slot(id, slot).map(drop))),
+                    member_job: Some(spawn(move || {
+                        switch_slot_with_retry(
+                            || client.switch_slot(id, slot),
+                            |delay| thread::sleep(Duration::from_secs(delay)),
+                        )
+                    })),
                     error: None,
                     job: None,
                 };
                 self.start_configure_subscription();
-                self.start_configure_detail();
                 Outcome::None
             }
             // RealmsPlayersTab.PlayerEntry.uninvite, answered: the player goes and the
@@ -2528,6 +2551,33 @@ fn loading_dots() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn switch_slot_retries_false_and_delayed_answers_before_success() {
+        let mut responses = [Ok(false), Err(RealmsError::Retry(3)), Ok(true)].into_iter();
+        let mut delays = Vec::new();
+        assert_eq!(
+            switch_slot_with_retry(|| responses.next().unwrap(), |d| delays.push(d)),
+            Ok(())
+        );
+        assert_eq!(delays, vec![3]);
+        let mut calls = 0;
+        assert_eq!(
+            switch_slot_with_retry(
+                || {
+                    calls += 1;
+                    Ok(false)
+                },
+                |_| {}
+            ),
+            Err(RealmsError::Timeout)
+        );
+        assert_eq!(calls, 25);
+        assert_eq!(
+            switch_slot_with_retry(|| Err(RealmsError::Parse), |_| {}),
+            Err(RealmsError::Parse)
+        );
+    }
 
     fn server(id: i64, owner_uuid: Option<&str>) -> RealmServer {
         RealmServer {
