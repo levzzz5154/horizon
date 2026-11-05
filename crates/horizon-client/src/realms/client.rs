@@ -556,6 +556,24 @@ mod tests {
                 }
                 seen.extend_from_slice(&buf[..n]);
             }
+            let header_end = seen.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+            let headers = String::from_utf8_lossy(&seen[..header_end]);
+            let body_len = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("Content-Length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+                .unwrap_or(0);
+            while seen.len() < header_end + body_len {
+                let n = stream.read(&mut buf).unwrap();
+                if n == 0 {
+                    break;
+                }
+                seen.extend_from_slice(&buf[..n]);
+            }
             stream.write_all(answer.as_bytes()).unwrap();
             String::from_utf8_lossy(&seen).into_owned()
         });
