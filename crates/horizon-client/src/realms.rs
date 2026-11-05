@@ -13,7 +13,7 @@ use crate::hud::{HudAtlas, HudBatch, rgba};
 use crate::text::Text;
 use client::{
     PendingInviteDto, PlayerInfo, RealmAddress, RealmServer, RealmSlot, RealmWorldOptions,
-    RealmsClient, RealmsError, RegionDataDto, Subscription,
+    RealmsClient, RealmsError, RegionDataDto, RegionSelectionPreferenceDto, Subscription,
 };
 use horizon_client_render::auth::{self, AuthSession};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -413,9 +413,8 @@ pub enum SubScreen {
     },
     /// `RealmsPreferredRegionSelectionScreen`: the region preference list.
     RegionPreference {
-        server: RealmServer,
-        /// The settings tab's draft, which Done writes the choice back to.
-        settings: SettingsDraft,
+        /// Keep the configuration screen, including its fetched detail and pending jobs.
+        previous: Box<SubScreen>,
         regions: Vec<RegionDataDto>,
         /// The highlighted row: `(preference, region)`.
         selected: Option<(String, Option<String>)>,
@@ -453,7 +452,14 @@ pub struct Screen {
     pub joining: Option<Joining>,
     /// Leaving a Realm (`RealmsMainScreen.leaveServer`): the list reloads when it's done.
     leaving: Option<Job<Result<(), RealmsError>>>,
+    settings_navigation: Option<SettingsNavigation>,
     pub last_click: Option<(usize, SystemTime)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SettingsNavigation {
+    Back,
+    Tab(ConfigureTab),
 }
 
 pub enum Outcome {
@@ -537,6 +543,7 @@ impl Screen {
             selected: None,
             joining: None,
             leaving: None,
+            settings_navigation: None,
             last_click: None,
         };
         screen.refresh();
@@ -594,6 +601,7 @@ impl Screen {
         let mut refetch_detail = false;
         let mut slot_options_saved = false;
         let mut open_region_screen = false;
+        let mut settings_saved = None;
         match &mut self.subscreen {
             SubScreen::JoinCode { error, job, .. } => {
                 if let Some(result) = job.as_ref().and_then(take) {
@@ -676,10 +684,23 @@ impl Screen {
                             if let Some(draft) = settings.as_ref() {
                                 server.name = draft.name.trim().to_owned();
                                 server.motd = draft.description.clone();
+                                server.region_selection_preference =
+                                    Some(RegionSelectionPreferenceDto {
+                                        region_selection_preference: draft.preference.clone(),
+                                        preferred_region: if draft.preference == "MANUAL" {
+                                            draft.region.clone()
+                                        } else {
+                                            None
+                                        },
+                                    });
                             }
+                            settings_saved = Some(true);
                             refetch_detail = true;
                         }
-                        Err(e) => *error = Some(e.text()),
+                        Err(e) => {
+                            *error = Some(e.text());
+                            settings_saved = Some(false);
+                        }
                     }
                 }
                 if let Some(result) = deleting.as_ref().and_then(take) {
@@ -740,6 +761,26 @@ impl Screen {
             }
             SubScreen::Connecting { .. } => return self.poll_join(),
             _ => {}
+        }
+        if let Some(ok) = settings_saved {
+            let navigation = self.settings_navigation.take();
+            if ok {
+                if let SubScreen::Configure { server, .. } = &self.subscreen
+                    && let FetchState::Loaded(servers) = &mut self.state
+                    && let Some(entry) = servers.iter_mut().find(|entry| entry.id == server.id)
+                {
+                    *entry = server.clone();
+                }
+                match navigation {
+                    Some(SettingsNavigation::Back) => self.finish_back_to_list(),
+                    Some(SettingsNavigation::Tab(wanted)) => {
+                        if let SubScreen::Configure { tab, .. } = &mut self.subscreen {
+                            *tab = wanted;
+                        }
+                    }
+                    None => {}
+                }
+            }
         }
         if open_region_screen {
             self.open_region_preference();
@@ -842,6 +883,7 @@ impl Screen {
             SubScreen::Configure {
                 tab: ConfigureTab::Settings,
                 settings: Some(draft),
+                saving: None,
                 ..
             } => Some(if draft.on_description {
                 (REALMS_SETTINGS_DESC, &mut draft.description, 32)
@@ -860,12 +902,25 @@ impl Screen {
         if matches!(self.subscreen, SubScreen::Main) {
             return true;
         }
+        if let SubScreen::RegionPreference { previous, .. } = &self.subscreen {
+            self.subscreen = (**previous).clone();
+            return false;
+        }
         self.back_to_list();
         false
     }
 
     fn back_to_list(&mut self) {
-        self.save_settings_tab();
+        if !self.save_settings_tab(SettingsNavigation::Back) {
+            if matches!(self.subscreen, SubScreen::Configure { saving: None, .. }) {
+                self.start_configure_detail();
+            }
+            return;
+        }
+        self.finish_back_to_list();
+    }
+
+    fn finish_back_to_list(&mut self) {
         if let Some((_, aborted)) = self.joining.take() {
             aborted.store(true, Ordering::Relaxed);
         }
@@ -981,44 +1036,24 @@ impl Screen {
         }
     }
 
-    /// A chosen region preference: back to the settings tab with it.
-    fn back_to_settings(&mut self, server: RealmServer, settings: SettingsDraft) {
-        self.subscreen = SubScreen::Configure {
-            server,
-            tab: ConfigureTab::Settings,
-            subscription: None,
-            subscription_job: None,
-            detail: None,
-            detail_job: None,
-            deleting: None,
-            member_job: None,
-            settings: Some(settings),
-            regions: None,
-            regions_job: None,
-            saving: None,
-            error: None,
-            job: None,
-        };
-        self.start_configure_subscription();
-        self.start_configure_detail();
-    }
-
     /// `RealmsSettingsTab.onDeselected`: the edited name, description and region preference,
     /// saved through `RealmsClient.updateConfiguration` when any of them changed.
-    fn save_settings_tab(&mut self) {
+    /// Return true when navigation can proceed now; otherwise retain the screen and draft.
+    fn save_settings_tab(&mut self, navigation: SettingsNavigation) -> bool {
         let SubScreen::Configure {
             tab: ConfigureTab::Settings,
             server,
             detail,
             settings: Some(draft),
             saving,
+            error,
             ..
         } = &mut self.subscreen
         else {
-            return;
+            return true;
         };
         if saving.is_some() {
-            return;
+            return false;
         }
         let current = server.region_selection_preference.as_ref();
         let region_changed = current
@@ -1030,13 +1065,16 @@ impl Screen {
         let changed =
             draft.name.trim() != server.name || draft.description != server.motd || region_changed;
         if !changed {
-            return;
+            return true;
         }
         let Some(Ok(detail)) = detail else {
-            return;
+            *error =
+                Some("World settings are still loading; try again when they are available.".into());
+            return false;
         };
         let Some(slot) = detail.slots.get(&detail.active_slot).cloned() else {
-            return;
+            *error = Some("The active world slot is unavailable; settings were not saved.".into());
+            return false;
         };
         if let Some(client) = client() {
             let (id, name, description) = (
@@ -1052,6 +1090,8 @@ impl Screen {
                     None
                 },
             );
+            *error = None;
+            self.settings_navigation = Some(navigation);
             *saving = Some(spawn(move || {
                 client.update_configuration(
                     id,
@@ -1062,13 +1102,16 @@ impl Screen {
                     &slot,
                 )
             }));
+        } else {
+            *error = Some(crate::lang::get("horizon.realms.not_signed_in"));
         }
+        false
     }
 
     /// `RealmsSettingsTab.openPreferenceSelector`, once the region list is there.
     fn open_region_preference(&mut self) {
         let SubScreen::Configure {
-            server,
+            tab: ConfigureTab::Settings,
             settings: Some(draft),
             regions: Some(Ok(list)),
             ..
@@ -1076,11 +1119,11 @@ impl Screen {
         else {
             return;
         };
-        let (server, settings, regions) = (server.clone(), draft.clone(), list.clone());
-        let selected = Some((settings.preference.clone(), settings.region.clone()));
+        let regions = list.clone();
+        let selected = Some((draft.preference.clone(), draft.region.clone()));
+        let previous = Box::new(self.subscreen.clone());
         self.subscreen = SubScreen::RegionPreference {
-            server,
-            settings,
+            previous,
             regions,
             selected,
             scroll: 0,
@@ -1203,6 +1246,17 @@ impl Screen {
     }
 
     pub fn click(&mut self, hit: Option<u8>, x: f32, y: f32, (w, h): (f32, f32)) -> Outcome {
+        // Keep the saved draft immutable until its request resolves, so a successful response
+        // cannot silently overwrite edits made while it was in flight.
+        if matches!(
+            self.subscreen,
+            SubScreen::Configure {
+                saving: Some(_),
+                ..
+            }
+        ) {
+            return Outcome::None;
+        }
         match hit {
             Some(1) => self.play_selected(),
             Some(2) => Outcome::Back,
@@ -1384,60 +1438,40 @@ impl Screen {
             // RealmsPreferredRegionSelectionScreen.onDone / onClose.
             Some(87) => {
                 if let SubScreen::RegionPreference {
-                    server,
-                    settings,
-                    selected,
-                    ..
+                    previous, selected, ..
                 } = &self.subscreen
                     && let Some((preference, region)) = selected
                 {
-                    let server = server.clone();
-                    let mut settings = settings.clone();
-                    settings.preference = preference.clone();
-                    settings.region = region.clone();
-                    self.back_to_settings(server, settings);
+                    let mut previous = (**previous).clone();
+                    if let SubScreen::Configure {
+                        settings: Some(settings),
+                        ..
+                    } = &mut previous
+                    {
+                        settings.preference = preference.clone();
+                        settings.region = region.clone();
+                    }
+                    self.subscreen = previous;
                 }
                 Outcome::None
             }
             Some(86) => {
-                if let SubScreen::RegionPreference {
-                    server, settings, ..
-                } = &self.subscreen
-                {
-                    let server = server.clone();
-                    let settings = settings.clone();
-                    self.back_to_settings(server, settings);
+                if let SubScreen::RegionPreference { previous, .. } = &self.subscreen {
+                    self.subscreen = (**previous).clone();
                 }
                 Outcome::None
             }
             // RealmsSettingsTab.openPreferenceSelector: the region list, then the screen.
             Some(89) => {
                 if let SubScreen::Configure {
-                    server,
-                    settings: Some(draft),
+                    settings: Some(_),
                     regions,
                     ..
                 } = &self.subscreen
                 {
-                    let draft = draft.clone();
-                    let server = server.clone();
                     let loaded = matches!(regions, Some(Ok(_)));
                     if loaded {
-                        if let SubScreen::Configure {
-                            regions: Some(Ok(regions)),
-                            ..
-                        } = &self.subscreen
-                        {
-                            let regions = regions.clone();
-                            let selected = Some((draft.preference.clone(), draft.region.clone()));
-                            self.subscreen = SubScreen::RegionPreference {
-                                server,
-                                settings: draft,
-                                regions,
-                                selected,
-                                scroll: 0,
-                            };
-                        }
+                        self.open_region_preference();
                     } else if let SubScreen::Configure { regions_job, .. } = &mut self.subscreen
                         && regions_job.is_none()
                         && let Some(client) = client()
@@ -1637,8 +1671,13 @@ impl Screen {
                     if let (Some(current), Some(wanted)) = (current, ConfigureTab::ALL.get(index))
                         && *wanted != current
                         && current == ConfigureTab::Settings
+                        && matches!(&self.subscreen, SubScreen::Configure { server, .. } if wanted.enabled(server.expired))
+                        && !self.save_settings_tab(SettingsNavigation::Tab(*wanted))
                     {
-                        self.save_settings_tab();
+                        if matches!(self.subscreen, SubScreen::Configure { saving: None, .. }) {
+                            self.start_configure_detail();
+                        }
+                        return Outcome::None;
                     }
                     if let SubScreen::Configure {
                         server,
@@ -3101,6 +3140,7 @@ mod tests {
             selected: Some(0),
             joining: None,
             leaving: None,
+            settings_navigation: None,
             last_click: None,
         }
     }
@@ -3323,7 +3363,6 @@ mod tests {
     #[test]
     fn region_list_scroll_selects_the_last_region_without_hitting_the_footer() {
         let mut screen = Screen::new();
-        let server = RealmServer::default();
         let regions: Vec<_> = (0..27)
             .map(|i| RegionDataDto {
                 region: format!("region-{i}"),
@@ -3331,8 +3370,7 @@ mod tests {
             })
             .collect();
         screen.subscreen = SubScreen::RegionPreference {
-            settings: SettingsDraft::of(&server),
-            server,
+            previous: Box::new(SubScreen::Main),
             regions,
             selected: None,
             scroll: 0,
@@ -3356,6 +3394,139 @@ mod tests {
             panic!("region screen")
         };
         assert_eq!(*scroll, old);
+    }
+
+    fn configure_settings_for_test() -> Screen {
+        let mut screen = Screen::new();
+        let server = RealmServer {
+            name: "old".into(),
+            ..Default::default()
+        };
+        let mut draft = SettingsDraft::of(&server);
+        draft.name = "new".into();
+        screen.subscreen = SubScreen::Configure {
+            server,
+            tab: ConfigureTab::Settings,
+            subscription: None,
+            subscription_job: None,
+            detail: None,
+            detail_job: None,
+            deleting: None,
+            member_job: None,
+            settings: Some(draft),
+            regions: Some(Ok(vec![RegionDataDto {
+                region: "WestEurope".into(),
+                ..Default::default()
+            }])),
+            regions_job: None,
+            saving: None,
+            error: None,
+            job: None,
+        };
+        screen
+    }
+
+    #[test]
+    fn region_cancel_preserves_the_configuration_and_unsaved_draft() {
+        let mut screen = configure_settings_for_test();
+        if let SubScreen::Configure { detail, .. } = &mut screen.subscreen {
+            *detail = Some(Ok(RealmServer {
+                id: 42,
+                ..Default::default()
+            }));
+        }
+        screen.open_region_preference();
+        screen.escape();
+        let SubScreen::Configure {
+            settings: Some(draft),
+            regions,
+            detail: Some(Ok(detail)),
+            ..
+        } = &screen.subscreen
+        else {
+            panic!("configuration")
+        };
+        assert_eq!(draft.name, "new");
+        assert!(matches!(regions, Some(Ok(_))));
+        assert_eq!(detail.id, 42);
+        if let SubScreen::Configure { detail, .. } = &mut screen.subscreen {
+            *detail = None;
+        }
+        // Leaving while detail is unavailable retains the unsaved name and explains why.
+        screen.back_to_list();
+        let SubScreen::Configure {
+            settings: Some(draft),
+            error: Some(error),
+            ..
+        } = &screen.subscreen
+        else {
+            panic!("unsaved configuration")
+        };
+        assert_eq!(draft.name, "new");
+        assert!(error.contains("not saved") || error.contains("loading"));
+    }
+
+    #[test]
+    fn settings_save_failure_keeps_the_draft_and_success_finishes_navigation() {
+        for (result, should_leave) in [
+            (Err(RealmsError::Connectivity("offline".into())), false),
+            (Ok(()), true),
+        ] {
+            let mut screen = configure_settings_for_test();
+            screen.state = FetchState::Loaded(vec![RealmServer {
+                name: "old".into(),
+                ..Default::default()
+            }]);
+            let SubScreen::Configure { saving, .. } = &mut screen.subscreen else {
+                unreachable!()
+            };
+            *saving = Some(Arc::new(Mutex::new(Some(result))));
+            screen.settings_navigation = Some(SettingsNavigation::Back);
+            assert!(screen.focused_text().is_none());
+            screen.back_to_list();
+            assert!(matches!(screen.subscreen, SubScreen::Configure { .. }));
+            screen.poll();
+            if should_leave {
+                assert!(matches!(screen.subscreen, SubScreen::Main));
+                assert_eq!(screen.servers()[0].name, "new");
+            } else {
+                let SubScreen::Configure {
+                    settings: Some(draft),
+                    error: Some(error),
+                    ..
+                } = &screen.subscreen
+                else {
+                    panic!("failed configuration")
+                };
+                assert_eq!(draft.name, "new");
+                assert_eq!(error, &RealmsError::Connectivity("offline".into()).text());
+            }
+        }
+    }
+
+    #[test]
+    fn accepting_a_region_keeps_loaded_world_detail() {
+        let mut screen = configure_settings_for_test();
+        if let SubScreen::Configure { detail, .. } = &mut screen.subscreen {
+            *detail = Some(Ok(RealmServer {
+                id: 42,
+                ..Default::default()
+            }));
+        }
+        screen.open_region_preference();
+        screen.click(None, 200.0, 40.0 + 2.0 * 16.0 + 4.0, (400.0, 240.0));
+        screen.click(Some(87), 0.0, 0.0, (400.0, 240.0));
+        let SubScreen::Configure {
+            settings: Some(draft),
+            detail: Some(Ok(detail)),
+            ..
+        } = &screen.subscreen
+        else {
+            panic!("configuration")
+        };
+        assert_eq!(draft.preference, "MANUAL");
+        assert_eq!(draft.region.as_deref(), Some("WestEurope"));
+        assert_eq!(detail.id, 42);
     }
 
     /// `RealmsWorldOptions.getSlotName`: the player's name, else the empty marker, else
@@ -3414,6 +3585,7 @@ mod tests {
             selected: Some(0),
             joining: None,
             leaving: None,
+            settings_navigation: None,
             last_click: None,
         };
         screen.invite_clicked();
