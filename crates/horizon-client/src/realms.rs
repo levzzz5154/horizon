@@ -3529,6 +3529,39 @@ mod tests {
         assert_eq!(detail.id, 42);
     }
 
+    #[test]
+    fn settings_tab_switch_waits_for_successful_save() {
+        let mut screen = configure_settings_for_test();
+        let SubScreen::Configure { saving, .. } = &mut screen.subscreen else {
+            unreachable!()
+        };
+        *saving = Some(Arc::new(Mutex::new(None)));
+        screen.settings_navigation = Some(SettingsNavigation::Tab(ConfigureTab::Worlds));
+        screen.poll();
+        assert!(matches!(
+            screen.subscreen,
+            SubScreen::Configure {
+                tab: ConfigureTab::Settings,
+                ..
+            }
+        ));
+        let SubScreen::Configure {
+            saving: Some(job), ..
+        } = &screen.subscreen
+        else {
+            unreachable!()
+        };
+        *job.lock().unwrap() = Some(Ok(()));
+        screen.poll();
+        assert!(matches!(
+            screen.subscreen,
+            SubScreen::Configure {
+                tab: ConfigureTab::Worlds,
+                ..
+            }
+        ));
+    }
+
     /// `RealmsWorldOptions.getSlotName`: the player's name, else the empty marker, else
     /// "World N" by the slot.
     #[test]
