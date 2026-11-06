@@ -1,0 +1,12 @@
+{
+  "source_head": "5487072f58676ca3bc39fdb2ab165b00a2259369",
+  "package_sha256": "f97c80a7bbc1b14a47d03f61f696873980b0d8dd721f7b9b6720c596b196d93c",
+  "selected_options": "resourcePacks:[\"vanilla\"]",
+  "screenshots": [
+    "packs-before.png",
+    "packs-selected.png",
+    "packs-applied-header.png",
+    "packs-disabled.png"
+  ],
+  "observed": "Loaded the actual packaged wasm mod; listed optional pack; selected through UI; after atomic archive replacement and reselect/reload the header was Optional pack applied; deselected again. Pack-list translated title remained cached."
+}
