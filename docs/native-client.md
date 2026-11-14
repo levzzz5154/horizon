@@ -367,10 +367,13 @@ that reads stdin and keeps going.
 `launch` finds the game to start: `--game PATH`, else a `horizon-client` next
 to `horizon-ctl` (a build folder or a release folder), else the newest version
 the launcher installed (`--version TAG` picks another), run with its prepared
-resources from the game home, where the saves are. So after installing with
-the launcher, `horizon-ctl launch --world X --wait` is all an agent needs.
-Other arguments go to the game; its output goes to a `.log` file beside the
-socket.
+resources from the game home, where the saves are. Native builds use the base
+recorded in their installed `native-mods.json`, just as the launcher does. If
+that base is not prepared, run `horizon-launcher prepare --version BASE`.
+An explicit `--resources PATH` takes precedence over the installed resources.
+So after installing with the launcher, `horizon-ctl launch --world X --wait`
+is all an agent needs. Other arguments go to the game; its output goes to a
+`.log` file beside the socket.
 
 **Logs and crash reports.** Like vanilla, the game writes `logs/latest.log`
 in the game home (`$HORIZON_HOME`, else `~/.local/share/horizon`; the
@@ -403,6 +406,10 @@ sockets: there the game listens on a random `127.0.0.1` port and writes
 (`%TEMP%\horizon-control.json` by default), readable only by its user; the
 client's first line must be `auth TOKEN`. Any endpoint path ending in `.json`
 selects that transport on Linux and macOS too.
+
+The game and `horizon-ctl launch` create the shared temporary fallback folder
+with mode 0700 before writing there. An existing folder with unsafe permissions,
+a different owner, or a symlink is refused rather than changed.
 
 `tools/agent_control_e2e.py` checks it all on a virtual screen: it creates a
 world through the title menus, walks to a tree, breaks a log, crafts planks in

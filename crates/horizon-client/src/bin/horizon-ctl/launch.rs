@@ -1,8 +1,6 @@
 //! `horizon-ctl launch`: find a Horizon to start and start it with a control
-//! socket. Mirrors where the launcher puts things (launcher/src/backend.rs):
-//! versions under `<launcher home>/versions/<tag>`, each with its prepared
-//! resources in `.local/horizon-client/<minecraft version>` and run from the
-//! game home, where saves and options.txt live.
+//! socket. Launcher installs run from the game home, where saves and options.txt
+//! live. Native builds use their recorded base's prepared resources.
 use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -62,6 +60,26 @@ pub fn prepared_resources(dir: &Path) -> Option<PathBuf> {
         .then_some(resources)
 }
 
+/// The same validated build record the launcher uses to locate a native build's base.
+fn installed_base(dir: &Path) -> Result<Option<String>, String> {
+    let path = dir.join("native-mods.json");
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    let json =
+        serde_json::from_str::<Value>(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    horizon_mod_package::native_build::Record::from_json(&json)
+        .map(|record| Some(record.base.to_owned()))
+        .ok_or_else(|| {
+            format!(
+                "{} is not a valid native build record; rebuild it from an installed Horizon version",
+                path.display()
+            )
+        })
+}
+
 #[derive(Debug, PartialEq)]
 pub struct Install {
     pub game: PathBuf,
@@ -78,34 +96,51 @@ pub struct Install {
 pub fn find(
     game: Option<&Path>,
     version: Option<&str>,
+    resources: Option<&Path>,
     beside: Option<&Path>,
     launcher: &Path,
 ) -> Result<Install, String> {
-    let prepared = |dir: &Path, source, version| {
-        let resources = prepared_resources(dir);
-        Install {
+    let versions = launcher.join("versions");
+    let prepared = |dir: &Path, source, version: Option<String>| {
+        let base = if resources.is_none() {
+            installed_base(dir)?
+        } else {
+            None
+        };
+        let base_dir = base.as_ref().map(|base| versions.join(base));
+        let automatic_resources = prepared_resources(base_dir.as_deref().unwrap_or(dir));
+        let cwd = (version.is_some() || automatic_resources.is_some()).then(game_home);
+        let resources = resources.map(Path::to_path_buf).or(automatic_resources);
+        if resources.is_none()
+            && let Some(tag) = version.as_deref().or(base.as_deref())
+        {
+            let prepare = base.as_deref().unwrap_or(tag);
+            return Err(format!(
+                "{tag} is installed but not prepared; prepare its resources first (horizon-launcher prepare --version {prepare})"
+            ));
+        }
+        Ok(Install {
             game: dir.join(CLIENT),
-            cwd: resources.as_ref().map(|_| game_home()),
+            cwd,
             resources,
             source,
             version,
-        }
+        })
     };
     if let Some(game) = game {
         if !game.is_file() {
             return Err(format!("{} is not a file", game.display()));
         }
         let dir = game.parent().unwrap_or(Path::new("."));
-        let mut install = prepared(dir, "--game", None);
+        let mut install = prepared(dir, "--game", None)?;
         install.game = game.to_owned();
         return Ok(install);
     }
-    let versions = launcher.join("versions");
     if version.is_none()
         && let Some(dir) = beside
         && dir.join(CLIENT).is_file()
     {
-        return Ok(prepared(dir, "beside horizon-ctl", None));
+        return prepared(dir, "beside horizon-ctl", None);
     }
     let tags = installed(&versions);
     let tag = match version {
@@ -123,19 +158,13 @@ pub fn find(
             )
         })?,
     };
-    let dir = versions.join(&tag);
-    let install = prepared(&dir, "launcher", Some(tag.clone()));
-    if install.resources.is_none() {
-        return Err(format!(
-            "{tag} is installed but not prepared; prepare it in the launcher first (horizon-launcher prepare {tag})"
-        ));
-    }
-    Ok(install)
+    prepared(&versions.join(&tag), "launcher", Some(tag))
 }
 
 pub struct Options {
     pub game: Option<PathBuf>,
     pub version: Option<String>,
+    pub resources: Option<PathBuf>,
     pub wait: bool,
     pub game_args: Vec<String>,
 }
@@ -145,6 +174,7 @@ pub fn parse(args: &[String]) -> Result<Options, String> {
         game: None,
         version: None,
         wait: false,
+        resources: None,
         game_args: Vec::new(),
     };
     let mut i = 0;
@@ -161,6 +191,10 @@ pub fn parse(args: &[String]) -> Result<Options, String> {
             }
             "--version" => {
                 o.version = Some(value(i)?);
+                i += 1;
+            }
+            "--resources" => {
+                o.resources = Some(value(i)?.into());
                 i += 1;
             }
             "--wait" | "--wait-ready" => o.wait = true,
@@ -188,16 +222,19 @@ pub fn launch(socket: &Path, args: &[String]) -> Result<Value, Value> {
     let install = find(
         o.game.as_deref(),
         o.version.as_deref(),
+        o.resources.as_deref(),
         beside,
         &launcher_home(),
     )
     .map_err(|e| json!({ "error": e, "kind": "launch" }))?;
+    horizon_client::control::prepare_path(socket).map_err(
+        |e| json!({ "error": format!("--socket {}: {e}", socket.display()), "kind": "launch" }),
+    )?;
     let log = socket.with_extension("log");
     let file = std::fs::File::create(&log)
         .map_err(|e| json!({ "error": format!("{}: {e}", log.display()), "kind": "launch" }))?;
     let mut cmd = Command::new(&install.game);
-    let gave_resources = o.game_args.iter().any(|a| a == "--resources");
-    if let Some(resources) = install.resources.as_ref().filter(|_| !gave_resources) {
+    if let Some(resources) = &install.resources {
         cmd.arg("--resources").arg(resources);
     }
     if let Some(cwd) = &install.cwd {
@@ -310,7 +347,7 @@ mod tests {
             installed(&versions),
             ["v2026.10.13.1", "v2026.10.13", "v2026.10.2", "v2026.9.30"]
         );
-        let install = find(None, None, None, &home).unwrap();
+        let install = find(None, None, None, None, &home).unwrap();
         assert_eq!(install.version.as_deref(), Some("v2026.10.13.1"));
         assert!(
             install
@@ -319,9 +356,9 @@ mod tests {
                 .ends_with(".local/horizon-client/26.3")
         );
         assert_eq!(install.cwd, Some(game_home()));
-        let picked = find(None, Some("2026.10.2"), None, &home).unwrap();
+        let picked = find(None, Some("2026.10.2"), None, None, &home).unwrap();
         assert_eq!(picked.version.as_deref(), Some("v2026.10.2"));
-        assert!(find(None, Some("v1.0"), None, &home).is_err());
+        assert!(find(None, Some("v1.0"), None, None, &home).is_err());
         let _ = std::fs::remove_dir_all(home);
     }
 
@@ -331,12 +368,12 @@ mod tests {
         fake_version(&home.join("versions"), "v2026.10.13", true);
         let build = temp("build");
         std::fs::write(build.join(CLIENT), "").unwrap();
-        let install = find(None, None, Some(&build), &home).unwrap();
+        let install = find(None, None, None, Some(&build), &home).unwrap();
         assert_eq!(install.source, "beside horizon-ctl");
         assert_eq!((install.resources, install.cwd), (None, None));
         // --version always means a launcher install.
         assert_eq!(
-            find(None, Some("v2026.10.13"), Some(&build), &home)
+            find(None, Some("v2026.10.13"), None, Some(&build), &home)
                 .unwrap()
                 .source,
             "launcher"
@@ -349,13 +386,13 @@ mod tests {
     fn unprepared_or_missing_installs_explain_themselves() {
         let home = temp("unprepared");
         assert!(
-            find(None, None, None, &home)
+            find(None, None, None, None, &home)
                 .unwrap_err()
                 .contains("no Horizon found")
         );
         fake_version(&home.join("versions"), "v2026.10.13", false);
         assert!(
-            find(None, None, None, &home)
+            find(None, None, None, None, &home)
                 .unwrap_err()
                 .contains("not prepared")
         );
@@ -363,14 +400,94 @@ mod tests {
     }
 
     #[test]
+    fn native_builds_use_the_recorded_bases_prepared_resources() {
+        let home = temp("native-base");
+        let versions = home.join("versions");
+        let base = fake_version(&versions, "developer-base", true);
+        // The build record, not a version-name convention, chooses the resources.
+        let native = fake_version(&versions, "local-built-client", false);
+        std::fs::write(
+            native.join("native-mods.json"),
+            json!({
+                "base": "developer-base",
+                "horizon": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "target": "client",
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let install = find(None, Some("local-built-client"), None, None, &home).unwrap();
+        assert_eq!(install.game, native.join(CLIENT));
+        assert_eq!(install.version.as_deref(), Some("local-built-client"));
+        assert_eq!(install.resources, prepared_resources(&base));
+        assert_eq!(install.cwd, Some(game_home()));
+        let beside = find(None, None, None, Some(&native), &home).unwrap();
+        assert_eq!(beside.resources, prepared_resources(&base));
+        std::fs::remove_file(base.join(".local/horizon-client/26.3/horizon-resources.json"))
+            .unwrap();
+        let error = find(None, Some("local-built-client"), None, None, &home).unwrap_err();
+        assert!(
+            error.contains("horizon-launcher prepare --version developer-base"),
+            "{error}"
+        );
+        assert!(
+            !error.contains("prepare --version local-built-client"),
+            "{error}"
+        );
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn invalid_native_records_do_not_fall_back_to_unrelated_resources() {
+        let home = temp("invalid-native");
+        let dir = fake_version(&home.join("versions"), "native-build", true);
+        std::fs::write(
+            dir.join("native-mods.json"),
+            json!({
+                "base": "developer-base",
+                "horizon": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "target": "invalid",
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let error = find(None, Some("native-build"), None, None, &home).unwrap_err();
+        assert!(error.contains("not a valid native build record"), "{error}");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn explicit_resources_remain_authoritative_for_unprepared_installs() {
+        let home = temp("explicit-resources");
+        fake_version(&home.join("versions"), "v2026.10.13", false);
+        let resources = home.join("chosen-resources");
+        let install = find(None, Some("v2026.10.13"), Some(&resources), None, &home).unwrap();
+        assert_eq!(install.resources.as_deref(), Some(resources.as_path()));
+        assert_eq!(install.cwd, Some(game_home()));
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
     fn launch_options_pass_the_rest_to_the_game() {
-        let args: Vec<String> = ["--world", "A", "--version", "v1", "--wait", "--seed", "3"]
-            .map(String::from)
-            .to_vec();
+        let args: Vec<String> = [
+            "--world",
+            "A",
+            "--version",
+            "v1",
+            "--wait",
+            "--resources",
+            "chosen",
+            "--seed",
+            "3",
+        ]
+        .map(String::from)
+        .to_vec();
         let o = parse(&args).unwrap();
         assert_eq!(o.version.as_deref(), Some("v1"));
+        assert_eq!(o.resources.as_deref(), Some(Path::new("chosen")));
         assert!(o.wait);
         assert_eq!(o.game_args, ["--world", "A", "--seed", "3"]);
         assert!(parse(&["--game".to_owned()]).is_err());
+        assert!(parse(&["--resources".to_owned()]).is_err());
     }
 }

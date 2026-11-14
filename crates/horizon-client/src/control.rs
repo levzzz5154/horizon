@@ -256,10 +256,16 @@ pub fn check_path(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Prepare an endpoint before the game or `horizon-ctl launch` writes beside it.
+/// The shared temporary fallback is created privately, never repaired or followed through a link.
+pub fn prepare_path(path: &Path) -> io::Result<()> {
+    check_path(path)?;
+    private_dir(path, true)
+}
+
 impl Server {
     pub fn start(path: &Path) -> io::Result<Self> {
-        check_path(path)?;
-        private_dir(path, true)?;
+        prepare_path(path)?;
         // An endpoint left by a crashed game refuses connections; replace it.
         if path.exists() && connect(path).is_err() {
             std::fs::remove_file(path)?;
@@ -487,9 +493,15 @@ mod tests {
         std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o777)).unwrap();
         assert!(super::check_private(&open, true).is_err());
         assert!(super::check_private(&open, false).is_err());
+        assert_eq!(
+            std::fs::metadata(&open).unwrap().permissions().mode() & 0o777,
+            0o777,
+            "an unsafe existing folder must not be repaired"
+        );
         // A link to a private folder, or a file: refused.
         std::os::unix::fs::symlink(&made, base.join("link")).unwrap();
         assert!(super::check_private(&base.join("link"), false).is_err());
+        assert!(super::check_private(&base.join("link"), true).is_err());
         std::fs::write(base.join("file"), b"").unwrap();
         assert!(super::check_private(&base.join("file"), true).is_err());
         // Missing and not to be made: an error, not a folder made by whoever connects.

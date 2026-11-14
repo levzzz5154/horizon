@@ -28,6 +28,7 @@ pub mod mixins_tool;
 pub mod mod_list;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod modpack;
+pub mod native_build;
 #[cfg(feature = "runtime-process")]
 pub mod output;
 pub mod packages;

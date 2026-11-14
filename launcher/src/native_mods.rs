@@ -10,8 +10,8 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use horizon_mod_package::dependencies;
 use horizon_mod_package::mod_surface;
@@ -21,7 +21,7 @@ mod api_route;
 mod inject;
 mod planning;
 mod slots;
-pub use planning::{routes, update_check, UpdateCheck};
+pub use planning::{UpdateCheck, routes, update_check};
 mod crates;
 mod diagnostics;
 mod internals;
@@ -33,7 +33,7 @@ mod registry_lock;
 mod registry_plan;
 mod registry_runtime;
 mod registry_rustc;
-pub use internals_sync::{pinned_catalog_with_modules, DiscoveryCatalog};
+pub use internals_sync::{DiscoveryCatalog, pinned_catalog_with_modules};
 pub mod fit;
 mod isolate;
 mod mixins_patch;
@@ -763,14 +763,13 @@ fn checked_about(version: &str) -> Result<Option<About>, String> {
 fn about_in(dir: &Path) -> Option<About> {
     let json: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(dir.join("native-mods.json")).ok()?).ok()?;
-    let field = |name: &str| json[name].as_str().map(str::to_owned);
+    let record = horizon_mod_package::native_build::Record::from_json(&json)?;
     Some(About {
-        base: field("base")?,
-        horizon: field("horizon").filter(|r| is_revision(r))?,
-        target: match field("target").as_deref() {
-            Some("server") => Target::Server,
-            Some("client") => Target::Client,
-            _ => return None,
+        base: record.base.to_owned(),
+        horizon: record.horizon.to_owned(),
+        target: match record.target {
+            horizon_mod_package::native_build::Target::Server => Target::Server,
+            horizon_mod_package::native_build::Target::Client => Target::Client,
         },
         left_out: json["left_out"]
             .as_array()
@@ -2863,9 +2862,11 @@ mod tests {
 
         image[64] = b'X';
         fs::write(&executable, image).unwrap();
-        assert!(pe_machine(&executable)
-            .unwrap_err()
-            .contains("missing PE signature"));
+        assert!(
+            pe_machine(&executable)
+                .unwrap_err()
+                .contains("missing PE signature")
+        );
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -2892,16 +2893,20 @@ mod tests {
             Some(rust_toolchain::WINDOWS_ARM64_TARGET)
         );
 
-        assert!(windows_build_platform(
-            rust_toolchain::WINDOWS_X64_MACHINE,
-            rust_toolchain::WINDOWS_ARM64_TARGET,
-        )
-        .is_err());
-        assert!(windows_build_platform(
-            rust_toolchain::WINDOWS_ARM64_MACHINE,
-            rust_toolchain::WINDOWS_X64_TARGET,
-        )
-        .is_err());
+        assert!(
+            windows_build_platform(
+                rust_toolchain::WINDOWS_X64_MACHINE,
+                rust_toolchain::WINDOWS_ARM64_TARGET,
+            )
+            .is_err()
+        );
+        assert!(
+            windows_build_platform(
+                rust_toolchain::WINDOWS_ARM64_MACHINE,
+                rust_toolchain::WINDOWS_X64_TARGET,
+            )
+            .is_err()
+        );
         assert!(windows_build_platform(0xa641, rust_toolchain::WINDOWS_ARM64_TARGET).is_err());
     }
 
@@ -4308,16 +4313,22 @@ mod registry_binary_tests {
                 .name,
             "coords_hud-0.1.0.hmod"
         );
-        assert!(version
-            .native_binary("other-build", "aarch64-apple-darwin")
-            .is_err());
-        assert!(version
-            .native_binary("exact-build", "x86_64-apple-darwin")
-            .is_err());
+        assert!(
+            version
+                .native_binary("other-build", "aarch64-apple-darwin")
+                .is_err()
+        );
+        assert!(
+            version
+                .native_binary("exact-build", "x86_64-apple-darwin")
+                .is_err()
+        );
         version.native_binaries.clear();
-        assert!(version
-            .native_binary("exact-build", "aarch64-apple-darwin")
-            .is_err());
+        assert!(
+            version
+                .native_binary("exact-build", "aarch64-apple-darwin")
+                .is_err()
+        );
     }
 }
 
