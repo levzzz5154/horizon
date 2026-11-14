@@ -302,42 +302,52 @@ pub(super) fn validate_recipe_components(value: &Value, items: &Items) -> Result
     validate(&rule, items)
 }
 
-pub(super) fn validate_recipe(value: &Value, items: &Items, recipe: &str) -> bool {
+pub(super) fn validate_recipe(value: &Value, items: &Items) -> Result<(), String> {
     match value {
         Value::Object(object) => match ingredient_kind(object) {
-            Some("neoforge:components") => {
-                if let Err(error) = validate_recipe_components(value, items) {
-                    log::warn!("recipe {recipe} rejected: {error}");
-                    return false;
-                }
-                true
-            }
-            Some("neoforge:compound" | "neoforge:intersection") => ["children", "ingredients"]
-                .iter()
-                .filter_map(|key| object.get(*key))
-                .all(|value| validate_recipe(value, items, recipe)),
-            Some("neoforge:difference") => ["base", "subtracted"]
-                .iter()
-                .filter_map(|key| object.get(*key))
-                .all(|value| validate_recipe(value, items, recipe)),
-            Some("neoforge:custom_display") => object
-                .get("base")
-                .is_none_or(|value| validate_recipe(value, items, recipe)),
-            _ => {
-                crate::crafting::INGREDIENT_KEYS
+            Some("neoforge:components") => validate_recipe_components(value, items)?,
+            Some("neoforge:compound" | "neoforge:intersection") => {
+                for value in ["children", "ingredients"]
                     .iter()
                     .filter_map(|key| object.get(*key))
-                    .all(|value| validate_recipe(value, items, recipe))
-                    && crate::crafting::INGREDIENT_MAPS
-                        .iter()
-                        .filter_map(|key| object.get(*key).and_then(Value::as_object))
-                        .flat_map(|map| map.values())
-                        .all(|value| validate_recipe(value, items, recipe))
+                {
+                    validate_recipe(value, items)?;
+                }
+            }
+            Some("neoforge:difference") => {
+                for value in ["base", "subtracted"]
+                    .iter()
+                    .filter_map(|key| object.get(*key))
+                {
+                    validate_recipe(value, items)?;
+                }
+            }
+            Some("neoforge:custom_display") => {
+                if let Some(value) = object.get("base") {
+                    validate_recipe(value, items)?;
+                }
+            }
+            _ => {
+                for value in crate::crafting::INGREDIENT_KEYS
+                    .iter()
+                    .filter_map(|key| object.get(*key))
+                    .chain(
+                        crate::crafting::INGREDIENT_MAPS
+                            .iter()
+                            .filter_map(|key| object.get(*key).and_then(Value::as_object))
+                            .flat_map(|map| map.values()),
+                    )
+                {
+                    validate_recipe(value, items)?;
+                }
             }
         },
-        Value::Array(values) => values
-            .iter()
-            .all(|value| validate_recipe(value, items, recipe)),
-        _ => true,
+        Value::Array(values) => {
+            for value in values {
+                validate_recipe(value, items)?;
+            }
+        }
+        _ => {}
     }
+    Ok(())
 }

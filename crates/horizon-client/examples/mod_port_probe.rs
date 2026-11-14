@@ -116,7 +116,7 @@ fn main() -> Result<()> {
         .map_err(step("items"))?;
     let recipes = Recipes::load(&root, &items, &PackOverlay::NONE, &server_load())
         .map_err(step("recipes"))?;
-    let stations = StationRecipes::load(&root, &items, &PackOverlay::NONE, &server_load());
+    let stations = StationRecipes::load(&root, &items, &PackOverlay::NONE, &server_load())?;
     let enchantments = Enchantments::load(&root, &defaults)?;
     let collisions =
         horizon_client::collisions::load(&root, registry).map_err(step("collisions"))?;

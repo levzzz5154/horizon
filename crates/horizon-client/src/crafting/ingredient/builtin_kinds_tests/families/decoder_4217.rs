@@ -107,7 +107,7 @@ fn rabbit_variant_recipe_codec_presence_and_borrowed_matching() {
                 .unwrap_err()
                 .contains("minecraft:rabbit/variant")
         );
-        super::decoder_contracts::assert_malformed_decoder_reload_keeps_sibling(&items, patch);
+        super::decoder_contracts::assert_malformed_decoder_refuses_load(&items, patch);
     }
     let absent = compile(
         &items,

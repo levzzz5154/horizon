@@ -23,18 +23,33 @@ fn base_color_recipe_compiles_and_matches_typed_shields() {
     ]
     .into_iter()
     .map(|(id, source)| (id.into(), serde_json::from_str(source).unwrap()))
-    .collect();
+    .collect::<Vec<(String, Value)>>();
+    for invalid in &sources[1..] {
+        let refused = crate::crafting::Recipes::from_sources(
+            &root,
+            &items,
+            &horizon_world::loot::PackOverlay::NONE,
+            vec![sources[0].clone(), invalid.clone()],
+            &load,
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(refused.contains("minecraft:base_color"), "{refused}");
+        assert!(
+            refused.contains(invalid.0.strip_prefix("fixture:").unwrap()),
+            "{refused}"
+        );
+    }
     let recipes = crate::crafting::Recipes::from_sources(
         &root,
         &items,
         &horizon_world::loot::PackOverlay::NONE,
-        sources,
+        vec![sources[0].clone()],
         &load,
     )
     .unwrap();
     assert!(recipes.recipe("fixture:base_color").is_some());
-    assert!(recipes.recipe("fixture:invalid_color").is_none());
-    assert!(recipes.recipe("fixture:numeric_color").is_none());
 
     let mut shield = ItemStack::new("minecraft:shield", 1);
     assert!(recipes.find(&context, &[Some(shield.clone())], 1).is_none());
@@ -184,7 +199,7 @@ fn rollup_rejection_and_absence_matrix_4119() {
         assert!(error.contains("minecraft:base_color"), "{error}");
         let recipe = |ingredient| serde_json::json!({"type":"minecraft:crafting_shapeless","ingredients":[ingredient],"result":{"id":"minecraft:diamond"}});
         let root = tempfile::tempdir().unwrap();
-        let recipes = crate::crafting::Recipes::from_sources(
+        let refused = crate::crafting::Recipes::from_sources(
             root.path(),
             &items,
             &horizon_world::loot::PackOverlay::NONE,
@@ -197,12 +212,13 @@ fn rollup_rejection_and_absence_matrix_4119() {
             ],
             &load,
         )
-        .unwrap();
-        assert_eq!(recipes.crafting.len(), 1);
+        .err()
+        .unwrap()
+        .to_string();
         assert!(
-            recipes
-                .craft(&context, &[Some(ItemStack::new("minecraft:stone", 1))], 1)
-                .is_some()
+            refused.contains("data/fixture/recipe/invalid.json"),
+            "{refused}"
         );
+        assert!(refused.contains(&error), "{refused}");
     }
 }

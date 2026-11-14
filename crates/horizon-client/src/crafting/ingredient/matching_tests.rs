@@ -144,7 +144,32 @@ fn empty_ingredient_recipes_retain_predicates_but_not_placement() {
             "key":{"A":"minecraft:stone"},"result":{"id":"minecraft:stick"}
         }),
     ));
-    let resolved = ResolvedSources::resolve(sources, &load);
+    for (name, file) in sources.iter().filter(|(name, _)| {
+        name.starts_with("empty_fixture:direct") || name.starts_with("empty_fixture:missing")
+    }) {
+        let error = Recipes::from_sources(
+            &std::env::temp_dir(),
+            &items,
+            &PackOverlay::NONE,
+            vec![
+                (name.clone(), file.clone()),
+                sources.last().unwrap().clone(),
+            ],
+            &load,
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(
+            error.contains(name.strip_prefix("empty_fixture:").unwrap()),
+            "{error}"
+        );
+        assert!(error.contains("invalid ingredient"), "{error}");
+    }
+    sources.retain(|(name, _)| {
+        !name.starts_with("empty_fixture:direct") && !name.starts_with("empty_fixture:missing")
+    });
+    let resolved = ResolvedSources::resolve(sources, &load).unwrap();
     let root = std::env::temp_dir();
     let recipes = Recipes::from_resolved(&root, &items, &PackOverlay::NONE, &resolved).unwrap();
     let stations = crate::stations::StationRecipes::from_sources(&root, &items, &resolved);
@@ -255,24 +280,22 @@ fn empty_ingredient_load_diagnostics_distinguish_errors_and_warnings() {
                 "pattern":["A"], "key":{"A":ingredient}, "result":{"id":"minecraft:stick"}}),
             )],
             &load,
-        )
-        .unwrap();
+        );
         let levels = crate::test_log::records();
-        assert!(levels.iter().any(|(level, _)| *level == expected));
-        if ingredient == json!("#fixture:missing") {
+        if expected == log::Level::Error {
+            let error = recipes.err().unwrap().to_string();
+            assert!(error.contains("data/fixture/recipe/recipe.json"), "{error}");
             assert!(
-                levels
-                    .iter()
-                    .any(|(_, message)| message.contains("#fixture:missing"))
+                error.contains("invalid ingredient")
+                    || error.contains("ingredient kind fixture:predicate"),
+                "{error}"
             );
-        }
-        let opposite = if expected == log::Level::Warn {
-            log::Level::Error
+            assert!(levels.is_empty());
         } else {
-            log::Level::Warn
-        };
-        assert!(!levels.iter().any(|(level, _)| *level == opposite));
-        assert_eq!(!recipes.crafting.is_empty(), expected == log::Level::Warn);
+            assert_eq!(recipes.unwrap().crafting.len(), 1);
+            assert!(levels.iter().any(|(level, _)| *level == log::Level::Warn));
+        }
+        assert!(!levels.iter().any(|(level, _)| *level == log::Level::Error));
     }
 }
 
@@ -289,7 +312,7 @@ impl mod_api::Hooks for ListenerIngredient {
 }
 
 #[test]
-fn unclaimed_custom_kind_fails_the_file_but_an_empty_answer_only_warns() {
+fn unclaimed_custom_kind_refuses_load_but_an_empty_answer_only_warns() {
     crate::test_log::install();
     use crate::crafting::Recipes;
     use horizon_world::loot::PackOverlay;
@@ -313,32 +336,32 @@ fn unclaimed_custom_kind_fails_the_file_but_an_empty_answer_only_warns() {
         crate::test_log::clear();
         let mut loaded = None;
         mod_platform::testing::with_mods(mods.into(), || {
-            loaded = Some(
-                Recipes::from_sources(
-                    &std::env::temp_dir(),
-                    &items,
-                    &PackOverlay::NONE,
-                    recipe(),
-                    &load(),
-                )
-                .unwrap(),
-            );
+            loaded = Some(Recipes::from_sources(
+                &std::env::temp_dir(),
+                &items,
+                &PackOverlay::NONE,
+                recipe(),
+                &load(),
+            ));
         });
         let logs = crate::test_log::records();
         (loaded.unwrap(), logs)
     };
-    // No listener: the file fails at error level, naming file and kind.
+    // No listener: refuse the entire load, naming the file and kind once.
     let (recipes, logs) = run(vec![]);
-    assert!(recipes.crafting.is_empty());
-    assert!(logs.iter().any(|(level, text)| *level == log::Level::Error
-        && text.contains("fixture:needs_mod")
-        && text.contains("absent:kind")));
+    let error = recipes.err().unwrap().to_string();
+    assert!(
+        error.contains("data/fixture/recipe/needs_mod.json"),
+        "{error}"
+    );
+    assert!(error.contains("ingredient kind absent:kind"), "{error}");
+    assert!(logs.is_empty());
     // A listener with an empty answer: kept, with a warning naming both.
     let (recipes, logs) = run(vec![mod_api::ModEntry::new(
         "empty",
         Box::new(ListenerIngredient(&[])),
     )]);
-    assert_eq!(recipes.crafting.len(), 1);
+    assert_eq!(recipes.unwrap().crafting.len(), 1);
     assert!(logs.iter().any(|(level, text)| *level == log::Level::Warn
         && text.contains("fixture:needs_mod")
         && text.contains("absent:kind")));
@@ -348,7 +371,7 @@ fn unclaimed_custom_kind_fails_the_file_but_an_empty_answer_only_warns() {
         "items",
         Box::new(ListenerIngredient(&["minecraft:stick"])),
     )]);
-    assert_eq!(recipes.crafting.len(), 1);
+    assert_eq!(recipes.unwrap().crafting.len(), 1);
     assert!(logs.is_empty());
 }
 

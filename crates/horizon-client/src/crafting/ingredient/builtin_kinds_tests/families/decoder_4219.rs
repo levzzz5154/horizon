@@ -86,7 +86,7 @@ fn llama_variant_recipe_codec_preserves_names_defaults_removal_and_strictness() 
         };
         let error = components::validate(&rule, &items).unwrap_err();
         assert!(error.starts_with("component minecraft:llama/variant:"));
-        super::decoder_contracts::assert_malformed_decoder_reload_keeps_sibling(&items, patch);
+        super::decoder_contracts::assert_malformed_decoder_refuses_load(&items, patch);
     }
     // Synthetic pack prototype exercises defaults without inventing a vanilla one.
     let mut prototype_items = items.clone();

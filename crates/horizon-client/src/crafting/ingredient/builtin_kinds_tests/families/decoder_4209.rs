@@ -61,11 +61,12 @@ fn use_effects_component_recipe_decodes_defaults_bounds_and_matches() {
     for (name, patch, strict) in valid {
         sources.recipes.push(recipe(name, patch, strict));
     }
-    for (index, payload) in invalid.iter().enumerate() {
+    for payload in &invalid {
         let patch = format!(r#"{{"minecraft:use_effects":{payload}}}"#);
-        sources
-            .recipes
-            .push(recipe(&format!("invalid_{index}"), &patch, false));
+        super::decoder_contracts::assert_malformed_decoder_refuses_load(
+            &items,
+            serde_json::from_str(&patch).unwrap(),
+        );
         let rule = IngredientRule::Components {
             patch: crate::json_nbt::json_to_compound(
                 serde_json::from_str::<serde_json::Value>(&patch)
@@ -86,13 +87,6 @@ fn use_effects_component_recipe_decodes_defaults_bounds_and_matches() {
     let recipes =
         Recipes::from_resolved(&std::env::temp_dir(), &items, &PackOverlay::NONE, &sources)
             .unwrap();
-    for (index, _) in invalid.iter().enumerate() {
-        assert!(
-            recipes
-                .recipe(&format!("fixture:invalid_{index}"))
-                .is_none()
-        );
-    }
     let load = load();
     let context = load.loop_context(LoopSide::Server, []);
     let matches = |name: &str, stack: &ItemStack| {

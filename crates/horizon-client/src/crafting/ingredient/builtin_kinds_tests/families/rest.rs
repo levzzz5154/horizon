@@ -550,6 +550,16 @@ fn weapon_component_recipes_decode_defaults_and_match_live_borrowed_values() {
         })
     };
     let load = load();
+    for payload in [
+        json!({"disable_blocking_for_seconds":-0.0}),
+        json!({"disable_blocking_for_seconds":-1.0}),
+        json!({"item_damage_per_attack":"1"}),
+    ] {
+        super::decoder_contracts::assert_malformed_decoder_refuses_load(
+            &items,
+            json!({"minecraft:weapon":payload}),
+        );
+    }
     let recipes = crate::crafting::Recipes::from_sources(
         &std::env::temp_dir(),
         &items,
@@ -568,29 +578,12 @@ fn weapon_component_recipes_decode_defaults_and_match_live_borrowed_values() {
                 }))),
             ),
             (
-                "fixture:weapon_json_zero".into(),
-                // Weapon refuses negative zero before generic NBT conversion loses its sign.
-                recipe(ingredient(json!({"disable_blocking_for_seconds":-0.0}))),
-            ),
-            (
                 "fixture:weapon_removed".into(),
                 recipe(json!({
                     "type":"neoforge:components",
                     "items":"minecraft:diamond_sword",
                     "components":{"!minecraft:weapon":{}}
                 })),
-            ),
-            (
-                "fixture:weapon_invalid".into(),
-                recipe(ingredient(json!({
-                    "disable_blocking_for_seconds":-1.0
-                }))),
-            ),
-            (
-                "fixture:weapon_wrong_type".into(),
-                recipe(ingredient(json!({
-                    "item_damage_per_attack":"1"
-                }))),
             ),
         ],
         &load,
@@ -602,7 +595,6 @@ fn weapon_component_recipes_decode_defaults_and_match_live_borrowed_values() {
         |id, stack: &ItemStack| recipes.recipe_matches(&context, id, &[Some(stack.clone())], 1);
     let mut sword = ItemStack::new("minecraft:diamond_sword", 1);
     assert!(matches("fixture:weapon_default", &sword));
-    assert!(!matches("fixture:weapon_json_zero", &sword));
     assert!(!matches("fixture:weapon_custom", &sword));
     sword.data_mut().set_loot_component(
         "minecraft:weapon",
@@ -868,26 +860,9 @@ fn block_state_component_recipes_decode_validate_and_match() {
                 "{error}"
             );
         }
-        let refused = recipes(value);
-        assert_eq!(
-            refused.cooking.len(),
-            1,
-            "only the malformed recipe is omitted"
-        );
-        // The malformed whole recipe is omitted; the unrelated recipe still crafts.
-        assert!(
-            refused
-                .cooking
-                .iter()
-                .all(|recipe| recipe.id != "fixture:block_state")
-        );
-        assert_eq!(
-            &*refused
-                .cook(&context, "minecraft:smelting", &plain)
-                .unwrap()
-                .result
-                .item,
-            "minecraft:emerald"
+        super::decoder_contracts::assert_malformed_decoder_refuses_load(
+            &items,
+            value["components"].clone(),
         );
     }
     // Codec.STRING preserves Java UTF-16, including unpaired surrogates; it is
@@ -947,7 +922,7 @@ fn weapon_recipe_rejections_preserve_siblings_and_presence_strictness() {
         let invalid = source(payload);
         let error = components::validate_recipe_components(&invalid, &items).unwrap_err();
         assert!(error.contains("minecraft:weapon"), "{error}");
-        let recipes = crate::crafting::Recipes::from_sources(
+        let refused = crate::crafting::Recipes::from_sources(
             &std::env::temp_dir(),
             &items,
             &horizon_world::loot::PackOverlay::NONE,
@@ -957,18 +932,14 @@ fn weapon_recipe_rejections_preserve_siblings_and_presence_strictness() {
             ],
             &load,
         )
-        .unwrap();
-        assert_eq!(recipes.crafting.len(), 1);
+        .err()
+        .unwrap()
+        .to_string();
         assert!(
-            recipes
-                .craft(&context, &[Some(ItemStack::new("minecraft:stick", 1))], 1)
-                .is_some()
+            refused.contains("data/fixture/recipe/invalid.json"),
+            "{refused}"
         );
-        assert!(
-            recipes
-                .craft(&context, &[Some(ItemStack::new("minecraft:paper", 1))], 1)
-                .is_none()
-        );
+        assert!(refused.contains(&error), "{refused}");
     }
     for value in [Tag::End, Tag::Byte(0), Tag::List(vec![])] {
         let rule = IngredientRule::Components {
@@ -1130,7 +1101,7 @@ fn next_component_codecs_reject_bad_records_preserve_siblings_and_presence() {
             };
             assert!(error.contains(id), "{error}");
             let recipe = |ingredient| json!({"type":"minecraft:crafting_shapeless","ingredients":[ingredient],"result":{"id":"minecraft:diamond"}});
-            let recipes = crate::crafting::Recipes::from_sources(
+            let refused = crate::crafting::Recipes::from_sources(
                 &std::env::temp_dir(),
                 &items,
                 &horizon_world::loot::PackOverlay::NONE,
@@ -1140,18 +1111,14 @@ fn next_component_codecs_reject_bad_records_preserve_siblings_and_presence() {
                 ],
                 &load,
             )
-            .unwrap();
-            assert_eq!(recipes.crafting.len(), 1);
+            .err()
+            .unwrap()
+            .to_string();
             assert!(
-                recipes
-                    .craft(&context, &[Some(ItemStack::new("minecraft:stick", 1))], 1)
-                    .is_some()
+                refused.contains("data/fixture/recipe/invalid.json"),
+                "{refused}"
             );
-            assert!(
-                recipes
-                    .craft(&context, &[Some(ItemStack::new("minecraft:paper", 1))], 1)
-                    .is_none()
-            );
+            assert!(refused.contains(&error), "{refused}");
         }
         for value in [
             Tag::End,
@@ -1361,11 +1328,11 @@ fn custom_model_data_recipe_decodes_ordered_lists_and_matches_without_allocating
             resolved: file,
         }
     };
-    let mut sources = ResolvedSources {
+    let sources = ResolvedSources {
         recipes: vec![named("fixture:model", source.clone())],
         ..ResolvedSources::default()
     };
-    for (index, invalid) in [
+    for invalid in [
         json!(3),
         json!({"floats": 1}),
         json!({"floats": ["1"]}),
@@ -1373,10 +1340,7 @@ fn custom_model_data_recipe_decodes_ordered_lists_and_matches_without_allocating
         json!({"strings": [1]}),
         json!({"colors": [[1, 0]]}),
         json!({"colors": ["red"]}),
-    ]
-    .into_iter()
-    .enumerate()
-    {
+    ] {
         let mut bad = source.clone();
         bad["components"]["minecraft:custom_model_data"] = invalid;
         let rule = IngredientRule::Components {
@@ -1387,9 +1351,10 @@ fn custom_model_data_recipe_decodes_ordered_lists_and_matches_without_allocating
         };
         let error = components::validate(&rule, &items).unwrap_err();
         assert!(error.contains("minecraft:custom_model_data"), "{error}");
-        sources
-            .recipes
-            .push(named(&format!("fixture:invalid_{index}"), bad));
+        super::decoder_contracts::assert_malformed_decoder_refuses_load(
+            &items,
+            bad["components"].clone(),
+        );
     }
     let recipes =
         Recipes::from_resolved(&std::env::temp_dir(), &items, &PackOverlay::NONE, &sources)
@@ -1578,7 +1543,7 @@ fn mob_visibility_component_recipe_codec_and_borrowed_matching() {
             recipe(ingredient(payload.clone(), true)),
         ));
     }
-    for (index, payload) in invalid.iter().enumerate() {
+    for payload in &invalid {
         let value = ingredient(payload.clone(), false);
         assert!(Ingredient::parse(&value, &items).is_none());
         let rule = IngredientRule::Components {
@@ -1592,7 +1557,10 @@ fn mob_visibility_component_recipe_codec_and_borrowed_matching() {
             error.contains("component minecraft:mob_visibility:"),
             "{error}"
         );
-        sources.push((format!("fixture:invalid_{index}"), recipe(value)));
+        super::decoder_contracts::assert_malformed_decoder_refuses_load(
+            &items,
+            value["components"].clone(),
+        );
     }
     sources.push((
         "fixture:unrelated".into(),
@@ -1612,14 +1580,6 @@ fn mob_visibility_component_recipe_codec_and_borrowed_matching() {
         &[Some(ItemStack::new("minecraft:apple", 1))],
         1
     ));
-    for index in 0..invalid.len() {
-        assert!(
-            !recipes
-                .crafting
-                .iter()
-                .any(|(name, _)| name == &format!("fixture:invalid_{index}"))
-        );
-    }
     let mut stack = ItemStack::new("minecraft:stick", 1);
     assert!(recipes.recipe_matches(&context, "fixture:valid_0", &[Some(stack.clone())], 1));
     for (index, payload) in valid.iter().enumerate() {
@@ -1851,15 +1811,37 @@ fn mob_visibility_component_recipe_codec_and_borrowed_matching() {
         serde_json::json!({"targeting_entity_types":"fixture:replacement","visibility":1}),
         false,
     );
+    for invalid in [custom, named] {
+        let error = crate::crafting::Recipes::from_sources(
+            root.path(),
+            &refreshed,
+            &horizon_world::loot::PackOverlay::NONE,
+            vec![
+                ("fixture:invalid".into(), recipe(invalid)),
+                ("fixture:replacement".into(), recipe(replacement.clone())),
+            ],
+            &load,
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(
+            error.contains("data/fixture/recipe/invalid.json"),
+            "{error}"
+        );
+        assert!(error.contains("minecraft:mob_visibility"), "{error}");
+        assert!(active_recipes.recipe_matches(
+            &context,
+            "fixture:named",
+            &[Some(candidate.clone())],
+            1,
+        ));
+    }
     let refreshed_recipes = crate::crafting::Recipes::from_sources(
         root.path(),
         &refreshed,
         &horizon_world::loot::PackOverlay::NONE,
-        vec![
-            ("fixture:custom".into(), recipe(custom)),
-            ("fixture:named".into(), recipe(named)),
-            ("fixture:replacement".into(), recipe(replacement)),
-        ],
+        vec![("fixture:replacement".into(), recipe(replacement))],
         &load,
     )
     .unwrap();
@@ -1873,18 +1855,6 @@ fn mob_visibility_component_recipe_codec_and_borrowed_matching() {
             ("visibility", Tag::Int(1)),
         ])),
     );
-    assert!(!refreshed_recipes.recipe_matches(
-        &context,
-        "fixture:custom",
-        &[Some(candidate.clone())],
-        1
-    ));
-    assert!(!refreshed_recipes.recipe_matches(
-        &context,
-        "fixture:named",
-        &[Some(candidate.clone())],
-        1
-    ));
     assert!(refreshed_recipes.recipe_matches(
         &context,
         "fixture:replacement",
@@ -1929,8 +1899,8 @@ fn recipes_component_cooking_decodes_keys_and_matches_without_allocations() {
         ]),
         false,
     );
-    let mut sources = vec![("fixture:recipes".into(), recipe(valid.clone()))];
-    for (index, payload) in [
+    let sources = vec![("fixture:recipes".into(), recipe(valid.clone()))];
+    for payload in [
         json!("unregistered/path"),
         json!({}),
         json!({"recipes":[]}),
@@ -1943,10 +1913,7 @@ fn recipes_component_cooking_decodes_keys_and_matches_without_allocations() {
         json!(["..:path"]),
         json!(["a:b:c"]),
         json!(["#minecraft:tag"]),
-    ]
-    .into_iter()
-    .enumerate()
-    {
+    ] {
         let invalid = ingredient(payload, false);
         assert!(Ingredient::parse(&invalid, &items).is_none());
         let rule = IngredientRule::Components {
@@ -1957,7 +1924,10 @@ fn recipes_component_cooking_decodes_keys_and_matches_without_allocations() {
         };
         let error = components::validate(&rule, &items).unwrap_err();
         assert!(error.contains("component minecraft:recipes:"), "{error}");
-        sources.push((format!("fixture:refused_{index}"), recipe(invalid)));
+        super::decoder_contracts::assert_malformed_decoder_refuses_load(
+            &items,
+            invalid["components"].clone(),
+        );
     }
     let recipes =
         Recipes::from_sources(root.path(), &items, &PackOverlay::NONE, sources, &load).unwrap();
@@ -1976,11 +1946,7 @@ fn recipes_component_cooking_decodes_keys_and_matches_without_allocations() {
     };
     let mut stack = ItemStack::new("minecraft:knowledge_book", 1);
     check(&recipes, &stack, true);
-    assert_eq!(
-        recipes.cooking.len(),
-        1,
-        "invalid recipes alone are omitted"
-    );
+    assert_eq!(recipes.cooking.len(), 1);
     let parsed = Ingredient::parse(&valid, &items).unwrap();
     assert_eq!(
         parsed.shown.as_ref().unwrap()[0]

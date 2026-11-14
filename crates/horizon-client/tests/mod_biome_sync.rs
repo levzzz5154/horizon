@@ -24,6 +24,7 @@ fn write_root(root: &std::path::Path, bundle: Option<&str>) {
     let biome_dir = root.join("data/minecraft/worldgen/biome");
     std::fs::create_dir_all(&maps).unwrap();
     std::fs::create_dir_all(&biome_dir).unwrap();
+    std::fs::create_dir_all(root.join("data/minecraft/recipe")).unwrap();
     std::fs::write(root.join("registries.json"), "{}").unwrap();
     std::fs::write(root.join("items.json"), "{}").unwrap();
     for name in ["grass", "foliage", "dry_foliage"] {
@@ -74,11 +75,12 @@ fn sync_of(root: &std::path::Path) -> SyncData {
         root,
         &horizon_world::loot::PackOverlay::NONE,
         &defaults,
-        &horizon_client::crafting::ResolvedSources::load_or_empty(
+        &horizon_client::crafting::ResolvedSources::load(
             root,
             &horizon_world::loot::PackOverlay::NONE,
             &server_load(),
-        ),
+        )
+        .unwrap(),
     )
     .unwrap()
 }

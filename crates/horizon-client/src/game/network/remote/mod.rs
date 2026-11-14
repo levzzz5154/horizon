@@ -15349,7 +15349,7 @@ pub(crate) mod tests {
         let brewing = Brewing::load(&root, &items, none);
         let banners = Banners::load(&root, &defaults);
         let station_recipes =
-            StationRecipes::load(&root, &items, none, &crate::game::test_server_load());
+            StationRecipes::load(&root, &items, none, &crate::game::test_server_load()).unwrap();
         let enchantments = Enchantments::default();
         let names = Names::default();
         let env = Env {

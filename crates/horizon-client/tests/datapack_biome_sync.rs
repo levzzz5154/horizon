@@ -25,6 +25,7 @@ fn write_base(root: &std::path::Path) -> Biomes {
     let biome_dir = root.join("data/minecraft/worldgen/biome");
     std::fs::create_dir_all(&maps).unwrap();
     std::fs::create_dir_all(&biome_dir).unwrap();
+    std::fs::create_dir_all(root.join("data/minecraft/recipe")).unwrap();
     std::fs::write(root.join("registries.json"), "{}").unwrap();
     std::fs::write(root.join("items.json"), "{}").unwrap();
     for name in ["grass", "foliage", "dry_foliage"] {
@@ -57,11 +58,12 @@ fn a_pack_biome_is_sent_with_its_data_and_read_back_by_a_client() {
         &horizon_world::loot::PackOverlay::NONE,
         Some(&world),
         &defaults,
-        &horizon_client::crafting::ResolvedSources::load_or_empty(
+        &horizon_client::crafting::ResolvedSources::load(
             &root,
             &horizon_world::loot::PackOverlay::NONE,
             &server_load(),
-        ),
+        )
+        .unwrap(),
     )
     .unwrap();
 
@@ -176,11 +178,12 @@ fn a_biome_the_mods_modifiers_changed_is_sent_to_a_client_that_knows_the_vanilla
         &root,
         &horizon_world::loot::PackOverlay::NONE,
         &defaults,
-        &horizon_client::crafting::ResolvedSources::load_or_empty(
+        &horizon_client::crafting::ResolvedSources::load(
             &root,
             &horizon_world::loot::PackOverlay::NONE,
             &server_load(),
-        ),
+        )
+        .unwrap(),
     )
     .unwrap();
     let sent = sync.registry_packets(true, &LevelShapes::VANILLA);

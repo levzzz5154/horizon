@@ -33,7 +33,7 @@ pub fn main() -> horizon_client::Result<()> {
         &items,
         &PackOverlay::NONE,
         &crate::test_resources::server_load(),
-    );
+    )?;
     let enchantments = Enchantments::load(root, &defaults)?;
     let mut out = String::new();
     for line in input.lines() {
@@ -104,7 +104,7 @@ pub fn main() -> horizon_client::Result<()> {
                     &items,
                     &PackOverlay::new(&files),
                     &crate::test_resources::server_load(),
-                );
+                )?;
                 let (t, b, a) = (stack(2)?, stack(3)?, stack(4)?);
                 match stations.smithing_result(
                     crate::test_resources::server_loop_context(),

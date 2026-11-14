@@ -231,7 +231,7 @@ fn axolotl_variant_recipe_defaults_removal_and_strictness_preserve_presence() {
 }
 
 #[test]
-fn axolotl_variant_invalid_codec_payloads_omit_whole_recipes() {
+fn axolotl_variant_invalid_codec_payloads_refuse_whole_load() {
     let items = Items::empty();
     for (payload, diagnostic) in [
         (serde_json::json!(0), "Not a string"),
@@ -265,19 +265,15 @@ fn axolotl_variant_invalid_codec_payloads_omit_whole_recipes() {
             "components": patch.clone()
         });
         assert!(Ingredient::parse(&ingredient, &items).is_none());
-        let recipes = axolotl_variant_recipes(&items, patch, false);
-        assert!(recipes.crafting.is_empty());
-        assert!(recipes.cooking.is_empty());
-        assert!(recipes.by_type.values().all(|recipes| recipes.is_empty()));
+        super::decoder_contracts::assert_malformed_decoder_refuses_load(&items, patch);
     }
 }
 
 #[test]
-fn axolotl_variant_boundary_refusals_keep_a_valid_sibling() {
+fn axolotl_variant_boundary_refusals_refuse_whole_load() {
     const ID: &str = "minecraft:axolotl/variant";
     let items = Items::empty();
     let load = load();
-    let context = load.loop_context(LoopSide::Server, []);
     for value in [
         Tag::End,
         Tag::Byte(0),
@@ -331,19 +327,15 @@ fn axolotl_variant_boundary_refusals_keep_a_valid_sibling() {
         let ingredient = serde_json::json!({"type":"neoforge:components", "items":"minecraft:axolotl_spawn_egg", "components":{(ID):payload}});
         assert!(Ingredient::parse(&ingredient, &items).is_none());
         let root = tempfile::tempdir().unwrap();
-        let recipes = crate::crafting::Recipes::from_sources(root.path(), &items, &horizon_world::loot::PackOverlay::NONE, vec![
+        let refused = crate::crafting::Recipes::from_sources(root.path(), &items, &horizon_world::loot::PackOverlay::NONE, vec![
             ("fixture:bad".into(), serde_json::json!({"type":"minecraft:crafting_shapeless", "ingredients":[ingredient], "result":{"id":"minecraft:diamond"}})),
             ("fixture:good".into(), serde_json::json!({"type":"minecraft:crafting_shapeless", "ingredients":["minecraft:stick"], "result":{"id":"minecraft:emerald"}})),
-        ], &load).unwrap();
-        assert_eq!(recipes.crafting.len(), 1);
-        assert_eq!(
-            recipes
-                .craft(&context, &[Some(ItemStack::new("minecraft:stick", 1))], 1)
-                .unwrap()
-                .item
-                .as_ref(),
-            "minecraft:emerald"
+        ], &load).err().unwrap().to_string();
+        assert!(
+            refused.contains("data/fixture/recipe/bad.json"),
+            "{refused}"
         );
+        assert!(refused.contains(ID), "{refused}");
     }
     let whole_null = serde_json::json!({"type":"neoforge:components", "items":"minecraft:axolotl_spawn_egg", "components":null});
     assert!(Ingredient::parse(&whole_null, &items).is_none());

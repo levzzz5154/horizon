@@ -71,9 +71,12 @@ fn malformed_and_unknown_component_patches_reject_whole_recipe() {
     ] {
         let ingredient = serde_json::json!({"type":"neoforge:components","items":"minecraft:diamond_sword","components":patch});
         assert!(Ingredient::parse(&ingredient, &items).is_none());
-        let recipes=crate::crafting::Recipes::from_sources(&root,&items,&horizon_world::loot::PackOverlay::NONE,vec![("fixture:invalid_component".into(),serde_json::json!({"type":"minecraft:crafting_shapeless","ingredients":[ingredient],"result":{"id":"minecraft:diamond"}}))],&load).unwrap();
-        assert!(recipes.crafting.is_empty());
-        assert!(recipes.by_type.values().all(|recipes| recipes.is_empty()));
+        let error=crate::crafting::Recipes::from_sources(&root,&items,&horizon_world::loot::PackOverlay::NONE,vec![("fixture:invalid_component".into(),serde_json::json!({"type":"minecraft:crafting_shapeless","ingredients":[ingredient],"result":{"id":"minecraft:diamond"}}))],&load).err().unwrap().to_string();
+        assert!(
+            error.contains("data/fixture/recipe/invalid_component.json"),
+            "{error}"
+        );
+        assert!(error.contains("component"), "{error}");
     }
 }
 #[test]

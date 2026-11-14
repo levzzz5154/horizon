@@ -66,7 +66,7 @@ fn pet_holder_contracts_preserve_siblings_removals_and_prototypes() {
             let error = components::validate_recipe_components(&ingredient, &items).unwrap_err();
             assert!(error.contains(id), "{error}");
             let recipe = |ingredient| json!({"type":"minecraft:crafting_shapeless","ingredients":[ingredient],"result":{"id":"minecraft:diamond"}});
-            let recipes = crate::crafting::Recipes::from_sources(
+            let refused = crate::crafting::Recipes::from_sources(
                 &std::env::temp_dir(),
                 &items,
                 &horizon_world::loot::PackOverlay::NONE,
@@ -76,18 +76,14 @@ fn pet_holder_contracts_preserve_siblings_removals_and_prototypes() {
                 ],
                 &load,
             )
-            .unwrap();
-            assert_eq!(recipes.crafting.len(), 1);
+            .err()
+            .unwrap()
+            .to_string();
             assert!(
-                recipes
-                    .craft(&context, &[Some(ItemStack::new("minecraft:stick", 1))], 1)
-                    .is_some()
+                refused.contains("data/fixture/recipe/invalid.json"),
+                "{refused}"
             );
-            assert!(
-                recipes
-                    .craft(&context, &[Some(ItemStack::new("minecraft:paper", 1))], 1)
-                    .is_none()
-            );
+            assert!(refused.contains(&error), "{refused}");
         }
         for value in [
             Tag::End,

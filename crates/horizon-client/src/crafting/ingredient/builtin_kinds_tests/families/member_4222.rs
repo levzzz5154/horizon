@@ -130,10 +130,7 @@ fn parrot_variant_recipe_codec_presence_strictness_and_borrowed_matching() {
         };
         let error = components::validate(&rule, &items).unwrap_err();
         assert!(error.starts_with("component minecraft:parrot/variant:"));
-        let invalid = parrot_variant_recipes(&items, patch, false);
-        assert!(invalid.crafting.is_empty());
-        assert!(invalid.cooking.is_empty());
-        assert!(invalid.by_type.values().all(|recipes| recipes.is_empty()));
+        super::decoder_contracts::assert_malformed_decoder_refuses_load(&items, patch);
     }
     // Synthetic supplied prototype exercises inherited values; vanilla supplies none.
     let mut prototypes = Items::empty();
@@ -291,7 +288,7 @@ fn rollup_rejection_and_absence_matrix_4222() {
         assert!(error.contains("minecraft:parrot/variant"), "{error}");
         let recipe = |ingredient| serde_json::json!({"type":"minecraft:crafting_shapeless","ingredients":[ingredient],"result":{"id":"minecraft:diamond"}});
         let root = tempfile::tempdir().unwrap();
-        let recipes = crate::crafting::Recipes::from_sources(
+        let refused = crate::crafting::Recipes::from_sources(
             root.path(),
             &items,
             &horizon_world::loot::PackOverlay::NONE,
@@ -304,13 +301,14 @@ fn rollup_rejection_and_absence_matrix_4222() {
             ],
             &load,
         )
-        .unwrap();
-        assert_eq!(recipes.crafting.len(), 1);
+        .err()
+        .unwrap()
+        .to_string();
         assert!(
-            recipes
-                .craft(&context, &[Some(ItemStack::new("minecraft:stone", 1))], 1)
-                .is_some()
+            refused.contains("data/fixture/recipe/invalid.json"),
+            "{refused}"
         );
+        assert!(refused.contains(&error), "{refused}");
     }
 }
 

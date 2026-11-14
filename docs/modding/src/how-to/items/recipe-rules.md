@@ -20,6 +20,14 @@ in file order. Read them again after a data reload. On the server, you read the
 server's table. A client reads vanilla and content-mod recipes unless the server
 sends the recipe type through `datapack_sync`.
 
+One malformed recipe of a known type refuses the **whole recipe load**, with an
+error naming its file and the reason. A failed reload keeps the previous active
+recipes and does not publish a partial table; a dedicated server stops startup
+with that error. A file whose load conditions are false is skipped quietly before
+its recipe type is looked up. An unregistered condition type in a registered
+namespace is a load error; foreign-namespace condition handling is unchanged.
+Unregistered recipe types retain their existing behavior pending owner registration.
+
 `LevelRef::recipe_for` returns `Ok(None)` when no recipe matches. Mod-defined
 recipe types return `RecipeLookupError::NotMatchable`; use their JSON to build
 your own matching logic. See [Cache reload-stable recipe definitions](reload-stable-recipes.md)

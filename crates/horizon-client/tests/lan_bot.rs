@@ -226,11 +226,12 @@ fn server_with(resources: &Path, net: NetConfig) -> Server {
                 resources,
                 &horizon_world::loot::PackOverlay::NONE,
                 &defaults,
-                &horizon_client::crafting::ResolvedSources::load_or_empty(
+                &horizon_client::crafting::ResolvedSources::load(
                     resources,
                     &horizon_world::loot::PackOverlay::NONE,
                     &server_load(),
-                ),
+                )
+                .expect("recipe sources"),
             )
             .expect("sync data"),
         ),
@@ -505,11 +506,12 @@ fn neoforge_shapes_items_reach_two_guests() {
             &resources,
             &horizon_world::loot::PackOverlay::new(&packs),
             &defaults,
-            &horizon_client::crafting::ResolvedSources::load_or_empty(
+            &horizon_client::crafting::ResolvedSources::load(
                 &resources,
                 &horizon_world::loot::PackOverlay::new(&packs),
                 &server_load(),
-            ),
+            )
+            .expect("recipe sources"),
         )
         .expect("sync data"),
     );
@@ -775,11 +777,12 @@ fn a_signed_in_hosts_lan_authenticates_guests_but_not_its_own_player() {
             &resources,
             &horizon_world::loot::PackOverlay::NONE,
             &defaults,
-            &horizon_client::crafting::ResolvedSources::load_or_empty(
+            &horizon_client::crafting::ResolvedSources::load(
                 &resources,
                 &horizon_world::loot::PackOverlay::NONE,
                 &server_load(),
-            ),
+            )
+            .expect("recipe sources"),
         )
         .expect("sync data"),
     );

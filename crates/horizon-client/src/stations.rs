@@ -29,20 +29,23 @@ pub struct StationData {
     pub recipe_index: crate::recipe_book::RecipeIndex,
 }
 impl StationData {
+    /// Load one complete generation; malformed known recipes refuse the load.
     pub fn load(
         root: &Path,
         items: &Items,
         overlay: &PackOverlay,
         defaults: &horizon_world::item_defaults::ItemDefaults,
         context: &horizon_world::native_load_context::LoadContext,
-    ) -> Self {
-        let sources = crate::crafting::ResolvedSources::load_or_empty(root, overlay, context);
-        let recipes = crate::crafting::Recipes::from_resolved(root, items, overlay, &sources)
-            .unwrap_or_else(|error| {
-                log::error!("recipes: could not load station recipe index: {error}");
-                crate::crafting::Recipes::empty()
-            });
-        Self::from_sources(root, items, overlay, defaults, (&sources, &recipes))
+    ) -> crate::Result<Self> {
+        let sources = crate::crafting::ResolvedSources::load(root, overlay, context)?;
+        let recipes = crate::crafting::Recipes::from_resolved(root, items, overlay, &sources)?;
+        Ok(Self::from_sources(
+            root,
+            items,
+            overlay,
+            defaults,
+            (&sources, &recipes),
+        ))
     }
     /// The tables of one load whose recipes are `sources`.
     pub fn from_sources(
@@ -691,7 +694,9 @@ impl ParsedStationRecipe {
             "minecraft:stonecutting" => Some(Self::Stonecutting(Stonecutting {
                 id,
                 input: Ingredient::parse(&v["ingredient"], items)?,
-                result: crate::crafting::Template::parse(&v["result"])?.create(),
+                result: crate::crafting::Template::parse(&v["result"])
+                    .filter(|template| template.item.is_some())?
+                    .create(),
             })),
             _ => None,
         }
@@ -743,14 +748,16 @@ pub struct StationRecipes {
     item_limits: std::collections::HashMap<Arc<str>, (u32, u32)>,
 }
 impl StationRecipes {
+    /// Load station tables only after the complete recipe candidate validates.
     pub fn load(
         root: &Path,
         items: &Items,
         overlay: &PackOverlay,
         context: &horizon_world::native_load_context::LoadContext,
-    ) -> Self {
-        let sources = crate::crafting::ResolvedSources::load_or_empty(root, overlay, context);
-        Self::from_sources(root, items, &sources)
+    ) -> crate::Result<Self> {
+        let sources = crate::crafting::ResolvedSources::load(root, overlay, context)?;
+        crate::crafting::Recipes::from_resolved(root, items, overlay, &sources)?;
+        Ok(Self::from_sources(root, items, &sources))
     }
     /// The station tables of `sources`, the recipes one load resolved.
     pub fn from_sources(
@@ -1763,7 +1770,8 @@ mod tests {
             &PackOverlay::NONE,
             &defaults,
             &crate::test_resources::server_load(),
-        );
+        )
+        .unwrap();
         let e = &data.enchantments;
         assert_eq!(e.list.len(), 43);
         assert_eq!(
@@ -2187,7 +2195,7 @@ mod tests {
             vec![serde_json::to_vec(&recipe).unwrap()],
         )];
         let overlay = PackOverlay::new(&files);
-        let stations = StationRecipes::load(&root, &items, &overlay, &context);
+        let stations = StationRecipes::load(&root, &items, &overlay, &context).unwrap();
         let e = sample();
         let mut base = ItemStack::new("minecraft:stick", 2);
         base.data_mut()
@@ -2259,11 +2267,23 @@ mod tests {
         assert_eq!(menu.slot(1).unwrap().count, 1);
         assert_eq!(menu.slot(2).unwrap().count, 1);
         assert_eq!(menu.crafted[0].0, "test:upgrade");
-        for result in [
-            serde_json::json!({"id":"minecraft:emerald","count":0}),
-            serde_json::json!({"id":"minecraft:emerald","count":100}),
-            serde_json::json!({"id":"minecraft:diamond_sword","count":2}),
-            serde_json::json!({"id":"minecraft:emerald","components":{"minecraft:max_damage":10}}),
+        for (result, malformed) in [
+            (
+                serde_json::json!({"id":"minecraft:emerald","count":0}),
+                true,
+            ),
+            (
+                serde_json::json!({"id":"minecraft:emerald","count":100}),
+                true,
+            ),
+            (
+                serde_json::json!({"id":"minecraft:diamond_sword","count":2}),
+                false,
+            ),
+            (
+                serde_json::json!({"id":"minecraft:emerald","components":{"minecraft:max_damage":10}}),
+                false,
+            ),
         ] {
             let mut invalid = recipe.clone();
             invalid["result"] = result;
@@ -2271,13 +2291,24 @@ mod tests {
                 "recipe/test:invalid".to_owned(),
                 vec![serde_json::to_vec(&invalid).unwrap()],
             )];
-            let stations = StationRecipes::load(&root, &items, &PackOverlay::new(&files), &context);
-            assert!(
-                stations
-                    .smithing_result(ctx, &e, None, menu.slot(1), menu.slot(2))
-                    .is_none(),
-                "{invalid}"
-            );
+            let candidate =
+                StationRecipes::load(&root, &items, &PackOverlay::new(&files), &context);
+            if malformed {
+                let error = candidate.err().unwrap().to_string();
+                assert!(error.contains("data/test/recipe/invalid.json"), "{error}");
+                assert!(
+                    error.contains("invalid ingredients or required fields"),
+                    "{error}"
+                );
+            } else {
+                assert!(
+                    candidate
+                        .unwrap()
+                        .smithing_result(ctx, &e, None, menu.slot(1), menu.slot(2))
+                        .is_none(),
+                    "{invalid}"
+                );
+            }
         }
         for key in ["template", "base", "addition"] {
             let mut invalid = recipe.clone();
@@ -2286,10 +2317,14 @@ mod tests {
                 "recipe/test:invalid".to_owned(),
                 vec![serde_json::to_vec(&invalid).unwrap()],
             )];
-            let stations = StationRecipes::load(&root, &items, &PackOverlay::new(&files), &context);
+            let error = StationRecipes::load(&root, &items, &PackOverlay::new(&files), &context)
+                .err()
+                .unwrap()
+                .to_string();
+            assert!(error.contains("data/test/recipe/invalid.json"), "{error}");
             assert!(
-                stations.smithing.is_empty(),
-                "malformed {key} must not become optional"
+                error.contains("invalid ingredients or required fields"),
+                "{error}"
             );
         }
         fs::remove_dir_all(root).unwrap();
@@ -2331,7 +2366,8 @@ mod tests {
             &items,
             &PackOverlay::NONE,
             &crate::test_resources::server_load(),
-        );
+        )
+        .unwrap();
         assert_eq!(recipes.smithing.len(), 1);
         let out = recipes
             .smithing_result(
@@ -2376,7 +2412,8 @@ mod tests {
             &sample_items(),
             &PackOverlay::NONE,
             &crate::test_resources::server_load(),
-        );
+        )
+        .unwrap();
         let _ = fs::remove_dir_all(&root);
         let listed = recipes.stonecutter(
             crate::test_resources::server_loop_context(),
@@ -2410,7 +2447,8 @@ mod tests {
             &sample_items(),
             &PackOverlay::new(&packs),
             &crate::test_resources::server_load(),
-        );
+        )
+        .unwrap();
         let _ = fs::remove_dir_all(&root);
         let listed: Vec<_> = recipes
             .stonecutter(

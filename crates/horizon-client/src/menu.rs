@@ -3378,7 +3378,8 @@ pub(crate) mod tests {
             &items,
             &PackOverlay::NONE,
             &crate::test_resources::server_load(),
-        );
+        )
+        .unwrap();
         let enchantments = crate::enchant::Enchantments::default();
         let names = crate::creative::Names::default();
         let env = Env {
@@ -3714,7 +3715,8 @@ pub(crate) mod tests {
                     &PackOverlay::NONE,
                     &defaults,
                     &crate::test_resources::server_load(),
-                );
+                )
+                .unwrap();
                 assert_eq!(stations.brewing.is_reagent(&apple), added);
                 assert_eq!(
                     env.station_recipes

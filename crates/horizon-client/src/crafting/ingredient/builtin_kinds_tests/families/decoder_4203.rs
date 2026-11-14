@@ -87,11 +87,11 @@ fn attack_animation_codec_matches_recipes_and_rejects_malformed_siblings() {
             recipe(ingredient(json!({(ID):value}), false)),
         ));
     }
-    for (index, value) in invalid.iter().enumerate() {
-        sources.push((
-            format!("fixture:invalid_{index}"),
-            recipe(ingredient(json!({(ID):value}), false)),
-        ));
+    for value in &invalid {
+        super::decoder_contracts::assert_malformed_decoder_refuses_load(
+            &items,
+            json!({(ID):value}),
+        );
     }
     sources.extend([
         ("fixture:control".into(), recipe(json!("minecraft:apple"))),
@@ -134,20 +134,6 @@ fn attack_animation_codec_matches_recipes_and_rejects_malformed_siblings() {
         let different = if *kind == "stab" { "whack" } else { "stab" };
         assert!(
             !matches(&id, &stack(record(different, Tag::Int(*duration)))),
-            "{id}"
-        );
-    }
-    for index in 0..invalid.len() {
-        let id = format!("fixture:invalid_{index}");
-        assert!(
-            !recipes.crafting.iter().any(|(name, _)| name == &id),
-            "{id}"
-        );
-        assert!(
-            recipes
-                .by_type
-                .values()
-                .all(|entries| entries.iter().all(|entry| entry.id != id)),
             "{id}"
         );
     }

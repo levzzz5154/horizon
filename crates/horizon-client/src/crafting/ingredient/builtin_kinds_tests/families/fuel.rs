@@ -50,7 +50,7 @@ fn cooking_fuel_recipe_compiles_and_matches_decoded_live_and_prototype_values() 
             "result":{"id":"minecraft:diamond"}
         })
     };
-    let mut sources = vec![
+    let sources = vec![
         (
             "fixture:fuel_constant".into(),
             recipe(serde_json::json!({"burn_time":10.9,"speed_multiplier":2,"ignored":false})),
@@ -60,18 +60,18 @@ fn cooking_fuel_recipe_compiles_and_matches_decoded_live_and_prototype_values() 
             recipe(serde_json::json!({"burn_time":"fuel/test","speed_multiplier":":speed"})),
         ),
     ];
-    for (index, payload) in [
+    for payload in [
         serde_json::json!(10),
         serde_json::json!({"burn_time":10}),
         serde_json::json!({"speed_multiplier":2}),
         serde_json::json!({"burn_time":{},"speed_multiplier":2}),
         serde_json::json!({"burn_time":"Bad:key","speed_multiplier":2}),
         serde_json::json!({"burn_time":10,"speed_multiplier":[]}),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        sources.push((format!("fixture:bad_fuel_{index}"), recipe(payload)));
+    ] {
+        super::decoder_contracts::assert_malformed_decoder_refuses_load(
+            &items,
+            serde_json::json!({"minecraft:cooking_fuel":payload}),
+        );
     }
     let root = tempfile::tempdir().unwrap();
     let load = load();
@@ -202,7 +202,7 @@ fn brewing_fuel_codec_compiles_recipes_and_borrows_live_values() {
             "result":{"id":"minecraft:diamond","count":2}
         })
     };
-    let mut sources = vec![
+    let sources = vec![
         ("fixture:numeric".into(), recipe(numeric.clone())),
         ("fixture:reference".into(), recipe(reference.clone())),
     ];
@@ -220,7 +220,23 @@ fn brewing_fuel_codec_compiles_recipes_and_borrows_live_values() {
     {
         let invalid = ingredient_json(payload);
         assert!(Ingredient::parse(&invalid, &items).is_none());
-        sources.push((format!("fixture:invalid_{n}"), recipe(invalid)));
+        let mut candidate = sources.clone();
+        candidate.push((format!("fixture:invalid_{n}"), recipe(invalid)));
+        let error = crate::crafting::Recipes::from_sources(
+            root.path(),
+            &items,
+            &horizon_world::loot::PackOverlay::NONE,
+            candidate,
+            &load,
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(
+            error.contains(&format!("recipe/invalid_{n}.json")),
+            "{error}"
+        );
+        assert!(error.contains("minecraft:brewing_fuel"), "{error}");
     }
     let recipes = crate::crafting::Recipes::from_sources(
         root.path(),
@@ -425,7 +441,7 @@ fn compostable_layers_compile_real_recipes_and_match_borrowed_values() {
         serde_json::json!({"layers":"minecraft:a:b"}),
         serde_json::json!(2),
     ];
-    let mut sources = vec![
+    let sources = vec![
         ("fixture:constant".into(), recipe(constant_json)),
         ("fixture:reference".into(), recipe(reference_json)),
     ];
@@ -442,7 +458,23 @@ fn compostable_layers_compile_real_recipes_and_match_borrowed_values() {
                 .unwrap_err()
                 .starts_with("component minecraft:compostable:")
         );
-        sources.push((format!("fixture:invalid_{index}"), recipe(json)));
+        let mut candidate = sources.clone();
+        candidate.push((format!("fixture:invalid_{index}"), recipe(json)));
+        let error = crate::crafting::Recipes::from_sources(
+            root.path(),
+            &items,
+            &horizon_world::loot::PackOverlay::NONE,
+            candidate,
+            &load,
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(
+            error.contains(&format!("recipe/invalid_{index}.json")),
+            "{error}"
+        );
+        assert!(error.contains("minecraft:compostable"), "{error}");
     }
     assert!(
         horizon_command::item::decoded_component_value(
@@ -460,7 +492,7 @@ fn compostable_layers_compile_real_recipes_and_match_borrowed_values() {
         &load,
     )
     .unwrap();
-    assert_eq!(recipes.crafting.len(), 2, "malformed recipes are omitted");
+    assert_eq!(recipes.crafting.len(), 2);
     let mut candidate = ItemStack::new("minecraft:apple", 1);
     assert!(recipes.recipe_matches(&context, "fixture:constant", &[Some(candidate.clone())], 1));
     assert!(!recipes.recipe_matches(&context, "fixture:reference", &[Some(candidate.clone())], 1));
@@ -613,8 +645,8 @@ fn food_codec_compiles_recipes_and_matches_borrowed_values() {
         json!({"type":"minecraft:crafting_shaped","pattern":["A"],
             "key":{"A":ingredient(food)},"result":{"id":"minecraft:diamond"}})
     };
-    let mut sources = vec![("fixture:food".into(), recipe(payload.clone()))];
-    for (index, invalid) in [
+    let sources = vec![("fixture:food".into(), recipe(payload.clone()))];
+    for invalid in [
         json!(true),
         json!(false),
         json!(null),
@@ -629,14 +661,11 @@ fn food_codec_compiles_recipes_and_matches_borrowed_values() {
         json!({"nutrition":4,"saturation":"0"}),
         json!({"nutrition":4,"saturation":0,"can_always_eat":"false"}),
         json!([]),
-    ]
-    .into_iter()
-    .enumerate()
-    {
+    ] {
         let value = ingredient(invalid.clone());
         let error = components::validate_recipe_components(&value, &items).unwrap_err();
         assert!(error.contains("minecraft:food"), "{error}");
-        let reload = crate::crafting::Recipes::from_sources(
+        let refused = crate::crafting::Recipes::from_sources(
             &std::env::temp_dir(),
             &items,
             &PackOverlay::NONE,
@@ -646,12 +675,14 @@ fn food_codec_compiles_recipes_and_matches_borrowed_values() {
             ],
             &load,
         )
-        .unwrap();
-        assert_eq!(reload.crafting.len(), 1);
-        let grid = [Some(ItemStack::new("minecraft:apple", 1))];
-        assert!(reload.recipe_matches(&context, "fixture:food", &grid, 1));
-        assert!(reload.craft(&context, &grid, 1).is_some());
-        sources.push((format!("fixture:invalid_food_{index}"), recipe(invalid)));
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(
+            refused.contains("data/fixture/recipe/invalid.json"),
+            "{refused}"
+        );
+        assert!(refused.contains(&error), "{refused}");
     }
     for value in [Tag::End, Tag::Byte(0), Tag::List(vec![])] {
         let rule = IngredientRule::Components {

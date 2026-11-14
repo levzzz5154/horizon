@@ -258,6 +258,45 @@ pub struct BrewingRecipe {
     pub reagent: PotionIngredient,
     pub output: ItemStack,
 }
+impl BrewingRecipe {
+    /// Validate the fields the brewing table reads before a recipe generation
+    /// is published. One malformed known recipe refuses the whole load.
+    pub fn validate(value: &Value) -> Result<(), &'static str> {
+        let names = |value: &Value| {
+            value.is_string()
+                || value
+                    .as_array()
+                    .is_some_and(|values| values.iter().all(Value::is_string))
+        };
+        for key in ["input", "reagent"] {
+            let ingredient = &value[key];
+            if !names(&ingredient["item"]) {
+                return Err(match key {
+                    "input" => "input.item must be an item id or list of item ids",
+                    _ => "reagent.item must be an item id or list of item ids",
+                });
+            }
+            if let Some(contents) = ingredient.get("potion_contents")
+                && (!contents.is_object()
+                    || contents.get("potions").is_some_and(|value| !names(value)))
+            {
+                return Err("potion_contents.potions must be a potion id or list of potion ids");
+            }
+        }
+        let output = &value["output"];
+        if !output["id"].is_string() {
+            return Err("output.id must be an item id");
+        }
+        if output.get("count").is_some_and(|value| {
+            !value
+                .as_u64()
+                .is_some_and(|count| (1..=99).contains(&count))
+        }) {
+            return Err("output.count must be an integer in 1..=99");
+        }
+        Ok(())
+    }
+}
 pub struct Brewing {
     pub recipes: Vec<BrewingRecipe>,
     /// `RecipePropertySet.BREWING_REAGENTS`.
@@ -286,8 +325,14 @@ impl Brewing {
             if v["type"] != "minecraft:brewing" {
                 continue;
             }
+            if let Err(error) = BrewingRecipe::validate(&v) {
+                log::warn!("Horizon: brewing recipe {id} refused: {error}");
+                continue;
+            }
             let mut output = ItemStack::new(
-                v["output"]["id"].as_str().unwrap_or("minecraft:potion"),
+                v["output"]["id"]
+                    .as_str()
+                    .expect("validated brewing output"),
                 v["output"]["count"].as_u64().unwrap_or(1) as u32,
             );
             if let Some(potion) =
@@ -599,7 +644,7 @@ mod tests {
         std::fs::create_dir_all(root.join("data/minecraft/recipe/brewing")).unwrap();
         std::fs::write(
             root.join("data/minecraft/recipe/brewing/test.json"),
-            br#"{"type":"minecraft:brewing","output":{"id":"minecraft:emerald"}}"#,
+            br#"{"type":"minecraft:brewing","input":{"item":"minecraft:potion"},"reagent":{"item":"minecraft:nether_wart"},"output":{"id":"minecraft:emerald"}}"#,
         )
         .unwrap();
         let items = Items::for_tests(Default::default());

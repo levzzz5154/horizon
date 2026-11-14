@@ -62,8 +62,8 @@ pub struct Ingredient {
 }
 impl Ingredient {
     /// Reject malformed component patches before any part of a recipe is published.
-    pub fn validate_recipe(value: &Value, items: &Items, recipe: &str) -> bool {
-        components::validate_recipe(value, items, recipe)
+    pub fn validate_recipe(value: &Value, items: &Items) -> Result<(), String> {
+        components::validate_recipe(value, items)
     }
     /// Decode built-in rules and materialize display stacks at a load boundary.
     pub fn prepare_components(&mut self, items: &Items) -> Option<()> {
@@ -276,10 +276,7 @@ impl Ingredient {
             &resolved_items,
             &components::json_patch,
         );
-        let Some(walked) = walked else {
-            log::error!("recipes: invalid ingredient (unresolved tag or malformed input): {v}");
-            return None;
-        };
+        let walked = walked?;
         // A mod kind's empty answer is warned about at load, with its recipe file.
         if walked.order.is_empty() && walked.custom.is_none() {
             log::warn!(
