@@ -644,6 +644,9 @@ mod tests {
             ("minecraft:zombie_villager", 20),
         ] {
             let (mut server, mut client) = (fixture_mob(kind), fixture_mob(kind));
+            // Zombie villagers roll a random profession at construction; the
+            // fixture's wire registry only assigns an id to none.
+            server.extra.profession = Default::default();
             let mut entities = Entities::default();
             let mut trackers = [Tracker::default(), Tracker::default()];
             let mut state = EntityState::default();

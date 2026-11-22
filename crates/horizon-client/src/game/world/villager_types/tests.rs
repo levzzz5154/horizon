@@ -1,4 +1,5 @@
 use super::*;
+use horizon_assets::resource_source::{ResourceRoot, ResourceSource};
 use horizon_client::mobs::{
     MobEvent, Species, render, spawn_rules::Reason, villager_types::type_id,
 };
@@ -81,7 +82,7 @@ fn villager_type_selector_conflicts_and_tags() {
     );
 }
 
-fn outfit_resources(scratch: &Path) -> PathBuf {
+fn outfit_resources(scratch: &Path) -> ResourceRoot {
     let base = PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
     let module = scratch.join("module");
     for (sprite, rgba) in [(VILLAGER, [255, 0, 180, 255]), (ZOMBIE, [0, 220, 255, 255])] {
@@ -98,24 +99,31 @@ fn outfit_resources(scratch: &Path) -> PathBuf {
     }
     std::fs::write(module.join("horizon-mod.toml"), "id = 'outfit_check'\nname = 'Outfit fixture'\nversion = '1.0'\napi = '0.2'\nside = 'both'\ncapabilities = ['registries']\n").unwrap();
     let package = horizon_mod_package::Package::read(&module).unwrap();
-    let content = horizon_mod_package::Content::read(&module, &package.manifest).unwrap();
-    let root = scratch.join("resources");
+    let mods = [horizon_client::mod_content::ContentMod {
+        id: "outfit_check".into(),
+        content: horizon_mod_package::Content::read(&module, &package.manifest).unwrap(),
+        jars: vec![],
+    }];
+    let prepared = scratch.join("resources");
     horizon_client::mod_content::build(
         &base,
         Path::new(""),
-        &[horizon_client::mod_content::ContentMod {
-            id: "outfit_check".into(),
-            content,
-            jars: vec![],
-        }],
-        &root,
+        &mods,
+        &prepared,
         &horizon_mod_package::enabled::EnabledMods::new([(
             "outfit_check".into(),
             mod_api::Side::Both,
         )]),
     )
     .unwrap();
-    root
+    horizon_client::mod_content::resolved_resources(
+        &base,
+        prepared,
+        Path::new(""),
+        &mods,
+        scratch.join("cache"),
+    )
+    .unwrap()
 }
 
 #[test]
@@ -126,9 +134,8 @@ fn villager_type_outfits_spawn_birth_save_and_reload() {
     };
     let scratch = tempfile::tempdir().unwrap();
     let root = outfit_resources(scratch.path());
-    let source = horizon_assets::resource_source::ResourceSource::directory(root.clone());
-    let atlas =
-        horizon_client::hud::HudAtlas::build_over_with_image(&source, &source, false).unwrap();
+    let defaults = ResourceSource::directory(root.prepared().to_path_buf());
+    let atlas = horizon_client::hud::HudAtlas::build_over(root.source(), &defaults).unwrap();
     for (texture, rgba) in [(VILLAGER, [255, 0, 180, 255]), (ZOMBIE, [0, 220, 255, 255])] {
         let rect = atlas.sprites[texture];
         let x = ((rect.u0 + rect.u1) * 0.5 * atlas.width as f32) as u32;
@@ -140,7 +147,7 @@ fn villager_type_outfits_spawn_birth_save_and_reload() {
     mod_platform::testing::with_mods(
         vec![ModEntry::new("outfit_check", Box::new(OutfitCheck))].into(),
         || {
-            with_game_at(root, |game| {
+            with_game_at(root.prepared().to_path_buf(), |game| {
                 let mut request = WorldRequest::new(
                     "Outfit test",
                     Some("outfit"),

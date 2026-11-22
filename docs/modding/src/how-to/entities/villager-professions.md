@@ -116,6 +116,10 @@ From the mod directory, run
 against the matching Horizon build, then start that instance. In a world with
 commands enabled, use `/locate biome minecraft:meadow`, go to the meadow and
 spawn new villagers and zombie villagers with eggs or `/summon` without NBT.
+
+For a Wasm project instead, use `--template wasm`, package it with
+`cargo horizon-mod build --wasm`, and install the resulting `.hmod` on both sides.
+
 Start with strongly different clothing colors for the two species. Give two
 meadow villagers food and access to a spare bed: their child takes the biome
 or a parent's type. Save and quit, then reopen the world to check that these
