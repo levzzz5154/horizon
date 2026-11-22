@@ -380,10 +380,17 @@ mod tests {
         // Resource decoding can be shared; the two worlds' published snapshots cannot.
         second.data = first.data.clone();
         let mut desert = NeoForgeMobMaps::default();
-        desert.set_villager_types(BTreeMap::from([("minecraft:plains".into(), 1)]));
+        use crate::mobs::villager_types::VillagerType;
+        desert.set_villager_types(BTreeMap::from([(
+            "minecraft:plains".into(),
+            VillagerType::Vanilla(1),
+        )]));
         let desert = Arc::new(desert);
         let mut snow = NeoForgeMobMaps::default();
-        snow.set_villager_types(BTreeMap::from([("minecraft:plains".into(), 4)]));
+        snow.set_villager_types(BTreeMap::from([(
+            "minecraft:plains".into(),
+            VillagerType::Vanilla(4),
+        )]));
         let snow = Arc::new(snow);
         let mut removed = NeoForgeMobMaps::default();
         removed.set_villager_types(BTreeMap::new());

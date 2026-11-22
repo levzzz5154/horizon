@@ -58,6 +58,33 @@ pub fn install(table: &ResolvedProfessions, hats: &VillagerHats) {
     VISUALS.with(|cache| *cache.borrow_mut() = ProfessionVisuals::build(table, hats));
 }
 
+type TypeVisuals = std::collections::BTreeMap<String, [Cow<'static, str>; 2]>;
+thread_local! {
+    static TYPE_VISUALS: std::cell::RefCell<TypeVisuals> = Default::default();
+}
+
+pub fn install_types(registry: &crate::mobs::villager_types::Registry) {
+    let textures = registry
+        .outfits()
+        .map(|(id, names)| {
+            (
+                id.to_owned(),
+                names.map(|name| interned_impl(format_args!("{name}"), false)),
+            )
+        })
+        .collect();
+    TYPE_VISUALS.with(|cache| *cache.borrow_mut() = textures);
+}
+
+pub(super) fn type_texture(id: &str, zombie: bool) -> Option<Cow<'static, str>> {
+    TYPE_VISUALS.with(|cache| {
+        cache
+            .borrow()
+            .get(id)
+            .map(|names| names[usize::from(zombie)].clone())
+    })
+}
+
 fn slot(state: &ProfessionState) -> Option<usize> {
     match state {
         ProfessionState::Vanilla(i) => Some(usize::from(*i)),

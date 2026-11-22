@@ -3,7 +3,7 @@
 use crate::mob_level::MobLevel;
 use horizon_client::{
     items::{ItemStack, Items},
-    mobs::{MobType, MobWorld, Seen, spawning::BiomeFacts},
+    mobs::{MobType, MobWorld, Seen, villager_types::VillagerType},
     stations::StationData,
 };
 use horizon_core::{geometry::Vec3, position::BlockPos};
@@ -27,8 +27,8 @@ pub trait VillagerLevel: MobLevel {
     fn set_next_entity(&mut self, id: u32);
     /// The mod hooks for the mob at `from` having joined the level (`natural`: a natural spawn).
     fn mob_joined(&mut self, from: usize, natural: bool);
-    /// Biome facts at a position for `finalizeSpawn` and variant rules.
-    fn biome_facts(&self, x: i32, y: i32, z: i32) -> BiomeFacts;
+    /// The outfit mapped to the biome at this position.
+    fn biome_villager_type(&self, at: [i32; 3]) -> VillagerType;
     /// A mob of `kind` created without `finalizeSpawn`'s rolls: its id, unless it did not join.
     fn spawn_mob_raw(&mut self, kind: &str, at: [f64; 3], persistent: bool) -> Option<u32>;
     /// `Level.broadcastEntityEvent` of an event that draws particles about mob `id`.

@@ -15,9 +15,10 @@ use horizon_client::{
         data::MobData,
         finalize::{self, Attr, Ctx, FinalizeLevel, SpawnData, SpawnRegistries},
         gear,
-        render::{DYE_NAMES, VILLAGER_TYPES},
+        render::DYE_NAMES,
         spawn_rules::Reason,
         spawning::LocalDifficulty,
+        villager_types::type_id,
     },
 };
 use horizon_core::{
@@ -235,16 +236,12 @@ fn variant(m: &Mob, regs: &SpawnRegistries, v: &mut Vec<String>) {
         )),
         S::Slime | S::MagmaCube | S::SulfurCube => v.push(format!("size={}", m.extra.size.max(1))),
         S::Villager => v.push(format!(
-            "minecraft:{}/minecraft:{}/{}",
-            VILLAGER_TYPES[m.extra.variant as usize % 7],
+            "{}/minecraft:{}/{}",
+            type_id(m),
             horizon_client::mobs::villager::profession(m.extra.profession.index().unwrap_or(0)).id,
             m.extra.villager_level.max(1)
         )),
-        S::ZombieVillager => v.push(format!(
-            "minecraft:{}/{}",
-            VILLAGER_TYPES[m.extra.variant as usize % 7],
-            m.extra.villager_level.max(1)
-        )),
+        S::ZombieVillager => v.push(format!("{}/{}", type_id(m), m.extra.villager_level.max(1))),
         S::Phantom => v.push(format!("size={}", m.extra.size)),
         S::Turtle => v.push(format!(
             "home={}",

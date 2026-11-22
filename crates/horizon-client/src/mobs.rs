@@ -119,6 +119,7 @@ pub mod village_index;
 pub mod villager;
 pub mod villager_brain;
 pub mod villager_hats;
+pub mod villager_types;
 pub mod visibility;
 pub use visibility::mob_visibility;
 pub mod warden;
@@ -1042,6 +1043,8 @@ pub struct Extra {
     pub love_player: bool,
     /// Texture/model variant index (cat type, horse colour, rabbit type...).
     pub variant: u8,
+    /// Canonical non-vanilla villager outfit; `variant` is the plains fallback when present.
+    pub villager_type: Option<Arc<str>>,
     /// Secondary variant (horse markings, tropical fish pattern colours, panda hidden gene).
     pub variant2: u8,
     /// Villager or zombie-villager profession; no numeric mirror is stored.
@@ -2449,12 +2452,12 @@ pub enum MobEvent {
     },
     /// Two villagers make a baby (`VillagerMakeLove.tryToGiveBirth`): the
     /// parent has eaten and, with a bed for the child, rests; the partner
-    /// eats, and rests too if `child` holds the child's bed and type
-    /// (`None`: the biome's).
+    /// eats, and rests too if `child` holds the child's bed and the id of the
+    /// parent whose type it inherits (`None`: the biome's).
     VillagerBirth {
         parent: u32,
         partner: u32,
-        child: Option<([i32; 3], Option<u8>)>,
+        child: Option<([i32; 3], Option<u32>)>,
     },
     /// `WorkAtComposter.useWorkstation`: a farmer at its composter makes
     /// bread and composts seeds (the game applies it to the villager's

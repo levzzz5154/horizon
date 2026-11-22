@@ -533,6 +533,7 @@ mod tests {
             &horizon_world::loot::PackOverlay::NONE,
             |_| None,
             |_, _| true,
+            Default::default(),
         )
         .unwrap();
         let maps = DataMaps::default().with_builtins(builtin);

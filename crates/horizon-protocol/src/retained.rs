@@ -31,6 +31,11 @@ impl OwnedHeap for String {
         self.capacity()
     }
 }
+impl OwnedHeap for str {
+    fn owned_heap_bytes(&self) -> usize {
+        0 // A Box/Arc already charges all of the inline string bytes.
+    }
+}
 impl<T: OwnedHeap> OwnedHeap for [T] {
     fn owned_heap_bytes(&self) -> usize {
         self.iter()

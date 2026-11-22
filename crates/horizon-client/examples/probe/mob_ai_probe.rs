@@ -419,7 +419,7 @@ fn villager_events(
                     continue;
                 };
                 villager::ext_mut(&mut mobs[b]).eat_and_digest(items);
-                let Some((bed, variant)) = child else {
+                let Some((bed, inherited_from)) = child else {
                     continue;
                 };
                 mobs[b].extra.age = 6000;
@@ -429,7 +429,12 @@ fn villager_events(
                 let mut child = Mob::new(100_000 + index as u32, Arc::new(kind.clone()), p, 0.0);
                 child.persistent = true;
                 // The flat world is all plains (type 0).
-                child.extra.variant = variant.unwrap_or(0);
+                if let Some(id) = inherited_from {
+                    horizon_client::mobs::villager_types::VillagerType::of(
+                        &mobs[if id == partner { b } else { a }],
+                    )
+                    .apply(&mut child);
+                }
                 child.extra.profession = Default::default();
                 child.extra.age = -24000;
                 child.extra.bed = Some(bed);

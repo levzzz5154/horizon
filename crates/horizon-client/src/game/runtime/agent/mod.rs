@@ -14,7 +14,7 @@ use horizon_client::{
     Result,
     block_entity_anim::Ticker,
     items::ItemStack,
-    mobs::{Species, render::VILLAGER_TYPES},
+    mobs::{Species, villager_types::type_id},
     widgets,
 };
 use horizon_core::geometry::Vec3;
@@ -765,8 +765,9 @@ impl Game<'_> {
             // VillagerData as this game knows it: on a client, what the
             // server's synched data says.
             if matches!(m.species(), Species::Villager | Species::ZombieVillager) {
+                let id = type_id(m);
                 v["villager"] = json!({
-                    "type": VILLAGER_TYPES[m.extra.variant as usize % VILLAGER_TYPES.len()],
+                    "type": id.strip_prefix("minecraft:").unwrap_or(id),
                     "profession": horizon_client::mobs::villager::reported_profession(m),
                     "level": m.extra.villager_level,
                 });

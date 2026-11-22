@@ -1,7 +1,10 @@
 //! Immutable, per-world built-in data maps. File codecs run before installation;
 //! simulation readers use exact registry identities and never parse JSON or lock
 //! a process-global current world. The common store owns each generation.
-use crate::mobs::{Species, parrot, render::VILLAGER_TYPES, species};
+use crate::mobs::{
+    Species, parrot, species,
+    villager_types::{Registry, VillagerType, vanilla_id},
+};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, LazyLock};
@@ -164,12 +167,10 @@ pub fn decode_sound(value: &Value, known: impl Fn(&str) -> bool) -> Result<&'sta
         crate::mobs::entity_sounds::intern_full_id(local_id(&id))
     })
 }
-pub fn decode_villager_type(value: &Value) -> Result<u8, String> {
+pub fn decode_villager_type(value: &Value, registry: &Registry) -> Result<VillagerType, String> {
     let id = resource(value, "villager_type")?;
-    VILLAGER_TYPES
-        .iter()
-        .position(|name| id == full_id(name))
-        .map(|i| i as u8)
+    registry
+        .resolve(&id)
         .ok_or_else(|| format!("unknown villager type {id}"))
 }
 pub fn decode_gift(value: &Value) -> Result<String, String> {
@@ -250,10 +251,7 @@ pub fn vanilla_layer(kind: Kind) -> BTreeMap<String, Value> {
             .collect(),
         Kind::VillagerTypes => crate::mobs::finalize::BIOME_VILLAGER_TYPES
             .iter()
-            .map(|(biome, t)| {
-                let kind = VILLAGER_TYPES[*t as usize];
-                (full_id(biome), json!({ "villager_type": full_id(kind) }))
-            })
+            .map(|(biome, t)| (full_id(biome), json!({ "villager_type": vanilla_id(*t) })))
             .collect(),
         Kind::RaidHeroGifts => GIFT_PROFESSIONS
             .iter()
@@ -285,7 +283,8 @@ pub fn vanilla_layer(kind: Kind) -> BTreeMap<String, Value> {
 pub struct NeoForgeMobMaps {
     villager_distances: Option<HashMap<String, f32>>,
     parrot_imitations: Option<ParrotImitations>,
-    villager_types: Option<HashMap<String, u8>>,
+    villager_types: Option<HashMap<String, VillagerType>>,
+    pub villager_type_registry: Arc<Registry>,
     hero_gifts: Option<HashMap<String, String>>,
     vibration_frequencies: Option<HashMap<String, i32>>,
     villager_compostables: Option<HashMap<String, bool>>,
@@ -318,6 +317,13 @@ static VANILLA_IMITATIONS: LazyLock<HashMap<String, &'static str>> = LazyLock::n
 });
 static VANILLA: LazyLock<Arc<NeoForgeMobMaps>> = LazyLock::new(Default::default);
 impl NeoForgeMobMaps {
+    pub fn with_villager_type_registry(villager_type_registry: Arc<Registry>) -> Self {
+        Self {
+            villager_type_registry,
+            ..Self::default()
+        }
+    }
+
     /// Immutable no-file snapshot, never replaced by another world's load.
     pub fn vanilla() -> &'static Arc<Self> {
         &VANILLA
@@ -345,7 +351,7 @@ impl NeoForgeMobMaps {
             .collect();
         self.parrot_imitations = Some(ParrotImitations { by_id, sounds });
     }
-    pub fn set_villager_types(&mut self, values: BTreeMap<String, u8>) {
+    pub fn set_villager_types(&mut self, values: BTreeMap<String, VillagerType>) {
         self.villager_types = Some(keyed(values));
     }
     pub fn set_gifts(&mut self, values: BTreeMap<String, String>) {
@@ -382,10 +388,13 @@ impl NeoForgeMobMaps {
     pub fn parrot_sounds(&self) -> Option<&[&'static str]> {
         self.parrot_imitations.as_ref().map(|p| p.sounds.as_slice())
     }
-    pub fn villager_type(&self, biome: &str) -> u8 {
+    pub fn villager_type(&self, biome: &str) -> VillagerType {
         match &self.villager_types {
-            Some(types) => types.get(local_id(biome)).copied().unwrap_or(0),
-            None => crate::mobs::finalize::villager_type(biome),
+            Some(types) => types
+                .get(local_id(biome))
+                .cloned()
+                .unwrap_or(VillagerType::Vanilla(0)),
+            None => VillagerType::Vanilla(crate::mobs::finalize::villager_type(biome)),
         }
     }
     pub fn hero_gift(&self, profession: &str) -> Option<String> {

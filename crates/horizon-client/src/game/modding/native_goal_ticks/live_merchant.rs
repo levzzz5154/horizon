@@ -1,6 +1,6 @@
 //! Merchant handles for villagers temporarily lent to an AI tick.
 use super::GoalCx;
-use crate::mobs::{Mob, Species, render::VILLAGER_TYPES};
+use crate::mobs::{Mob, Species, villager_types::type_id};
 use mod_api::{MerchantOffer, MerchantRef, PlayerRef};
 
 impl GoalCx<'_, '_> {
@@ -38,10 +38,7 @@ impl GoalCx<'_, '_> {
 
     pub(super) fn r_merchant_villager_type(&self, merchant: MerchantRef) -> Option<String> {
         let mob = self.lent_merchant(merchant)?;
-        (mob.species() == Species::Villager).then(|| {
-            let name = VILLAGER_TYPES[mob.extra.variant as usize % VILLAGER_TYPES.len()];
-            format!("minecraft:{name}")
-        })
+        (mob.species() == Species::Villager).then(|| type_id(mob).to_owned())
     }
 
     pub(super) fn r_merchant_xp(&self, merchant: MerchantRef) -> Option<i32> {

@@ -2,19 +2,10 @@
 use super::{Game, commands::Target};
 use horizon_client::{
     merchant::{MerchantOffer, Trader},
-    mobs::{Species, render::VILLAGER_TYPES, villager},
+    mobs::{Species, villager, villager_types::type_id},
 };
 use horizon_core::identifier::Identifier;
 use mod_api::{EntityRef, MerchantRef, PlayerRef};
-
-/// The index of a `minecraft:` registry id in a table of bare names.
-fn registry_index(id: &str, names: &[&str]) -> Option<u8> {
-    let id = Identifier::parse(id).ok()?;
-    if id.namespace() != "minecraft" {
-        return None;
-    }
-    names.iter().position(|n| *n == id.path()).map(|i| i as u8)
-}
 
 impl Game<'_> {
     /// An item stack a trade can hold: a nonempty stack of an item the game
@@ -294,8 +285,7 @@ impl Game<'_> {
     /// `VillagerData.type`, a registry id (`minecraft:plains`).
     pub(super) fn merchant_villager_type(&self, merchant: MerchantRef) -> Option<String> {
         let mob = &self.mobs[self.native_villager_index(merchant)?];
-        let name = VILLAGER_TYPES[mob.extra.variant as usize % VILLAGER_TYPES.len()];
-        Some(format!("minecraft:{name}"))
+        Some(type_id(mob).to_owned())
     }
 
     /// `VillagerData.withType`: also the type a trading guest's session
@@ -305,19 +295,19 @@ impl Game<'_> {
         let Some(index) = self.native_villager_index(merchant) else {
             return false;
         };
-        let Some(kind) = registry_index(kind, &VILLAGER_TYPES) else {
+        let Some(kind) = self.mob_maps().villager_type_registry.resolve(kind) else {
             return false;
         };
         let id = self.mobs[index].id;
         if let Some(conn) = self.lan_trade_conn(id) {
-            let variant = format!("minecraft:{}", VILLAGER_TYPES[kind as usize]);
+            let variant = kind.id().to_owned();
             if !self.lan_trade_edit(conn, |session| session.variant = variant) {
                 return false;
             }
         } else if self.mobs[index].extra.flag2 {
             return false;
         }
-        self.mobs[index].extra.variant = kind;
+        kind.apply(&mut self.mobs[index]);
         true
     }
 

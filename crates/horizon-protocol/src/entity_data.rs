@@ -9,6 +9,7 @@ use crate::{
     item::{Slot, Stack, Template},
 };
 use horizon_core::nbt::Tag;
+use std::sync::Arc;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
@@ -29,6 +30,8 @@ pub enum Value {
     Id(i32),
     /// Several VarInts (VillagerData).
     Ids(Vec<i32>),
+    /// A named outfit override at [`HORIZON_VILLAGER_TYPE`]; `None` clears it.
+    VillagerType(Option<Arc<str>>),
     /// A particle choice: the `minecraft:particle_type` id plus its data.
     /// Rendered nowhere (the client spawns no world particles yet); decoded
     /// so the rest of an entry list survives a particle slot.
@@ -552,6 +555,7 @@ fn write_value(kind: i32, v: &Value, w: &mut Writer) {
         Value::Long(l) => w.varlong(*l),
         Value::Float(f) => w.f32(*f),
         Value::String(s) => w.string(s),
+        Value::VillagerType(name) => w.string(name.as_deref().unwrap_or_default()),
         Value::Text(t) => w.nbt(t),
         Value::OptText(t) => {
             w.bool(t.is_some());
@@ -613,6 +617,19 @@ impl Codec<Vec<(u8, i32, Value)>> for EntityData {
                 continue;
             }
             let kind = ids::entity_data_serializer(wire_kind);
+            if index == HORIZON_VILLAGER_TYPE && kind == serializer::STRING {
+                // Resource identifiers use only ASCII, so the regular STRING limit
+                // also bounds the number of bytes here.
+                let len = r.count(32767)?;
+                let name = std::str::from_utf8(r.bytes(len)?)
+                    .map_err(|_| crate::Error::new("villager type is not UTF-8"))?;
+                out.push((
+                    index,
+                    kind,
+                    Value::VillagerType((!name.is_empty()).then(|| Arc::from(name))),
+                ));
+                continue;
+            }
             match read_value(kind, r)? {
                 Some(v) => out.push((index, kind, v)),
                 None => {
@@ -642,6 +659,11 @@ impl Codec<Vec<(u8, i32, Value)>> for EntityData {
 
 /// ItemEntity.DATA_ITEM (after the eight Entity data entries).
 pub const ITEM_ENTITY_ITEM: u8 = 8;
+
+/// Horizon-only STRING entry carrying a villager or zombie villager's custom outfit
+/// name. An empty string drops the override; the normal VillagerData still carries a
+/// vanilla type. The tracker must omit this entry for clients that are not Horizon.
+pub const HORIZON_VILLAGER_TYPE: u8 = 254;
 
 // Generated retained-allocation traversals; regenerate with protocol-retained-gen.
 impl crate::retained::OwnedHeap for Value {
@@ -690,6 +712,9 @@ impl crate::retained::OwnedHeap for Value {
                 0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
             }
             Self::Ids(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::VillagerType(field_0) => {
                 0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
             }
             Self::Particle(field_0) => {

@@ -9,7 +9,7 @@ use horizon_client::items::ItemStack;
 use horizon_client::{
     gossip::{self, GossipType},
     items::Items,
-    mobs::{Mob, MobType, MobWorld, Seen, spawning::BiomeFacts, villager, villager_brain},
+    mobs::{Mob, MobType, MobWorld, Seen, villager, villager_brain, villager_types::VillagerType},
     stations::StationData,
 };
 use horizon_core::geometry::Vec3;
@@ -96,7 +96,7 @@ impl Game<'_> {
         &mut self,
         parent: u32,
         partner: u32,
-        child: Option<([i32; 3], Option<u8>)>,
+        child: Option<([i32; 3], Option<u32>)>,
     ) {
         horizon_gameplay::villagers::villager_birth(self, parent, partner, child);
     }
@@ -322,8 +322,11 @@ impl VillagerLevel for Game<'_> {
     fn mob_joined(&mut self, from: usize, natural: bool) {
         self.native_mobs_joined(from, natural);
     }
-    fn biome_facts(&self, x: i32, y: i32, z: i32) -> BiomeFacts {
-        Game::biome_facts(self, x, y, z)
+    fn biome_villager_type(&self, at: [i32; 3]) -> VillagerType {
+        let biome = self
+            .zoomed_biome_id(at)
+            .map_or("minecraft:plains", |id| world_biomes!(self).name(id));
+        self.mob_maps().villager_type(biome)
     }
     fn spawn_mob_raw(&mut self, kind: &str, at: [f64; 3], persistent: bool) -> Option<u32> {
         Game::spawn_mob_raw(self, kind, at, persistent)
@@ -538,6 +541,7 @@ mod birth_tests {
         // The brain has already eaten, selected BED and aged the initiating
         // parent before emitting VillagerBirth; the Game owns the other half.
         game.mobs[0].extra.age = 6000;
+        game.mobs[0].extra.variant = 2;
         game.native_joins_skip();
         game.audio.capture = Some(Vec::new());
         game.lan_entity_events.clear();
@@ -548,7 +552,7 @@ mod birth_tests {
         game.handle_mob_events(vec![MobEvent::VillagerBirth {
             parent,
             partner,
-            child: Some((BED, Some(2))),
+            child: Some((BED, Some(parent))),
         }])
         .unwrap();
         for id in [parent, partner] {

@@ -642,7 +642,6 @@ pub(super) fn mob_meta_sync(
         }
         // Villager.DATA_VILLAGER_DATA and ZombieVillager's (after Zombie's three).
         "minecraft:villager" | "minecraft:zombie_villager" => {
-            use horizon_client::mobs::render::VILLAGER_TYPES;
             if kind == "minecraft:villager" {
                 unhappy_counter(m, meta, defaults);
             } else {
@@ -652,11 +651,15 @@ pub(super) fn mob_meta_sync(
                 }
                 defaults.push((19, serializer::BOOLEAN, Value::Bool(false)));
             }
-            let villager_type = VILLAGER_TYPES[e.variant as usize % VILLAGER_TYPES.len()];
+            let villager_type = if e.villager_type.is_some() {
+                "minecraft:plains"
+            } else {
+                horizon_client::mobs::villager_types::type_id(m)
+            };
             let profession =
                 horizon_client::mobs::villager::profession_id(e.profession.index().unwrap_or(0));
             if let (Some(t), Some(p)) = (
-                id("minecraft:villager_type", villager_type),
+                sync.id("minecraft:villager_type", villager_type),
                 id("minecraft:villager_profession", profession),
             ) {
                 let index = if kind == "minecraft:villager" { 19 } else { 20 };
@@ -667,6 +670,19 @@ pub(super) fn mob_meta_sync(
                     Value::Ids(vec![t, p, level]),
                 ));
             }
+            use horizon_protocol::entity_data::HORIZON_VILLAGER_TYPE;
+            if let Some(name) = &e.villager_type {
+                meta.push((
+                    HORIZON_VILLAGER_TYPE,
+                    serializer::STRING,
+                    Value::VillagerType(Some(name.clone())),
+                ));
+            }
+            defaults.push((
+                HORIZON_VILLAGER_TYPE,
+                serializer::STRING,
+                Value::VillagerType(None),
+            ));
         }
         // Phantom.ID_SIZE (after Mob's flags).
         "minecraft:phantom" => {

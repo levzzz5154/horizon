@@ -80,6 +80,11 @@ pub(super) struct ModsState {
         Arc<std::sync::OnceLock<Result<crate::game::load_conditions::ConditionTable, String>>>,
     pub(super) profession_declarations:
         Arc<std::sync::OnceLock<Vec<(String, mod_api::ProfessionDefinition)>>>,
+    pub(super) villager_type_declarations:
+        Arc<std::sync::OnceLock<Vec<(String, mod_api::VillagerTypeDefinition)>>>,
+    pub(super) villager_types: Arc<
+        std::sync::OnceLock<Result<Arc<horizon_client::mobs::villager_types::Registry>, String>>,
+    >,
     /// Saved switches gate the first data inventory while registration keeps
     /// its existing startup ordering. Runtime dispatch owns later switches.
     pub(super) code_switches: Option<Arc<CodeSwitches>>,

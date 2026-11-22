@@ -15,6 +15,7 @@ enum LocalRegistry<'a> {
     Loot(&'a horizon_client::items::Items),
     Recipes(&'a horizon_client::crafting::Recipes),
     Professions(&'a horizon_client::mobs::villager::ResolvedProfessions),
+    VillagerTypes(&'a horizon_client::mobs::villager_types::Registry),
 }
 impl LocalRegistry<'_> {
     fn contains(&self, id: &str) -> bool {
@@ -26,6 +27,7 @@ impl LocalRegistry<'_> {
             Self::HashJson(table) => table.contains_key(id),
             Self::Loot(table) => table.has_loot_table(id),
             Self::Professions(table) => table.registry_contains(id),
+            Self::VillagerTypes(table) => table.contains(id),
             // RecipeSnapshot is the accepted recipe table, including custom recipe types.
             // Unlike the other owners it has no global name index.
             Self::Recipes(table) => table
@@ -47,6 +49,7 @@ impl LocalRegistry<'_> {
             Self::HashJson(table) => table.keys().map(String::as_str).collect(),
             Self::Loot(table) => table.loot_table_ids().collect(),
             Self::Professions(table) => table.registry_ids().collect(),
+            Self::VillagerTypes(table) => table.ids().collect(),
             Self::Recipes(table) => table
                 .by_type
                 .values()
@@ -85,6 +88,14 @@ impl Game<'_> {
             "minecraft:villager_trade" => LocalRegistry::HashJson(&self.stations().trades.trades),
             "minecraft:villager_profession" => {
                 LocalRegistry::Professions(&self.stations().professions)
+            }
+            horizon_client::mobs::villager_types::REGISTRY_ID => {
+                let registry = if self.remote.is_some() {
+                    self.declared_villager_types().ok()?
+                } else {
+                    &self.mob_maps().villager_type_registry
+                };
+                LocalRegistry::VillagerTypes(registry)
             }
             _ => LocalRegistry::HashJson(self.context_registry(registry)?),
         })

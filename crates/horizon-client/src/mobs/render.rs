@@ -175,9 +175,16 @@ pub fn jeb_wool_rgb(age: f32) -> u32 {
     };
     mix(16) | mix(8) | mix(0)
 }
-pub const VILLAGER_TYPES: [&str; 7] = [
-    "plains", "desert", "jungle", "savanna", "snow", "swamp", "taiga",
-];
+macro_rules! vanilla_villager_types {
+    ($($name:literal),+ $(,)?) => {
+        pub const VILLAGER_TYPES: [&str; 7] = [$($name),+];
+        pub(super) const VILLAGER_TYPE_IDS: [&str; VILLAGER_TYPES.len()] =
+            [$(concat!("minecraft:", $name)),+];
+    };
+}
+vanilla_villager_types!(
+    "plains", "desert", "jungle", "savanna", "snow", "swamp", "taiga"
+);
 fn baby_or<'a>(
     m: &Mob,
     adult: impl Into<Cow<'a, str>>,
@@ -916,13 +923,13 @@ pub fn layers(m: &Mob, age: f32, worn: &WornArmor) -> Vec<Layer> {
             };
             // VillagerProfessionLayer: a baby's type texture is in `baby/`.
             let group = if m.is_baby() { "baby" } else { "type" };
-            push(
-                &mut v,
-                model.clone(),
-                interned(format_args!("{folder}/{group}/{t}")),
-                white,
-                false,
-            );
+            let texture = m
+                .extra
+                .villager_type
+                .as_deref()
+                .and_then(|id| villager_client::type_texture(id, m.species() == S::ZombieVillager))
+                .unwrap_or_else(|| interned(format_args!("{folder}/{group}/{t}")));
+            push(&mut v, model.clone(), texture, white, false);
             let nitwit = m.extra.profession.index() == Some(11);
             if !m.is_baby()
                 && let Some(texture) = villager_client::texture(
@@ -2301,6 +2308,7 @@ fn render_visible(
         // VillagerProfessionLayer: the type layer under a profession's full hat draws on
         // `noHatModel`, a model of its own, the others on the parent model.
         let type_hat_shown = if matches!(m.species(), Species::Villager | Species::ZombieVillager)
+            && m.extra.villager_type.is_none()
             && let Some((folder, _variant)) = layer
                 .texture
                 .split_once("/type/")

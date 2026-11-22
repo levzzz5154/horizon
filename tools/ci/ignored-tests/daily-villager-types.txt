@@ -1,0 +1,2 @@
+# Villager outfit and spawn behavior use the prepared game resources.
+horizon-client game::villager_types::tests::villager_type_outfits_spawn_birth_save_and_reload lib daily game-boot

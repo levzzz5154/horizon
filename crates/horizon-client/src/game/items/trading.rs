@@ -6,7 +6,10 @@ use super::{
     Game,
     stations::{INPUT, Kind, RESULT, Station},
 };
-use horizon_client::mobs::{Species, render::VILLAGER_TYPES, villager};
+use horizon_client::mobs::{
+    Species, villager,
+    villager_types::{VillagerType, type_id},
+};
 use horizon_client::{
     hud::HudBatch,
     items::ItemStack,
@@ -264,17 +267,15 @@ impl Game<'_> {
             .is_none_or(|t| t.unset);
         if unset {
             let m = &self.mobs[index];
-            let variant = format!(
-                "minecraft:{}",
-                VILLAGER_TYPES[m.extra.variant as usize % VILLAGER_TYPES.len()]
-            );
+            let kind = VillagerType::of(m);
+            let variant = kind.id();
             let origin = [m.position.x, m.position.y, m.position.z];
             let offers = if species == Species::WanderingTrader {
                 let mut v = Vec::new();
                 for set in ["buying", "uncommon", "common"] {
                     v.extend(self.offers_from_set(
                         &format!("minecraft:wandering_trader/{set}"),
-                        &variant,
+                        variant,
                         origin,
                     ));
                 }
@@ -284,7 +285,7 @@ impl Game<'_> {
                 let level = m.extra.villager_level.max(1);
                 let set = self.stations().trades.set_for(&profession, level);
                 if self.stations().trades.sets.contains_key(&set) {
-                    self.offers_from_set(&set, &variant, origin)
+                    self.offers_from_set(&set, variant, origin)
                 } else {
                     Vec::new()
                 }
@@ -362,10 +363,7 @@ impl Game<'_> {
         session.xp = trade.xp;
         session.level = level;
         session.profession = profession;
-        session.variant = format!(
-            "minecraft:{}",
-            VILLAGER_TYPES[m.extra.variant as usize % VILLAGER_TYPES.len()]
-        );
+        session.variant = type_id(m).to_owned();
         session.random.clone_from(&m.random);
         session.origin = [m.position.x, m.position.y, m.position.z];
         session.ambient_sound_time = m.ambient_timer;

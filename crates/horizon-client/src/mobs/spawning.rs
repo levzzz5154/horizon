@@ -124,24 +124,6 @@ pub fn bred_offspring(m: &mut Mob) {
     remove_modifier(m, Attr::FollowRange, "minecraft:random_spawn_bonus");
     m.extra.left_handed = false;
 }
-/// VillagerType.byBiome
-pub fn villager_type(b: &BiomeFacts) -> u8 {
-    if b.desert {
-        1
-    } else if b.jungle {
-        2
-    } else if b.snowy {
-        4
-    } else if b.swamp {
-        5
-    } else if b.climate == Climate::Warm {
-        3
-    } else if b.climate == Climate::Cold && b.temperature < 0.4 {
-        6
-    } else {
-        0
-    }
-}
 #[cfg(test)]
 #[path = "spawn_group_variant_tests.rs"]
 mod spawn_group_variant_tests;

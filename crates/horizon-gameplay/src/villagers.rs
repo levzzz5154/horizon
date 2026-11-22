@@ -5,7 +5,7 @@ use crate::{item_areas::ItemAreas, mob_level::MobLevel, villager_level::Villager
 use horizon_client::{
     gossip::{self, GossipType},
     items::{ItemStack, Items},
-    mobs::{Mob, Species, spawning, villager, villager_brain},
+    mobs::{Mob, Species, villager, villager_brain, villager_types::VillagerType},
 };
 use horizon_core::{geometry::Vec3, position::BlockPos};
 
@@ -193,7 +193,7 @@ pub fn villager_birth<L: VillagerLevel + ?Sized>(
     l: &mut L,
     parent: u32,
     partner: u32,
-    child: Option<([i32; 3], Option<u8>)>,
+    child: Option<([i32; 3], Option<u32>)>,
 ) {
     let (Some(ia), Some(ib)) = (l.villager_index(parent), l.villager_index(partner)) else {
         return;
@@ -201,7 +201,7 @@ pub fn villager_birth<L: VillagerLevel + ?Sized>(
     let p = l.parts();
     villager::ext_mut(&mut p.mobs[ib]).eat_and_digest(p.items);
     let from = p.mobs[ia].position;
-    let Some((bed, variant)) = child else {
+    let Some((bed, inherited_from)) = child else {
         // VillagerMakeLove: entity event 13 for the partner, then the parent.
         for i in [ib, ia] {
             let id = l.mobs()[i].id;
@@ -209,14 +209,12 @@ pub fn villager_birth<L: VillagerLevel + ?Sized>(
         }
         return;
     };
-    let variant = variant.unwrap_or_else(|| {
-        let facts = l.biome_facts(
-            from.x.floor() as i32,
-            from.y.floor() as i32,
-            from.z.floor() as i32,
-        );
-        spawning::villager_type(&facts)
-    });
+    // `Villager.getBreedOffspring`: resolve the biome at the initiating parent
+    // or copy the chosen parent's identity, not its vanilla fallback slot.
+    let variant = match inherited_from {
+        Some(id) => VillagerType::of(&p.mobs[if id == partner { ib } else { ia }]),
+        None => l.biome_villager_type(block_of(from)),
+    };
     l.parts().mobs[ib].extra.age = 6000;
     let Some(id) = l.spawn_mob_raw("minecraft:villager", [from.x, from.y, from.z], true) else {
         // `VillagerMakeLove.tryToGiveBirth` releases the child's bed when
@@ -226,7 +224,7 @@ pub fn villager_birth<L: VillagerLevel + ?Sized>(
         return;
     };
     if let Some(child) = l.parts().mobs.iter_mut().find(|m| m.id == id) {
-        child.extra.variant = variant;
+        variant.apply(child);
         child.extra.profession = Default::default();
         child.extra.age = -24000;
         child.extra.bed = Some(bed);

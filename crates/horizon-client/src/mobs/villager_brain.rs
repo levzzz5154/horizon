@@ -2919,15 +2919,15 @@ impl B {
                             // Villager.getBreedOffspring: half the biome's type,
                             // a quarter each parent's.
                             let roll = m.random.next_double();
-                            let variant = if roll < 0.5 {
+                            let inherited_from = if roll < 0.5 {
                                 None
                             } else if roll < 0.75 {
-                                Some(m.extra.variant)
+                                Some(m.id)
                             } else {
-                                Some(cx.w.seen(partner).map_or(m.extra.variant, |s| s.variant))
+                                Some(partner)
                             };
                             m.extra.age = 6000;
-                            (bed, variant)
+                            (bed, inherited_from)
                         });
                         cx.events.push(MobEvent::VillagerBirth {
                             parent: m.id,

@@ -307,7 +307,7 @@ fn carry_over(from: &Mob, to: &mut Mob) {
     }
 
     // VillagerData and the trades, experience and gossip.
-    to.extra.variant = from.extra.variant;
+    horizon_client::mobs::villager_types::VillagerType::of(from).apply(to);
     to.extra.profession = from.extra.profession.clone();
     to.extra.villager_level = from.extra.villager_level.max(1);
     to.extra.trade = from.extra.trade.clone();
@@ -358,7 +358,7 @@ mod tests {
 
     #[test]
     #[ignore = "daily"]
-    fn conversions_preserve_body_equipment() {
+    fn conversions_preserve_body_equipment_and_villager_type() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../.local/horizon-client")
             .join(horizon_core::VANILLA_VERSION);
@@ -372,6 +372,8 @@ mod tests {
             )
         };
         let mut source = mob(1, "minecraft:villager");
+        use horizon_client::mobs::villager_types::{set_type, type_id};
+        set_type(&mut source, "test:meadow");
         let mut armor = horizon_client::items::ItemStack::new("minecraft:wolf_armor", 1);
         armor.damage = 7;
         armor.data_mut().custom_name = Some(horizon_core::nbt::Tag::String("kept".into()));
@@ -381,11 +383,13 @@ mod tests {
         assert_eq!(zombie.extra.body_id(), Some("minecraft:wolf_armor"));
         assert_eq!(zombie.extra.body_damage(), 7);
         assert_eq!(zombie.extra.body_stack(), source.extra.body_stack());
+        assert_eq!(type_id(&zombie), "test:meadow");
         let mut cured = mob(3, "minecraft:villager");
         convert_to_villager(&zombie, &mut cured, true);
         assert_eq!(cured.extra.body_id(), Some("minecraft:wolf_armor"));
         assert_eq!(cured.extra.body_damage(), 7);
         assert_eq!(cured.extra.body_stack(), source.extra.body_stack());
+        assert_eq!(type_id(&cured), "test:meadow");
     }
 
     #[test]

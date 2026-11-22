@@ -1,5 +1,6 @@
 //! Build a complete immutable builtin generation alongside its common-store values.
 use super::Game;
+use horizon_client::mobs::villager_types::{Registry, VillagerType};
 use horizon_client::neoforge_mob_maps::{self as builtin, BuiltinMap, Kind, MAPS, NeoForgeMobMaps};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -46,8 +47,17 @@ impl Loader<'_, '_> {
         install: impl FnOnce(&mut NeoForgeMobMaps, BTreeMap<String, T>),
         encode: impl Fn(&T) -> horizon_core::nbt::Tag,
     ) -> Result<super::native_data_maps::MapValues, String> {
+        self.merge_seeded(BTreeMap::new(), codec, install, encode)
+    }
+    fn merge_seeded<T: Clone>(
+        &mut self,
+        seed: BTreeMap<String, T>,
+        codec: impl Fn(&Value) -> Result<T, String>,
+        install: impl FnOnce(&mut NeoForgeMobMaps, BTreeMap<String, T>),
+        encode: impl Fn(&T) -> horizon_core::nbt::Tag,
+    ) -> Result<super::native_data_maps::MapValues, String> {
         let definition = self.definition;
-        let base = builtin::vanilla_layer(definition.kind)
+        let mut base: BTreeMap<_, _> = builtin::vanilla_layer(definition.kind)
             .into_iter()
             .map(|(id, raw)| {
                 codec(&raw)
@@ -55,6 +65,8 @@ impl Loader<'_, '_> {
                     .map_err(|error| format!("{} vanilla seed: {error}", definition.id))
             })
             .collect::<Result<_, _>>()?;
+        let seeded = !seed.is_empty();
+        base.extend(seed);
         let (values, applied) = super::data_map_files::load(
             definition.id,
             definition.directory,
@@ -64,7 +76,7 @@ impl Loader<'_, '_> {
             |raw| codec(super::data_map_files::entry_value(raw)?).map(Some),
             |id| (self.known)(definition.registry, id),
         );
-        Ok(self.install_and_encode(values, applied, install, encode))
+        Ok(self.install_and_encode(values, applied || seeded, install, encode))
     }
     fn merge_number<T: Clone>(
         &mut self,
@@ -103,9 +115,10 @@ pub(super) fn load<'a>(
     overlay: &horizon_world::loot::PackOverlay<'_>,
     tags: impl Fn(&str) -> Option<&'a Tags>,
     known: impl Fn(&str, &str) -> bool,
+    (villager_types, mut biome_outfits): (Arc<Registry>, BTreeMap<String, VillagerType>),
 ) -> Result<Loaded, String> {
     let none = Tags::new();
-    let mut snapshot = NeoForgeMobMaps::default();
+    let mut snapshot = NeoForgeMobMaps::with_villager_type_registry(villager_types.clone());
     let mut values = Vec::with_capacity(MAPS.len());
     for definition in MAPS {
         let mut loader = Loader {
@@ -134,16 +147,11 @@ pub(super) fn load<'a>(
                     })
                 },
             ),
-            Kind::VillagerTypes => loader.merge(
-                builtin::decode_villager_type,
+            Kind::VillagerTypes => loader.merge_seeded(
+                std::mem::take(&mut biome_outfits),
+                |value| builtin::decode_villager_type(value, &villager_types),
                 NeoForgeMobMaps::set_villager_types,
-                |value| {
-                    let id = format!(
-                        "minecraft:{}",
-                        horizon_client::mobs::render::VILLAGER_TYPES[*value as usize]
-                    );
-                    horizon_core::nbt::Tag::String(id.as_str().into())
-                },
+                |value| horizon_core::nbt::Tag::String(value.id().into()),
             ),
             Kind::RaidHeroGifts => {
                 loader.merge(builtin::decode_gift, NeoForgeMobMaps::set_gifts, |value| {
@@ -200,6 +208,55 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn villager_type_map_resolves_registered_names_and_layers_over_selectors() {
+        let id = |name| mod_api::Identifier::parse(name).unwrap();
+        let registry = Arc::new(
+            Registry::prepare(&[(
+                "test".into(),
+                mod_api::VillagerTypeDefinition {
+                    key: id("test:meadow"),
+                    biomes: vec![],
+                    biome_tags: vec![],
+                    villager_texture: id("test:entity/villager/type/meadow"),
+                    zombie_villager_texture: id("test:entity/zombie_villager/type/meadow"),
+                },
+            )])
+            .unwrap(),
+        );
+        let meadow = registry.resolve("test:meadow").unwrap();
+        let seed = BTreeMap::from([("minecraft:plains".into(), meadow)]);
+        let files = vec![("data_maps/neoforge:worldgen/biome/villager_types".into(), vec![
+            br##"{"values":{"minecraft:plains":{"villager_type":"minecraft:desert"},"#test:mountain":{"villager_type":"test:meadow"}}}"##.to_vec(),
+        ])];
+        let tags = Tags::from([(
+            "test:mountain".into(),
+            HashSet::from(["minecraft:meadow".into()]),
+        )]);
+        let loaded = load(
+            &horizon_world::loot::PackOverlay {
+                files: &files,
+                ..horizon_world::loot::PackOverlay::NONE
+            },
+            |dir| (dir == "worldgen/biome").then_some(&tags),
+            |_, _| true,
+            (registry, seed),
+        )
+        .unwrap();
+        assert_eq!(
+            loaded.snapshot.villager_type("minecraft:plains").id(),
+            "minecraft:desert"
+        );
+        assert_eq!(
+            loaded.snapshot.villager_type("minecraft:meadow").id(),
+            "test:meadow"
+        );
+        assert_eq!(
+            loaded.snapshot.villager_type("minecraft:swamp").id(),
+            "minecraft:swamp"
+        );
+    }
+
+    #[test]
     fn invalid_values_refuse_replace_and_removals_before_unknown_target_filtering() {
         let files = vec![("data_maps/neoforge:entity_type/acceptable_villager_distances".into(), vec![
             serde_json::to_vec(&json!({"values": {"test:wraith": {"acceptable_villager_distance": 21}}})).unwrap(),
@@ -213,6 +270,7 @@ mod tests {
             },
             |_| None,
             |_, id| id.starts_with("minecraft:") || id == "test:wraith",
+            Default::default(),
         )
         .unwrap();
         assert_eq!(loaded.snapshot.villager_distance("test:wraith"), Some(21.0));
@@ -264,6 +322,7 @@ mod tests {
             },
             |_| None,
             |_, _| true,
+            Default::default(),
         )
         .unwrap();
         assert_eq!(
@@ -334,6 +393,7 @@ mod tests {
                 _ => None,
             },
             |_, id| id.starts_with("minecraft:") || matches!(id, "test:artisan" | "test:rustle"),
+            Default::default(),
         )
         .unwrap();
         assert_eq!(

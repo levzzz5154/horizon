@@ -62,3 +62,67 @@ its clients, with the mod declared for both sides. The mod-list handshake refuse
 missing or mismatched both-side mods; client-only mods do not take part in that
 comparison. Missing professions are not replaced with vanilla
 identities.
+
+## Add a biome-selected villager type
+
+A type selects a villager's clothing, independently of its profession and
+trades. In a [native mod](../../start/first-mod.md), implement
+`Hooks::register_villager_types` to declare the persistent ID, biome selectors,
+and separate villager and zombie-villager clothing textures. This hook is
+native-only, runs once per mod load, and does not allow world mutation.
+
+Create a project with `cargo horizon-mod new meadow_folk --template native`
+using an SDK that includes the hook. Set `side = "both"` in `horizon-mod.toml`
+and replace the template's `src/lib.rs` with:
+
+```rust,ignore
+use mod_api::{
+    Hooks, Identifier, RegisterVillagerTypesEvent, RegistrationContext, VillagerTypeDefinition,
+};
+
+#[derive(Default)]
+struct Mod;
+
+#[mod_api::horizon_mod]
+impl Hooks for Mod {
+    fn register_villager_types(
+        &self,
+        _: &RegistrationContext,
+        event: &mut RegisterVillagerTypesEvent<'_>,
+    ) {
+        let id = |value: &str| Identifier::parse(value).unwrap();
+        event.types.register(VillagerTypeDefinition {
+            key: id("meadow_folk:meadow"),
+            biomes: vec![id("minecraft:meadow")],
+            biome_tags: vec![],
+            villager_texture: id("meadow_folk:entity/villager/type/meadow"),
+            zombie_villager_texture: id("meadow_folk:entity/zombie_villager/type/meadow"),
+        });
+    }
+}
+```
+
+Use qualified IDs in `biomes` or `biome_tags`; tag IDs have no leading `#`.
+The type key must be unique and outside `minecraft:`. A biome cannot select
+two different custom types, even if the overlap comes from biome tags.
+
+Texture identifiers are relative to `textures/` and omit the `.png` extension.
+For this example, put the clothing PNGs at:
+
+- `assets/meadow_folk/textures/entity/villager/type/meadow.png`
+- `assets/meadow_folk/textures/entity/zombie_villager/type/meadow.png`
+
+From the mod directory, run
+`horizon-launcher native-build . --instance "My Instance" --trust-native-code`
+against the matching Horizon build, then start that instance. In a world with
+commands enabled, use `/locate biome minecraft:meadow`, go to the meadow and
+spawn new villagers and zombie villagers with eggs or `/summon` without NBT.
+Start with strongly different clothing colors for the two species. Give two
+meadow villagers food and access to a spare bed: their child takes the biome
+or a parent's type. Save and quit, then reopen the world to check that these
+villagers still wear their outfits. Fresh spawns in unselected biomes keep
+their vanilla outfits.
+
+For multiplayer, install the same mod on the server and Horizon clients.
+Accepted vanilla clients see the plains outfit for custom types; this does
+not change the saved type. This hook does not register hat visuals.

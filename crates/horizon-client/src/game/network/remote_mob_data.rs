@@ -550,6 +550,8 @@ mod tests {
             "minecraft:witch" => Species::Witch,
             "minecraft:ravager" => Species::Ravager,
             "minecraft:zombie" => Species::Zombie,
+            "minecraft:villager" => Species::Villager,
+            "minecraft:zombie_villager" => Species::ZombieVillager,
             "minecraft:enderman" => Species::Enderman,
             _ => panic!("unknown fixture species"),
         };
@@ -606,6 +608,132 @@ mod tests {
             passenger_attachments: Vec::new(),
         });
         Mob::new(1, kind, horizon_core::geometry::Vec3::ZERO, 0.0)
+    }
+
+    #[test]
+    fn named_villager_outfits_are_tracked_only_for_horizon_clients() {
+        use crate::game::villager_client::{receive, server_meta_sync};
+        use horizon_client::{
+            lan::{
+                data::SyncData,
+                entity::{Entities, EntityState, Riding, Tracker, Viewer},
+            },
+            mobs::{
+                villager::ResolvedProfessions,
+                villager_types::{set_type, type_id},
+            },
+        };
+        use horizon_protocol::{
+            buf::Reader, entity_data::HORIZON_VILLAGER_TYPE, packets::play::Clientbound,
+            registry::Ids,
+        };
+
+        let mut sync = SyncData::empty();
+        sync.builtin.registries.insert(
+            "minecraft:villager_type".into(),
+            Ids::from_names(vec!["minecraft:desert".into(), "minecraft:plains".into()]),
+        );
+        sync.builtin.registries.insert(
+            "minecraft:villager_profession".into(),
+            Ids::from_names(vec!["minecraft:none".into()]),
+        );
+        let professions = ResolvedProfessions::vanilla();
+        let chunks = [(0, 0)].into_iter().collect();
+        for (kind, index) in [
+            ("minecraft:villager", 19),
+            ("minecraft:zombie_villager", 20),
+        ] {
+            let (mut server, mut client) = (fixture_mob(kind), fixture_mob(kind));
+            let mut entities = Entities::default();
+            let mut trackers = [Tracker::default(), Tracker::default()];
+            let mut state = EntityState::default();
+            // Pairing, a level change that keeps the outfit, a rename with the
+            // same vanilla projection, removal of the override, and vanilla.
+            for (name, level, wire_type, extension) in [
+                ("test:marsh", 1, Some(1), Some("test:marsh")),
+                ("test:marsh", 2, Some(1), None),
+                ("test:ridge", 2, None, Some("test:ridge")),
+                ("minecraft:plains", 2, None, Some("")),
+                ("minecraft:desert", 2, Some(0), None),
+            ] {
+                set_type(&mut server, name);
+                server.extra.villager_level = level;
+                state.reset(1, 1, kind);
+                server_meta_sync(
+                    &server,
+                    &sync,
+                    Vec::new(),
+                    (None, 0),
+                    &mut state.meta,
+                    &mut state.defaults,
+                    &professions,
+                );
+                let mut out = [Vec::new(), Vec::new()];
+                let mut viewers: Vec<_> = trackers
+                    .iter_mut()
+                    .zip(&mut out)
+                    .enumerate()
+                    .map(|(i, (tracker, out))| Viewer {
+                        entity_id: 10 + i as i32,
+                        spectator: false,
+                        permission: 0,
+                        horizon: i == 0,
+                        moved: false,
+                        position: [0.0; 3],
+                        view_distance: 10,
+                        chunks: &chunks,
+                        sources: None,
+                        tracker,
+                        out,
+                        gone: None,
+                    })
+                    .collect();
+                entities.tick(&[&state], &Riding::default(), &mut viewers, |_| Some(100));
+                drop(viewers);
+                for (peer, bodies) in out.into_iter().enumerate() {
+                    let mut metadata = Vec::new();
+                    for body in bodies {
+                        let mut reader = Reader::new(&body);
+                        let id = reader.varint().unwrap();
+                        let packet = Clientbound::decode(id, reader.rest()).unwrap();
+                        if let Clientbound::SetEntityData(packet) = packet {
+                            if peer == 0 {
+                                receive(
+                                    &mut client,
+                                    &packet.values,
+                                    &sync.builtin,
+                                    10,
+                                    &professions,
+                                );
+                            }
+                            metadata.extend(packet.values);
+                        }
+                    }
+                    assert_eq!(
+                        metadata
+                            .iter()
+                            .find(|(_, kind, _)| *kind == s::VILLAGER_DATA),
+                        wire_type
+                            .map(|id| (index, s::VILLAGER_DATA, Value::Ids(vec![id, 0, level])))
+                            .as_ref()
+                    );
+                    assert_eq!(
+                        metadata
+                            .iter()
+                            .find(|(field, _, _)| *field == HORIZON_VILLAGER_TYPE),
+                        extension
+                            .filter(|_| peer == 0)
+                            .map(|name| {
+                                let name = (!name.is_empty()).then(|| name.into());
+                                (HORIZON_VILLAGER_TYPE, s::STRING, Value::VillagerType(name))
+                            })
+                            .as_ref()
+                    );
+                }
+                assert_eq!(type_id(&client), name);
+                assert_eq!(client.extra.villager_level, level);
+            }
+        }
     }
 
     #[test]

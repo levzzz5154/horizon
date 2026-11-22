@@ -441,6 +441,7 @@ impl Game<'_> {
                     .binary_search_by(|known| known.as_str().cmp(id))
                     .is_ok(),
             },
+            self.bind_villager_types(pack_tags.get("worldgen/biome"))?,
         )?;
         let data_maps = native_data_maps::DataMaps::load(&data_map_types, &overlay, &registries)
             .with_builtins(builtin)

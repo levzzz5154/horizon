@@ -6,23 +6,19 @@ use crate::{
 use horizon_core::nbt::Tag;
 /// `VillagerData`: type, profession and level.
 pub fn villager_data(m: &Mob) -> Tag {
-    use crate::mobs::render::VILLAGER_TYPES;
     Tag::compound([
-        (
-            "type",
-            string(&format!(
-                "minecraft:{}",
-                VILLAGER_TYPES[m.extra.variant as usize % VILLAGER_TYPES.len()]
-            )),
-        ),
+        ("type", string(crate::mobs::villager_types::type_id(m))),
         ("profession", string(&m.extra.profession.id())),
         ("level", Tag::Int(m.extra.villager_level.max(1))),
     ])
 }
 
-/// Decode a stored identity without consulting a process-global custom registry.
-/// The game resolves it against its owning world only after entity reconstruction.
+/// Decode stored identities without consulting a process-global custom registry.
+/// The game resolves the profession against its owning world after reconstruction.
 pub fn read_identity(m: &mut Mob, data: &Tag) {
+    if let Some(id) = text(data.get("type")) {
+        crate::mobs::villager_types::set_type(m, &id);
+    }
     m.extra.profession = text(data.get("profession"))
         .as_deref()
         .map(ProfessionState::from_id)

@@ -929,8 +929,7 @@ pub struct Viewer<'a> {
     /// Its player's permission level: players a native mod hid from lower
     /// levels are not tracked by it.
     pub permission: u8,
-    /// Its client is Horizon's (`Guest::is_horizon`): it may be sent a native
-    /// mod's particle.
+    /// Its client is Horizon's (`Guest::is_horizon`): it may receive Horizon-only data.
     pub horizon: bool,
     /// It accepted a move since the last tick (ChunkMap.move): every pair
     /// of it is checked again.
@@ -1025,41 +1024,48 @@ const SEND_APART_ENTITIES: usize = 400;
 const SEES: u8 = 1;
 const TRACKS: u8 = 2;
 
-/// Entity data naming a native mod's particle (`Particle::horizon_only`).
-fn names_mod_particle(packet: &play::Clientbound) -> bool {
-    let play::Clientbound::SetEntityData(data) = packet else {
-        return false;
-    };
-    (data.values.iter()).any(|(_, _, value)| {
-        matches!(value, Value::Particles(list) if list.iter().any(Particle::horizon_only))
+/// Synched entity data with no counterpart a vanilla client can decode.
+fn names_horizon_data(data: &SetEntityData) -> bool {
+    data.values.iter().any(|(_, _, value)| match value {
+        Value::VillagerType(_) => true,
+        Value::Particles(list) => list.iter().any(Particle::horizon_only),
+        _ => false,
     })
 }
 
-/// `packet` as a client that isn't Horizon's may read it: a particle list
-/// without the native mods' particles. The list still goes out, so a client
-/// shown the swirls that a mod's particle replaced loses them too.
-fn vanilla_body(packet: &play::Clientbound) -> Vec<u8> {
-    let play::Clientbound::SetEntityData(data) = packet else {
-        return packet.encode();
-    };
-    let mut values = data.values.clone();
-    for (_, _, value) in &mut values {
-        if let Value::Particles(list) = value {
-            list.retain(|p| !p.horizon_only());
-        }
-    }
-    play::Clientbound::SetEntityData(SetEntityData {
-        id: data.id,
-        values,
+/// Omit a Horizon-only outfit name. An effect particle list still goes out,
+/// so a vanilla client loses the swirls that a mod's particle replaced.
+fn vanilla_metadata(data: &SetEntityData) -> Option<super::Body> {
+    let values: Vec<_> = data
+        .values
+        .iter()
+        .filter_map(|(index, kind, value)| {
+            let value = match value {
+                Value::VillagerType(_) => return None,
+                Value::Particles(list) => {
+                    Value::Particles(list.iter().filter(|p| !p.horizon_only()).cloned().collect())
+                }
+                _ => value.clone(),
+            };
+            Some((*index, *kind, value))
+        })
+        .collect();
+    (!values.is_empty()).then(|| {
+        super::Body::shared(
+            play::Clientbound::SetEntityData(SetEntityData {
+                id: data.id,
+                values,
+            })
+            .encode(),
+        )
     })
-    .encode()
 }
 
 /// One entity's packets, encoded once for all the clients they go to.
 #[derive(Default)]
 struct Bodies {
     all: Vec<super::Body>,
-    /// What other clients get instead, when a native mod's particle is among them.
+    /// What vanilla clients get instead when the packets contain Horizon-only data.
     vanilla: Option<Vec<super::Body>>,
 }
 
@@ -1068,12 +1074,23 @@ impl Bodies {
         self.all.clear();
         self.all
             .extend(packets.iter().map(|p| super::Body::shared(p.encode())));
-        self.vanilla = (packets.iter().any(names_mod_particle)).then(|| {
-            packets
-                .iter()
-                .map(|p| super::Body::shared(vanilla_body(p)))
-                .collect()
-        });
+        self.vanilla = packets
+            .iter()
+            .any(
+                |p| matches!(p, play::Clientbound::SetEntityData(data) if names_horizon_data(data)),
+            )
+            .then(|| {
+                packets
+                    .iter()
+                    .zip(&self.all)
+                    .filter_map(|(packet, body)| match packet {
+                        play::Clientbound::SetEntityData(data) if names_horizon_data(data) => {
+                            vanilla_metadata(data)
+                        }
+                        _ => Some(body.clone()),
+                    })
+                    .collect()
+            });
     }
 
     fn of(packets: &[play::Clientbound]) -> Self {

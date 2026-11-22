@@ -1,22 +1,23 @@
-//! Villager registry indices shared by matching mod loads; no additional packet format.
-use horizon_client::mobs::render::VILLAGER_TYPES;
-use horizon_client::mobs::{Mob, Species, villager::ResolvedProfessions};
-use horizon_protocol::{entity_data::Value, registry::Builtin};
+//! Villager data: vanilla registry ids and Horizon's named outfit override.
+use horizon_client::mobs::{Mob, Species, villager::ResolvedProfessions, villager_types::set_type};
+use horizon_protocol::{
+    entity_data::{HORIZON_VILLAGER_TYPE, Value, serializer},
+    registry::Builtin,
+};
 /// VillagerData as the network sends it: the type and the profession by
 /// their built-in registry ids, then the level.
 pub(super) fn villager_data(m: &mut Mob, data: &[i32], builtin: &Builtin) {
     let &[kind, profession, level] = data else {
         return;
     };
-    let index = |registry: &str, id: i32, names: &[&str]| {
-        let name = builtin
-            .get(registry)?
-            .name(id)?
-            .strip_prefix("minecraft:")?;
-        names.iter().position(|n| *n == name).map(|i| i as u8)
-    };
-    if let Some(t) = index("minecraft:villager_type", kind, &VILLAGER_TYPES) {
-        m.extra.variant = t;
+    if let Some(name) = builtin
+        .get("minecraft:villager_type")
+        .and_then(|r| r.name(kind))
+        && (name != "minecraft:plains" || m.extra.villager_type.is_none())
+    {
+        // Plains is the vanilla projection of a named outfit. An explicit empty
+        // override, not a profession/level update, clears it on a Horizon client.
+        set_type(m, name);
     }
     if let Some(p) = builtin
         .get("minecraft:villager_profession")
@@ -43,7 +44,17 @@ pub(super) fn receive(
         Species::ZombieVillager => 20,
         _ => return sound,
     };
-    for (field, _, value) in values {
+    for (field, kind, value) in values {
+        if *field == HORIZON_VILLAGER_TYPE
+            && *kind == serializer::STRING
+            && let Value::VillagerType(name) = value
+        {
+            if let Some(name) = name {
+                set_type(m, name);
+            } else {
+                m.extra.villager_type = None;
+            }
+        }
         if *field == index
             && let Value::Ids(data) = value
             && let [_, profession, _] = data.as_slice()
@@ -158,6 +169,7 @@ pub(super) fn builtin_registries(root: &std::path::Path) -> Option<Arc<Builtin>>
 impl super::Game<'_> {
     pub(super) fn client_professions(&self) -> super::Result<Arc<ResolvedProfessions>> {
         use mod_api::__private::game::RegistrationContextNew;
+        self.install_client_villager_types()?;
         let declarations = self.mods.profession_declarations.get_or_init(|| {
             let mut registrar = mod_api::ProfessionDeclarations::default();
             Self::native_register_villager_professions(

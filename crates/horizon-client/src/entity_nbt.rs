@@ -4115,12 +4115,8 @@ fn put_memories(map: &mut Compound, m: &Mob) {
     );
 }
 fn read_villager(m: &mut Mob, tag: &Tag) {
-    use crate::{merchant::Trader, mobs::render::VILLAGER_TYPES};
+    use crate::merchant::Trader;
     if let Some(data) = tag.get("VillagerData") {
-        let name = |key| text(data.get(key)).map(|s| s.trim_start_matches("minecraft:").to_owned());
-        if let Some(t) = name("type").and_then(|t| VILLAGER_TYPES.iter().position(|v| *v == t)) {
-            m.extra.variant = t as u8;
-        }
         crate::mobs::villager::professions::save::read_identity(m, data);
         m.extra.villager_level = number(data.get("level"))
             .unwrap_or(1)
