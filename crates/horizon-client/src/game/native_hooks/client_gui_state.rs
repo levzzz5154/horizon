@@ -12,4 +12,13 @@ impl Game<'_> {
             id: view.id.to_owned(),
         })
     }
+
+    /// The live screen's identity, independent of render state or hook subscriptions.
+    pub(in crate::game) fn current_screen(&self) -> Option<mod_api::ScreenIdentity> {
+        let (id, menu) = self.current_screen_parts()?;
+        Some(mod_api::ScreenIdentity {
+            id: id.to_owned(),
+            menu: menu.map(str::to_owned),
+        })
+    }
 }
