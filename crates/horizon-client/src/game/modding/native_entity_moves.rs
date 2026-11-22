@@ -499,12 +499,15 @@ mod tests {
             }
         }
 
+        let directory = tempfile::tempdir().unwrap();
+        let world = directory.path().join("physical_move");
+
         with_client_game(|client| {
             client.settings.render_distance = 2;
             client.settings.simulation_distance = 2;
             client
                 .open_integrated(
-                    "physical_move",
+                    world.to_str().unwrap(),
                     Some("Physical movement"),
                     Some(1),
                     true,
