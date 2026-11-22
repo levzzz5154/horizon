@@ -14,7 +14,10 @@ const SHARED: &str = "horizon_registry_deps";
 
 fn sibling_link_args() -> Vec<String> {
     if cfg!(target_os = "linux") {
-        vec!["-Wl,--disable-new-dtags".into(), "-Wl,-rpath,$ORIGIN".into()]
+        vec![
+            "-Wl,--disable-new-dtags".into(),
+            "-Wl,-rpath,$ORIGIN".into(),
+        ]
     } else if cfg!(target_os = "macos") {
         vec!["-Wl,-rpath,@loader_path".into()]
     } else {
@@ -545,7 +548,9 @@ pub(super) fn compile(
         super::registry_inventory::read(rust, out)?;
         let linked = super::registry_lock::RegistryLock::parse(&super::read_lock(out)?)?;
         if !resolved.unchanged_with_added_local(linked, SHARED) {
-            return Err(tr("Sharing registry dependencies changed the pinned package graph").into());
+            return Err(
+                tr("Sharing registry dependencies changed the pinned package graph").into(),
+            );
         }
         bindings.insert(
             provider.clone(),
