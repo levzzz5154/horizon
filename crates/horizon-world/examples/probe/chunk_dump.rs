@@ -4,6 +4,8 @@
 //! With HORIZON_SCAN set, one rectangle lists the structure starts in it.
 //! HORIZON_DATAPACKS names a world's datapacks folder of folder packs, each
 //! enabled after vanilla in name order (tools/test_datapack_worldgen_parity.py).
+//! HORIZON_PRESET selects a world preset for noise generation (default
+//! minecraft:normal); HORIZON_FLAT still takes precedence.
 //! HORIZON_SAVED_STARTS names a JSON file of saved starts (`[{"id", "chunk":
 //! [x, z], "pieces": [...]}]`, jigsaw pieces as a save lists them) that take
 //! the place of the starts generation builds in their chunks.
@@ -148,14 +150,24 @@ fn canonical(tag: &Tag, out: &mut String) {
 
 /// HORIZON_DATAPACKS: a world's datapacks folder of folder packs, each enabled
 /// after vanilla in name order, as the oracle selects them.
-fn datapacks(dir: &Path) -> Result<WorldgenOverrides, Error> {
+fn datapacks(
+    dir: &Path,
+    preset: Option<&str>,
+) -> Result<(WorldgenOverrides, Option<String>), Error> {
     let mut packs: Vec<_> = fs::read_dir(dir)?
         .flatten()
         .map(|e| e.path())
         .filter(|p| p.join("pack.mcmeta").exists())
         .collect();
     packs.sort();
-    pack_reader::overrides(&packs.iter().map(|p| p.as_path()).collect::<Vec<_>>())
+    let preset_file = preset.map(|id| {
+        let (namespace, name) = id.split_once(':').unwrap_or(("minecraft", id));
+        format!("data/{namespace}/worldgen/world_preset/{name}.json")
+    });
+    pack_reader::overrides(
+        &packs.iter().map(|p| p.as_path()).collect::<Vec<_>>(),
+        preset_file.as_deref(),
+    )
 }
 
 /// HORIZON_OLD_CHUNKS=SEED:x0,z0,x1,z1: chunks another seed generated that
@@ -245,7 +257,12 @@ pub fn main() -> Result<(), Error> {
     let mut args = crate::args().skip(1);
     let resources = std::path::PathBuf::from(args.next().ok_or("client resource directory")?);
     let seed: i64 = args.next().ok_or("seed")?.parse()?;
-    let dimension = format!("minecraft:{}", args.next().ok_or("dimension")?);
+    let dimension = args.next().ok_or("dimension")?;
+    let dimension = if dimension.contains(':') {
+        dimension
+    } else {
+        format!("minecraft:{dimension}")
+    };
     let rects = args
         .map(|rect| {
             let v: Vec<i32> = rect.split(',').map(str::parse).collect::<Result<_, _>>()?;
@@ -268,21 +285,43 @@ pub fn main() -> Result<(), Error> {
         }
         return Ok(());
     }
-    let overrides = match std::env::var_os("HORIZON_DATAPACKS") {
-        Some(dir) => datapacks(Path::new(&dir))?,
-        None => WorldgenOverrides::default(),
+    let flat = std::env::var("HORIZON_FLAT");
+    let preset = std::env::var("HORIZON_PRESET");
+    let preset = preset.as_deref().unwrap_or("minecraft:normal");
+    let (overrides, preset_text) = match std::env::var_os("HORIZON_DATAPACKS") {
+        Some(dir) => datapacks(Path::new(&dir), flat.is_err().then_some(preset))?,
+        None => (WorldgenOverrides::default(), None),
     };
     let data = GeneratorData::load_with(&resources.join("worldgen"), blocks, &overrides)?;
     for warning in data.warnings() {
         eprintln!("data pack worldgen: {warning}");
     }
     // HORIZON_FLAT: a flat_level_generator_preset id; the overworld is that superflat world.
-    let generator = match std::env::var("HORIZON_FLAT") {
+    let generator = match flat {
         Ok(preset) => {
             OverworldGenerator::flat(data.clone(), seed, &flat_preset(&resources, &preset)?, true)?
         }
         Err(_) => {
-            OverworldGenerator::for_dimension(data.clone(), seed, "minecraft:normal", &dimension)?
+            let stem = preset_text
+                .map(|text| -> Result<Value, Error> {
+                    let mut world_preset: Value = serde_json::from_str(&text)?;
+                    let Some(stem) = world_preset["dimensions"].get_mut(&dimension) else {
+                        return Err(
+                            format!("world preset {preset} has no {dimension} dimension").into(),
+                        );
+                    };
+                    Ok(stem.take())
+                })
+                .transpose()?;
+            OverworldGenerator::for_world_with_settings(
+                data.clone(),
+                seed,
+                preset,
+                &dimension,
+                true,
+                stem.as_ref(),
+                None,
+            )?
         }
     };
     let mut worker = generator.worker();

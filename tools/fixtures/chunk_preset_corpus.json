@@ -1,0 +1,136 @@
+{
+  "horizon_test:fixed_desert/12345/custom": {
+    "biomes": [
+      "minecraft:desert"
+    ],
+    "sha256": "b8cea51066d1d174d97d626bf7518f1dadfc3c953074f6b4343cba8d9621ea7e"
+  },
+  "horizon_test:fixed_desert/4242/custom": {
+    "biomes": [
+      "minecraft:desert"
+    ],
+    "sha256": "cd6d179a5be8b820124881508496425835558df0ca8f987e79648b60d64d144e"
+  },
+  "minecraft:amplified/12345/overlay": {
+    "biomes": [
+      "minecraft:deep_dark",
+      "minecraft:grove",
+      "minecraft:jagged_peaks",
+      "minecraft:lush_caves",
+      "minecraft:ocean"
+    ],
+    "sha256": "e4d469e2a533aca6bdbdf3f70bd73e198be69ec2c3110add141996fc4c4480df"
+  },
+  "minecraft:amplified/12345/vanilla": {
+    "biomes": [
+      "minecraft:deep_dark",
+      "minecraft:grove",
+      "minecraft:lush_caves",
+      "minecraft:ocean",
+      "minecraft:old_growth_spruce_taiga"
+    ],
+    "sha256": "c34baa0f860706c3f8315c6e98fcdd8051fb1b9ff99af84a893e8c0a79b4c219"
+  },
+  "minecraft:amplified/4242/overlay": {
+    "biomes": [
+      "minecraft:beach",
+      "minecraft:snowy_plains"
+    ],
+    "sha256": "5414959cc96fefa7e1d1a013095438bb8034bef41278cd763e72830789bfbdc8"
+  },
+  "minecraft:amplified/4242/vanilla": {
+    "biomes": [
+      "minecraft:beach",
+      "minecraft:river",
+      "minecraft:snowy_plains"
+    ],
+    "sha256": "f1b6adc4c7a66da9b3a141cf045e49d2d747d2f2482471f1b4ac5b5599913d48"
+  },
+  "minecraft:large_biomes/12345/overlay": {
+    "biomes": [
+      "minecraft:deep_frozen_ocean",
+      "minecraft:frozen_ocean"
+    ],
+    "sha256": "356556aa480ed2c7f5e2e83a5d34599c1ed2620efae04f503792101f1c8890a6"
+  },
+  "minecraft:large_biomes/12345/vanilla": {
+    "biomes": [
+      "minecraft:deep_frozen_ocean",
+      "minecraft:frozen_ocean"
+    ],
+    "sha256": "64576ea574499701151d5cdca46986443f9b864368ff293bdf31bc6aee6be17a"
+  },
+  "minecraft:large_biomes/4242/overlay": {
+    "biomes": [
+      "minecraft:deep_lukewarm_ocean",
+      "minecraft:deep_ocean"
+    ],
+    "sha256": "f87edafa6dee66d3c6d9bc009d0dcbfdca6cf6d31a0e9b2a6763baebd9c602aa"
+  },
+  "minecraft:large_biomes/4242/vanilla": {
+    "biomes": [
+      "minecraft:deep_lukewarm_ocean",
+      "minecraft:deep_ocean"
+    ],
+    "sha256": "bb1c5c767f745442d303ce8faa08d88fc0222908fc9ece7894edc6a2d560b8cb"
+  },
+  "minecraft:normal/12345/overlay": {
+    "biomes": [
+      "minecraft:deep_dark",
+      "minecraft:grove",
+      "minecraft:jagged_peaks",
+      "minecraft:lush_caves",
+      "minecraft:ocean"
+    ],
+    "sha256": "7ba227653de1596e0297063ed50bfa6b1f5c113dc4f9b78795a54c264e346f35"
+  },
+  "minecraft:normal/12345/vanilla": {
+    "biomes": [
+      "minecraft:deep_dark",
+      "minecraft:grove",
+      "minecraft:lush_caves",
+      "minecraft:ocean",
+      "minecraft:old_growth_spruce_taiga"
+    ],
+    "sha256": "9e3314c069054a1ffc5c8a5694ff7292b3e8f3caa7f5cf028c1a484fd82ce630"
+  },
+  "minecraft:normal/4242/overlay": {
+    "biomes": [
+      "minecraft:beach",
+      "minecraft:snowy_plains"
+    ],
+    "sha256": "72742fbfa1d8a4c3a12881948958e7e83a18d5a758cd893c2420c65737c88f95"
+  },
+  "minecraft:normal/4242/vanilla": {
+    "biomes": [
+      "minecraft:beach",
+      "minecraft:river",
+      "minecraft:snowy_plains"
+    ],
+    "sha256": "93367d8fe0e6a04443989888dbfc31782a2eb4ae32a618de5554708a3c71d3be"
+  },
+  "minecraft:single_biome_surface/12345/overlay": {
+    "biomes": [
+      "minecraft:plains"
+    ],
+    "sha256": "c451c49acb90d3afb96064c6abf22b0c5272a9d983181ef6a3ed010ef38c1171"
+  },
+  "minecraft:single_biome_surface/12345/vanilla": {
+    "biomes": [
+      "minecraft:plains"
+    ],
+    "sha256": "42399ec001663575c5a4f560413fd5b8d181bb6db667ec73f560eaf86ab8beff"
+  },
+  "minecraft:single_biome_surface/4242/overlay": {
+    "biomes": [
+      "minecraft:plains"
+    ],
+    "sha256": "6d284fdf68e3ea6ed6de2903f9ad3399aaf152e55bb7104d90ea676b94f42ede"
+  },
+  "minecraft:single_biome_surface/4242/vanilla": {
+    "biomes": [
+      "minecraft:plains"
+    ],
+    "sha256": "8dbc44340be14d378a20d55a37a8287407791a4e7741686b69cb9c5ec1a2633f"
+  }
+}

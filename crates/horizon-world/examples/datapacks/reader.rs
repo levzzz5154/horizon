@@ -14,13 +14,23 @@ type Error = Box<dyn std::error::Error + Send + Sync>;
 /// `packs` (lowest first, each a folder or a `.zip` with `pack.mcmeta`): the
 /// entries their `data/` files give, the structure templates among them;
 /// every biome is counted known (the generator needs no more of a biome than
-/// its worldgen files).
-pub fn overrides(packs: &[&Path]) -> Result<WorldgenOverrides, Error> {
+/// its worldgen files). The probe can also request the last copy of a named
+/// preset; the game's worldgen overlay does not load preset records.
+pub fn overrides(
+    packs: &[&Path],
+    preset_file: Option<&str>,
+) -> Result<(WorldgenOverrides, Option<String>), Error> {
     let mut overrides = WorldgenOverrides::default();
+    let mut preset = None;
     for &path in packs {
         let pack = Pack::open(path)?;
         for file in pack.names() {
-            if let Some(id) = template_id(&file) {
+            if Some(file.as_str()) == preset_file {
+                preset = Some(
+                    pack.read(&file)
+                        .ok_or_else(|| format!("{}: {file}: unreadable", pack.id))?,
+                );
+            } else if let Some(id) = template_id(&file) {
                 let nbt = pack
                     .bytes(&file)
                     .ok_or_else(|| format!("{}: {file}: unreadable", pack.id))?;
@@ -35,7 +45,7 @@ pub fn overrides(packs: &[&Path]) -> Result<WorldgenOverrides, Error> {
     for warning in overrides.finish(|_| true) {
         eprintln!("data pack worldgen: {warning}");
     }
-    Ok(overrides)
+    Ok((overrides, preset))
 }
 
 /// A pack on disk.

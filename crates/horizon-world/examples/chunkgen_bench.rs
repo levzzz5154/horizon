@@ -341,8 +341,10 @@ fn main() -> Result<(), Error> {
                 resources.join("biome-modifiers.json").display()
             );
         }
-        let ov =
-            pack_reader::overrides(&datapacks.iter().map(|p| p.as_path()).collect::<Vec<_>>())?;
+        let (ov, _) = pack_reader::overrides(
+            &datapacks.iter().map(|p| p.as_path()).collect::<Vec<_>>(),
+            None,
+        )?;
         let data = GeneratorData::load_with(&resources.join("worldgen"), registry, &ov)?;
         for warning in data.warnings() {
             eprintln!("data pack worldgen: {warning}");
