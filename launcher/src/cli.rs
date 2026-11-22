@@ -2586,7 +2586,15 @@ fn mods(action: ModsCmd, as_json: bool) -> Result<(), String> {
             }
             let done = match &java {
                 Some(target) => java_instance::install(&*source, target, &p, &home, &line)?,
-                None => installed::install(&*source, &p, everything, &home, &line)?,
+                None => installed::install(
+                    &*source,
+                    &p,
+                    everything,
+                    &home,
+                    instance.as_ref(),
+                    false,
+                    &line,
+                )?,
             };
             if as_json {
                 json(done.iter().map(entry_json).collect());
@@ -2621,7 +2629,7 @@ fn mods(action: ModsCmd, as_json: bool) -> Result<(), String> {
                 };
                 let newer = match &java {
                     Some(target) => java_instance::update_for(&*source, target, e)?,
-                    None => installed::update_for(&*source, e)?,
+                    None => installed::update_for(&*source, e, instance.as_ref())?,
                 };
                 match newer {
                     None => println!("{} {}: up to date.", e.title, e.number),
@@ -2634,7 +2642,15 @@ fn mods(action: ModsCmd, as_json: bool) -> Result<(), String> {
                             Some(target) => {
                                 java_instance::install(&*source, target, &p, &home, &line)?
                             }
-                            None => installed::install(&*source, &p, true, &home, &line)?,
+                            None => installed::install(
+                                &*source,
+                                &p,
+                                true,
+                                &home,
+                                instance.as_ref(),
+                                true,
+                                &line,
+                            )?,
                         };
                         for done in done {
                             println!("{} {}: {}", done.title, done.number, done.file);

@@ -196,6 +196,10 @@ has a key, the file's own manifest against the index). A content mod becomes `ho
 `horizon-native-mods/<id>.hmod`, and the launcher builds it into the game ([modding/src/how-to/native-mods.md](modding/src/how-to/native-mods.md));
 `mods disable` and `mods enable` switch it in `horizon-mods.txt`. When the index takes a file down, the launcher turns
 it off the next time it reads the index or starts the game, says why, and refuses to install it or turn it back on.
+For a standalone native mod, **Install** and **Update** pick the newest available package pinned to the
+selected instance's Horizon build. An update never downgrades the installed mod. If no package names
+that build, the launcher says so instead of downloading for another build; the build tools still check
+cross-build compatibility using the mod's own files.
 A Horizon modpack (`.hpack`) installs as its own profile (`browser/horizon/pack.rs`): `horizon-packs/<id>/` holds the
 checked pack, `pack.json` and `home/`, the profile's game folder, where each of the pack's mods is downloaded and checked
 like any registry mod and turned on or off as the pack says; its overrides (settings, resource packs, a mod's saved

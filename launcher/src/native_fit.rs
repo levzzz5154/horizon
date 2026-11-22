@@ -24,9 +24,14 @@ pub enum Fit {
     OtherRevision { pin: String },
 }
 
+/// Whether index metadata alone establishes that the mod was made for this build.
+pub(crate) fn matches_pin(pin: &str, plays: &Plays) -> bool {
+    pin == plays.revision
+}
+
 /// How a mod made for commit `pin` fits the Horizon played.
 pub fn fit(pin: &str, plays: &Plays) -> Fit {
-    if pin == plays.revision {
+    if matches_pin(pin, plays) {
         Fit::Fits
     } else {
         Fit::OtherRevision { pin: pin.into() }
@@ -98,12 +103,15 @@ pub fn plays(instance: &Instance) -> Option<Plays> {
     plays
 }
 
-/// The line the registry browser shows for a native mod's version pinning `pin`, in `instance`;
-/// None when the game's revision can't be told. This only describes fit: it never builds or
-/// changes the instance or a package pin.
-pub fn line(instance: &Instance, pin: &str) -> Option<String> {
-    let plays = plays(instance)?;
-    Some(describe(&fit(pin, &plays), &plays))
+/// What the registry can say when no published version names the current build. The index
+/// doesn't carry a mod's uses table, so it cannot establish compatibility across revisions.
+pub(crate) fn no_published_fit(name: &str, pin: &str, plays: &Plays) -> String {
+    let message = trf(
+        "No published version of {mod} is made for the Horizon you play. The newest available version is made for {build}.",
+        &[("mod", name), ("build", &native_mods::sdk_cache::known_name(pin))],
+    );
+    let direction = native_mods::fit::registry_direction(pin, &plays.revision);
+    format!("{message} {direction}")
 }
 
 #[cfg(test)]

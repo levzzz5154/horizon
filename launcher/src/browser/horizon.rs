@@ -8,6 +8,8 @@ use super::{
     download, installed, java, FileRef, Kind, Project, Query, Source, SourceId, Version, GAME,
 };
 use crate::i18n::{tr, trf};
+use crate::instances::Instance;
+use crate::native_fit::{self, Plays};
 use horizon_platform::mod_package::index::{self, Index, Trust};
 use std::collections::HashMap;
 use std::fs;
@@ -334,10 +336,7 @@ fn official_in(index: Option<&Index>, id: &str) -> bool {
 /// What the player reads about a registry project before installing it: who made it, whether its
 /// files are signed, and for a mod what it may do, in the game's words (Options > Mods). A native
 /// mod says it runs with the player's rights, and how it fits the Horizon `instance` plays.
-pub fn trust_and_capabilities(
-    id: &str,
-    instance: Option<&crate::instances::Instance>,
-) -> Vec<String> {
+pub fn trust_and_capabilities(id: &str, instance: Option<&Instance>) -> Vec<String> {
     let Ok(index) = index() else {
         return Vec::new();
     };
@@ -365,18 +364,14 @@ pub fn trust_and_capabilities(
         lines.push(
             tr("Native code: it is built into the game and runs with full access to your computer. Its source was reviewed before it was listed").to_string(),
         );
-        if let Some(v) = p.versions.iter().find(|v| v.game == GAME) {
-            let pin = v.api.split('/').nth(1).unwrap_or_default();
-            lines.push(
-                instance
-                    .and_then(|i| crate::native_fit::line(i, pin))
-                    .unwrap_or_else(|| {
-                        trf(
-                            "Built for {build}",
-                            &[("build", &crate::native_mods::sdk_cache::known_name(pin))],
-                        )
-                    }),
-            );
+        if let Some(instance) = instance {
+            let plays = native_fit::plays(instance);
+            lines.push(native_fit_line(&index, p, plays.as_ref()));
+        } else if let Some(pin) = installable(&index, p).and_then(native_pin) {
+            lines.push(trf(
+                "Built for {build}",
+                &[("build", &crate::native_mods::sdk_cache::known_name(pin))],
+            ));
         }
     }
     if let Some(v) = p.versions.first().filter(|_| p.kind == index::Kind::Mod) {
@@ -392,6 +387,13 @@ pub fn trust_and_capabilities(
         }
     }
     lines
+}
+
+fn native_fit_line(index: &Index, p: &index::Project, plays: Option<&Plays>) -> String {
+    match newest_native(index, p, plays) {
+        Ok(_) => native_fit::describe(&native_fit::Fit::Fits, plays.expect("matching build")),
+        Err(why) => why,
+    }
 }
 
 /// How long the registry lets a summary be: it cuts a longer one there, mid-word.
@@ -842,12 +844,16 @@ fn relative(kind: Kind, id: &str, file_name: &str) -> Result<String, String> {
 /// the game the player runs can load, downloaded into `mod-browser/downloads/`, checked against
 /// the index, then moved into place. A mod is `horizon-mods/<id>.hmod`, turned on in
 /// `horizon-mods.txt`.
-pub fn install(
+/// An update only moves forward in the index, even if an older version fits the instance.
+pub(super) fn install(
     project: &Project,
     home: &Path,
+    instance: Option<&Instance>,
+    updating: bool,
     progress: &dyn Fn(&str, f32),
 ) -> Result<Vec<installed::Entry>, String> {
-    install_from(&*index()?, local(), project, home, progress)
+    let index = index()?;
+    install_from(&index, local(), project, home, instance, updating, progress)
 }
 
 /// [`install`] from `index`.
@@ -856,6 +862,8 @@ fn install_from(
     local: bool,
     project: &Project,
     home: &Path,
+    instance: Option<&Instance>,
+    updating: bool,
     progress: &dyn Fn(&str, f32),
 ) -> Result<Vec<installed::Entry>, String> {
     let _game = crate::game_shader_api::for_home(home);
@@ -867,8 +875,54 @@ fn install_from(
     if p.kind == index::Kind::Shader {
         crate::game_shader_api::said().map_err(|e| format!("{}: {e}.", p.name))?;
     }
-    let v = newest(index, p)?;
+    let v = if p.kind != index::Kind::NativeMod {
+        newest(index, p)?
+    } else {
+        let plays = instance.and_then(native_fit::plays);
+        if updating {
+            // The caller holds the instance's lock across selection and installation.
+            let current = installed::Installed::load(home);
+            let Some(entry) = current.find(SourceId::Horizon, &p.id) else {
+                return Ok(Vec::new());
+            };
+            let Some(target) = native_update(index, p, &entry.version, plays.as_ref())? else {
+                return Ok(Vec::new());
+            };
+            target
+        } else {
+            newest_native(index, p, plays.as_ref())?
+        }
+    };
     install_version(index, local, p, v, home, progress).map(|e| vec![e])
+}
+
+/// What Update can offer for an installed registry project.
+pub(super) fn update_for(
+    entry: &installed::Entry,
+    instance: Option<&Instance>,
+) -> Result<Option<Version>, String> {
+    let index = index()?;
+    let p = index
+        .project(&entry.project)
+        .ok_or_else(|| format!("{} isn't in Horizon's registry.", entry.project))?;
+    if p.kind == index::Kind::NativeMod {
+        let plays = instance.and_then(native_fit::plays);
+        return Ok(native_update(&index, p, &entry.version, plays.as_ref())?
+            .map(|v| version_of(&index, p, v)));
+    }
+    let kind = kind_of(&p.kind).ok_or_else(|| {
+        format!(
+            "{} is a {} in Horizon's registry: this launcher can't install those yet.",
+            p.name,
+            p.kind.name()
+        )
+    })?;
+    let versions: Vec<_> = p
+        .versions
+        .iter()
+        .map(|v| version_of(&index, p, v))
+        .collect();
+    Ok(installed::pick_update(kind, &versions, entry))
 }
 
 /// Downloads the newest version of the registry's data pack `project` into `folder`, checked
@@ -920,6 +974,69 @@ fn newest<'a>(index: &Index, p: &'a index::Project) -> Result<&'a index::Version
         (Some(r), None) => format!("{} was taken down: {}", p.name, r.reason),
         (None, None) => format!("{} has no version for {GAME} to install.", p.name),
     })
+}
+
+/// The index's native API field carries the Horizon and horizon-mixins pins.
+fn native_pin(version: &index::Version) -> Option<&str> {
+    let (pin, _) = version.api.strip_prefix("native-1/")?.split_once('/')?;
+    (!pin.is_empty()).then_some(pin)
+}
+
+/// The newest usable version whose Horizon pin matches the instance. A cross-pin fit needs the
+/// package's own files and is decided at build time, not guessed from index metadata.
+fn newest_native<'a>(
+    index: &Index,
+    p: &'a index::Project,
+    plays: Option<&Plays>,
+) -> Result<&'a index::Version, String> {
+    let (mut taken_down, mut unsupported, mut other_pin) = (None, None, None);
+    for v in p.versions.iter().filter(|v| v.game == GAME) {
+        if let Some(r) = index.revoked(&p.id, &v.file.sha256) {
+            taken_down.get_or_insert(r);
+        } else if !v.capabilities.unknown().is_empty() {
+            unsupported.get_or_insert(v);
+        } else if let Some(pin) = native_pin(v) {
+            let plays = plays.ok_or_else(|| {
+                tr("The Horizon build for this instance couldn't be determined. Pick an installed game version in the instance's settings.").to_owned()
+            })?;
+            if native_fit::matches_pin(pin, plays) {
+                return Ok(v);
+            }
+            other_pin.get_or_insert((pin, plays));
+        }
+    }
+    Err(if let Some((pin, plays)) = other_pin {
+        native_fit::no_published_fit(&p.name, pin, plays)
+    } else if let Some(why) = unsupported.and_then(|v| unsupported_capabilities(&v.capabilities)) {
+        why
+    } else if let Some(r) = taken_down {
+        trf(
+            "{mod} was taken down: {reason}",
+            &[("mod", &p.name), ("reason", &r.reason)],
+        )
+    } else {
+        trf(
+            "{mod} has no version for {game} to install.",
+            &[("mod", &p.name), ("game", GAME)],
+        )
+    })
+}
+
+fn native_update<'a>(
+    index: &Index,
+    p: &'a index::Project,
+    installed: &str,
+    plays: Option<&Plays>,
+) -> Result<Option<&'a index::Version>, String> {
+    let target = newest_native(index, p, plays)?;
+    // The index lists newest first. If the installed version is unlisted, its age is unknown.
+    let newer = p
+        .versions
+        .iter()
+        .skip_while(|v| v.version != target.version)
+        .skip(1)
+        .any(|v| v.version == installed);
+    Ok(newer.then_some(target))
 }
 
 /// What the browser and the installed packs say of a shader pack made for shader API `api`,

@@ -309,6 +309,15 @@ fn update_direction(made_for: &str) -> String {
     )
 }
 
+/// The existing next-step advice, when registry metadata gives a pin but no package verdict.
+pub(crate) fn registry_direction(made_for: &str, build: &str) -> String {
+    if sdk_cache::age(made_for, build) == Age::Newer {
+        update_direction(made_for)
+    } else {
+        tr("Ask its author for an update made for this game.").to_owned()
+    }
+}
+
 /// What the player can do about a mod the build can't use.
 fn actions(name: &str, direction: Option<&str>) -> String {
     if let Some(direction) = direction {

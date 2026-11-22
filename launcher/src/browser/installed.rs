@@ -5,6 +5,7 @@
 //! checksum. Files the player put there themselves are never touched: the browser only replaces
 //! or removes what it lists.
 use super::{pick, plain_name, Kind, Project, Source, SourceId, Support, Version};
+use crate::instances::Instance;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -387,12 +388,14 @@ pub fn install(
     project: &Project,
     everything: bool,
     home: &Path,
+    instance: Option<&Instance>,
+    updating: bool,
     progress: &dyn Fn(&str, f32),
 ) -> Result<Vec<Entry>, String> {
     let _game = crate::game_shader_api::for_home(home);
     let _lock = super::lock_home(home).map_err(|e| e.to_string())?;
     if project.source == SourceId::Horizon {
-        return super::horizon::install(project, home, progress);
+        return super::horizon::install(project, home, instance, updating, progress);
     }
     if project.kind == Kind::Mod {
         return super::java::install(source, project, everything, home, progress);
@@ -539,12 +542,23 @@ pub fn forget_missing(home: &Path, entry: &Entry) -> Result<bool, String> {
 }
 
 /// The newer version `entry` can be updated to, if any.
-pub fn update_for(source: &dyn Source, entry: &Entry) -> Result<Option<Version>, String> {
+pub fn update_for(
+    source: &dyn Source,
+    entry: &Entry,
+    instance: Option<&Instance>,
+) -> Result<Option<Version>, String> {
+    if entry.source == SourceId::Horizon {
+        return super::horizon::update_for(entry, instance);
+    }
     let project = source.project(&entry.project)?;
     let versions = source.versions(&project)?;
-    Ok(pick(project.kind, &versions, true)
+    Ok(pick_update(project.kind, &versions, entry))
+}
+
+pub(super) fn pick_update(kind: Kind, versions: &[Version], entry: &Entry) -> Option<Version> {
+    pick(kind, versions, true)
         .filter(|v| v.id != entry.version)
-        .cloned())
+        .cloned()
 }
 
 /// Downloads a modpack's file, checked, into `folder` (kept there: the import reads it).

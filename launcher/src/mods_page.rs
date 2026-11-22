@@ -54,7 +54,7 @@ pub(super) enum Event {
     /// A Java mod's check: its jar read, or why it couldn't be.
     Checked((SourceId, String), Result<Box<Check>, String>),
     /// What a Horizon registry project says before install: signed or not, what it may do.
-    About(HashMap<String, Vec<String>>),
+    About(u64, HashMap<String, Vec<String>>),
     /// Registry files taken down that the launcher turned off.
     TakenDown(Vec<String>),
     /// What the automatic updates did (`horizon::auto`).
@@ -361,6 +361,7 @@ impl Mods {
         let changed = self.instance_id != instance_id || self.home != home || self.java != java;
         if changed {
             self.reset_browse_context();
+            self.about.clear();
             self.update_check += 1;
             self.instance_id = instance_id;
             self.home = home;
@@ -674,11 +675,12 @@ impl Launcher {
                     m.results_list.reset();
                 }
                 Event::Loaded(l) => loaded.push(l),
-                Event::About(about) => {
+                Event::About(search, about) if search == m.search => {
                     // Rows grow by a line: measure them again (`cull`).
                     m.about.extend(about);
                     m.results_list.reset();
                 }
+                Event::About(..) => {}
                 Event::AutoUpdated(lines) => {
                     if !lines.is_empty() {
                         m.message = Some(Ok(lines.join("\n")));
@@ -733,6 +735,7 @@ impl Launcher {
     /// Searches; with `keep`, the rows already listed stay on screen until the new ones arrive,
     /// so the page doesn't shrink (and the scroll doesn't jump to the top) while it waits.
     pub(super) fn mods_search_keeping(&mut self, offset: usize, keep: bool) {
+        let instance = self.selected_instance().cloned();
         let m = &mut self.mods;
         let source = m.source();
         let everything = m.everything && source != SourceId::Horizon;
@@ -767,21 +770,18 @@ impl Launcher {
                 .ok_or_else(|| trf("{source} isn't set up.", &[("source", source.label())]))
                 .and_then(|s| s.search(&query));
             let about: HashMap<String, Vec<String>> = match (&result, source) {
-                (Ok(found), SourceId::Horizon) => {
-                    let instance = horizon_launcher::instances::selected();
-                    found
-                        .iter()
-                        .map(|p| {
-                            let lines = horizon::trust_and_capabilities(&p.id, Some(&instance));
-                            (p.id.clone(), lines)
-                        })
-                        .collect()
-                }
+                (Ok(found), SourceId::Horizon) => found
+                    .iter()
+                    .map(|p| {
+                        let lines = horizon::trust_and_capabilities(&p.id, instance.as_ref());
+                        (p.id.clone(), lines)
+                    })
+                    .collect(),
                 _ => HashMap::new(),
             };
             let _ = tx.send(Event::Found(search, offset, result));
             if !about.is_empty() {
-                let _ = tx.send(Event::About(about));
+                let _ = tx.send(Event::About(search, about));
             }
         });
     }
@@ -945,6 +945,7 @@ impl Launcher {
         let tx = self.mods.tx.clone();
         let java = self.mods.java.clone();
         let home = self.mods.home();
+        let instance = self.selected_instance().cloned();
         std::thread::spawn(move || {
             let mut found = HashMap::new();
             for e in entries {
@@ -958,7 +959,7 @@ impl Launcher {
                 };
                 let newer = match &java {
                     Some(target) => java_instance::update_for(&*source, target, &e),
-                    None => installed::update_for(&*source, &e),
+                    None => installed::update_for(&*source, &e, instance.as_ref()),
                 };
                 if let Ok(Some(v)) = newer {
                     found.insert(
@@ -1010,8 +1011,9 @@ impl Launcher {
         let tx = self.mods.tx.clone();
         let home = self.mods.home();
         let java = self.mods.java.clone();
-        let instance = self
-            .selected_instance()
+        let target_instance = self.selected_instance().cloned();
+        let instance = target_instance
+            .as_ref()
             .map_or_else(|| tr("Horizon").to_owned(), |i| i.name.clone());
         std::thread::spawn(move || {
             let count = todo.len();
@@ -1070,7 +1072,15 @@ impl Launcher {
                             Some(target) => {
                                 java_instance::install(&*source, target, &p, &home, &step)
                             }
-                            None => installed::install(&*source, &p, true, &home, &step),
+                            None => installed::install(
+                                &*source,
+                                &p,
+                                true,
+                                &home,
+                                target_instance.as_ref(),
+                                true,
+                                &step,
+                            ),
                         }
                     });
                 match updated {
@@ -1180,6 +1190,7 @@ impl Launcher {
             return;
         }
         let id = id.to_owned();
+        let updating = matches!(&request, InstallRequest::Installed(..));
         let known = match request {
             InstallRequest::Browse(p) | InstallRequest::Palette(p) => Some(*p),
             InstallRequest::Installed(..) => None,
@@ -1196,8 +1207,9 @@ impl Launcher {
         let tx = self.mods.tx.clone();
         let home = self.mods.home();
         let java = self.mods.java.clone();
-        let instance = self
-            .selected_instance()
+        let target_instance = self.selected_instance().cloned();
+        let instance = target_instance
+            .as_ref()
             .map_or_else(|| "Horizon".to_string(), |i| i.name.clone());
         let world = self.mods.world.clone().and_then(|path| {
             let (_, name) = self.mods.worlds.iter().find(|(p, _)| *p == path)?;
@@ -1311,8 +1323,19 @@ impl Launcher {
                                 &*source, review, &home, &progress,
                             )
                         }
-                        None => installed::install(&*source, &p, everything, &home, &progress),
+                        None => installed::install(
+                            &*source,
+                            &p,
+                            everything,
+                            &home,
+                            target_instance.as_ref(),
+                            updating,
+                            &progress,
+                        ),
                     }?;
+                    if done.is_empty() {
+                        return Ok(tr("Already up to date.").into());
+                    }
                     let names: Vec<String> = done
                         .iter()
                         .map(|e| format!("{} {}", e.title, e.number))
@@ -1439,8 +1462,8 @@ impl Launcher {
         // that fit change, so look for updates again.
         let plays = self
             .selected_instance()
-            .and_then(|i| i.version.clone())
-            .or_else(|| self.installed.first().cloned());
+            .and_then(|i| self.version_of(i))
+            .cloned();
         if self.mods.loaded
             && !target_changed
             && self.mods.java.is_none()
@@ -1449,6 +1472,10 @@ impl Launcher {
             self.mods.checked_for = plays.clone();
             self.mods.updates.clear();
             self.mods_check_updates();
+            if self.mods.asked && self.mods.source() == SourceId::Horizon {
+                self.mods.about.clear();
+                self.mods_search_keeping(0, true);
+            }
         }
         if !self.mods.loaded || target_changed {
             self.mods.checked_for = plays;
