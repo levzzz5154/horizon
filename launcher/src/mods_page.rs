@@ -812,6 +812,7 @@ impl Launcher {
     }
 
     fn fetch_mods_page(&mut self, offset: usize) {
+        let instance = self.selected_instance().cloned();
         let m = &mut self.mods;
         let source = m.source();
         let Some(query) = m.begin_page(offset) else {
@@ -823,16 +824,14 @@ impl Launcher {
                 .ok_or_else(|| trf("{source} isn't set up.", &[("source", source.label())]))
                 .and_then(|s| s.search_page(&query));
             let about: HashMap<String, Vec<String>> = match (&result, source) {
-                (Ok(page), SourceId::Horizon) => {
-                    let instance = horizon_launcher::instances::selected();
-                    page.projects
-                        .iter()
-                        .map(|p| {
-                            let lines = horizon::trust_and_capabilities(&p.id, Some(&instance));
-                            (p.id.clone(), lines)
-                        })
-                        .collect()
-                }
+                (Ok(page), SourceId::Horizon) => page
+                    .projects
+                    .iter()
+                    .map(|p| {
+                        let lines = horizon::trust_and_capabilities(&p.id, instance.as_ref());
+                        (p.id.clone(), lines)
+                    })
+                    .collect(),
                 _ => HashMap::new(),
             };
             let _ = tx.send(Event::Found(search, offset, result));
