@@ -2313,6 +2313,14 @@ fn content_mod_trims_keep_their_wire_ids_and_resolve_both_draw_paths() {
 
     let scratch = tempfile::tempdir().unwrap();
     let base = scratch.path().join("base");
+    let registry_report = serde_json::json!({
+        "minecraft:item": {"entries": {"minecraft:diamond_chestplate": {"protocol_id": 0}}},
+        "minecraft:block": {"entries": {"minecraft:stone": {"protocol_id": 0}}},
+        "minecraft:data_component_type": {"entries": {
+            "minecraft:trim": {"protocol_id": horizon_protocol::item::component::TRIM}
+        }}
+    })
+    .to_string();
     for (name, text) in [
         ("horizon-resources.json", "{}"),
         (
@@ -2323,10 +2331,7 @@ fn content_mod_trims_keep_their_wire_ids_and_resolve_both_draw_paths() {
             "gameplay-facts.json",
             r#"{"states":[{"item":"minecraft:stone"}]}"#,
         ),
-        (
-            "registries.json",
-            r#"{"minecraft:item":{"entries":{"minecraft:diamond_chestplate":{"protocol_id":0}}},"minecraft:block":{"entries":{"minecraft:stone":{"protocol_id":0}}}}"#,
-        ),
+        ("registries.json", registry_report.as_str()),
         (
             "items.json",
             r#"{"minecraft:diamond_chestplate":{"minecraft:item_model":"trim_assets:chestplate"}}"#,
