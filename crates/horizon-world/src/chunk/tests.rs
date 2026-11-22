@@ -1,4 +1,21 @@
 use super::*;
+
+#[path = "../../../../tools/headless_bench_support.rs"]
+mod bench_support;
+#[path = "../../examples/support/palette_workload.rs"]
+mod palette_workload;
+
+/// Measures only today's implementation; the cell model checks the exact NBT a
+/// future candidate must also produce.
+#[test]
+#[ignore = "headless palette baseline; run with --ignored --nocapture"]
+fn benchmark_paletted_container_baseline() {
+    let repeats = std::env::var("HORIZON_BENCH_REPEATS")
+        .map_or(7, |value| value.parse().expect("HORIZON_BENCH_REPEATS"));
+    assert!(repeats > 0, "HORIZON_BENCH_REPEATS must be positive");
+    palette_workload::report(std::env::var_os("HORIZON_BENCH_JSON").is_some(), repeats);
+}
+
 fn saved(palette: &PalettedContainer) -> (usize, Option<usize>) {
     let Tag::Compound(map) = palette.to_nbt() else {
         unreachable!()
