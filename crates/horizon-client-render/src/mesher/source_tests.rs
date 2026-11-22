@@ -102,6 +102,7 @@ fn fixture() -> (Scratch, Assets, RenderAssets, MeshTables, Biomes) {
         pbr_size: 1,
         connected: Default::default(),
         fusion: Default::default(),
+        better_grass: None,
         mod_animations: Default::default(),
         mod_pipelines: Default::default(),
         generation: 1,

@@ -279,6 +279,7 @@ struct MeshSettings {
     blend_radius: i32,
     smooth_lighting: bool,
     cutout_leaves: bool,
+    better_grass_mode: horizon_optifine::better_grass::Mode,
     opaque_ice: bool,
     translucent_layers: Arc<[bool]>,
     block_layers: Arc<crate::mesher::BlockLayerTable>,
@@ -697,6 +698,8 @@ pub struct Streaming {
     /// The `ao` and `cutoutLeaves` options.
     pub smooth_lighting: bool,
     pub cutout_leaves: bool,
+    /// Optional resource-pack smoothing of exposed terrain block sides.
+    pub better_grass_mode: horizon_optifine::better_grass::Mode,
     /// Draw regular ice opaque in the solid pass (`Mesher::opaque_ice`).
     pub opaque_ice: bool,
     /// Sprite layers a shader pack draws in the translucent pass (`[[materials]]
@@ -1309,6 +1312,7 @@ impl Streaming {
             biome_blend: 2,
             smooth_lighting: true,
             cutout_leaves: true,
+            better_grass_mode: Default::default(),
             opaque_ice: false,
             translucent_layers: Arc::from([]),
             block_layers: Arc::default(),
@@ -4481,6 +4485,7 @@ mod tests {
             blend_radius: 0,
             smooth_lighting: true,
             cutout_leaves: true,
+            better_grass_mode: Default::default(),
             opaque_ice: false,
             translucent_layers: Arc::from([]),
             block_layers: Arc::default(),

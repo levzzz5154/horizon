@@ -16,6 +16,13 @@ Tab, the arrows, Enter and Space work it from the keyboard (Left and Right step 
 
 Every setting applies at once, except worker threads, the graphics API, translucent batching and the sizes battery mode halves the client's pools to (chunk building, the tick's helpers, chunk decoding, saves, network and chunk encoding), which apply at the next start (battery mode's frame cap applies at once). A preset sets the quality settings together; changing one of them turns it into Custom. Display preferences (FOV, framerate, VSync, GUI scale, fullscreen, present mode, pacing) leave the preset as it is.
 
+**Video Settings → Quality → Textures → Better Grass** controls how grass-like blocks use their top
+texture on their sides. **Pack default** uses Fancy only if an enabled resource pack supplies
+`optifine/bettergrass.properties`; otherwise it leaves vanilla block sides unchanged. **Off** disables
+the effect even with a pack. **Fast** uses the top texture without checking neighboring blocks;
+**Fancy** checks neighboring blocks to blend terrain edges. Fast and Fancy use built-in rules if no
+pack supplies the file. The selected mode is saved in `options.txt` and is not changed by graphics presets.
+
 Each preset is a fixed table (`graphics_preset.rs`), so picking one gives the same settings whatever was set before:
 
 | | Full Performance | Performance | Balanced | Quality | Ultra |
