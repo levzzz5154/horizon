@@ -1,6 +1,9 @@
 //! Cargo metadata is read without compiling dependencies or executing build-time code.
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::{Path, PathBuf},
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -69,6 +72,7 @@ pub(super) struct Package {
     pub source: Option<String>,
     pub links: Option<String>,
     pub targets: Vec<Target>,
+    pub manifest_path: PathBuf,
 }
 #[derive(Deserialize)]
 pub(super) struct Target {
@@ -127,6 +131,77 @@ impl Metadata {
     pub fn runtime_packages(&self) -> Result<BTreeSet<String>, String> {
         self.reachable(true)
             .map(|ids| ids.into_iter().map(str::to_owned).collect())
+    }
+
+    /// Target Rust libraries that more than one staged mod would otherwise link statically.
+    pub fn shared_libraries(
+        &self,
+        roots: &[PathBuf],
+        sdk: &Path,
+    ) -> Result<(Vec<&Package>, BTreeSet<usize>), String> {
+        let packages: BTreeMap<_, _> = self
+            .packages
+            .iter()
+            .map(|package| (package.id.as_str(), package))
+            .collect();
+        let nodes: BTreeMap<_, _> = self
+            .resolve
+            .nodes
+            .iter()
+            .map(|node| (node.id.as_str(), node))
+            .collect();
+        let roots: Vec<_> = roots
+            .iter()
+            .map(|root| {
+                self.packages
+                    .iter()
+                    .find(|package| package.manifest_path == *root)
+                    .map(|package| package.id.as_str())
+                    .ok_or("Cargo metadata: missing staged mod")
+            })
+            .collect::<Result<_, _>>()?;
+        let mod_ids: BTreeSet<_> = roots.iter().copied().collect();
+        let mut first = BTreeMap::new();
+        let mut shared = BTreeSet::new();
+        let mut users = BTreeSet::new();
+        for (index, root) in roots.into_iter().enumerate() {
+            let mut pending = vec![root];
+            let mut closure = BTreeSet::new();
+            while let Some(id) = pending.pop() {
+                // Another mod dylib already owns its closure; only count crates reached
+                // independently of it through this mod's own target dependencies.
+                if id != root && mod_ids.contains(id) {
+                    continue;
+                }
+                let package = packages.get(id).ok_or("Cargo metadata: missing package")?;
+                if !package
+                    .targets
+                    .iter()
+                    .flat_map(|target| &target.kind)
+                    .any(|kind| matches!(kind.as_str(), "lib" | "rlib" | "dylib"))
+                    || !closure.insert(id)
+                {
+                    continue;
+                }
+                if package.source.is_some() || package.manifest_path.starts_with(sdk) {
+                    let owner = *first.entry(id).or_insert(index);
+                    if owner != index {
+                        shared.insert(id);
+                        users.extend([owner, index]);
+                    }
+                }
+                let node = nodes
+                    .get(id)
+                    .ok_or("Cargo metadata: missing resolved node")?;
+                pending.extend(
+                    node.deps
+                        .iter()
+                        .filter(|dep| dep.dep_kinds.iter().any(|kind| kind.kind.is_none()))
+                        .map(|dep| dep.pkg.as_str()),
+                );
+            }
+        }
+        Ok((shared.into_iter().map(|id| packages[id]).collect(), users))
     }
 
     pub fn inventory(
@@ -215,13 +290,59 @@ mod tests {
                 {"id":"script", "deps":[]}, {"id":"macro", "deps":[]}, {"id":"unused", "deps":[]}
             ]},
             "packages": [
-                {"id":"root", "name":"mod", "version":"1.0.0", "source":null, "links":null, "targets":[{"kind":["lib"]}]},
-                {"id":"script", "name":"native-sys", "version":"2.0.0", "source":"registry+https://github.com/rust-lang/crates.io-index", "links":"example", "targets":[{"kind":["lib"]},{"kind":["custom-build"]}]},
-                {"id":"macro", "name":"derive-example", "version":"1.0.0", "source":"registry+https://github.com/rust-lang/crates.io-index", "links":null, "targets":[{"kind":["proc-macro"]}]},
-                {"id":"unused", "name":"dev-only", "version":"1.0.0", "source":"registry+https://github.com/rust-lang/crates.io-index", "links":"example", "targets":[{"kind":["custom-build"]}]}
+                {"id":"root", "name":"mod", "version":"1.0.0", "source":null, "links":null, "manifest_path":"mod/Cargo.toml", "targets":[{"kind":["lib"]}]},
+                {"id":"script", "name":"native-sys", "version":"2.0.0", "source":"registry+https://github.com/rust-lang/crates.io-index", "links":"example", "manifest_path":"native-sys/Cargo.toml", "targets":[{"kind":["lib"]},{"kind":["custom-build"]}]},
+                {"id":"macro", "name":"derive-example", "version":"1.0.0", "source":"registry+https://github.com/rust-lang/crates.io-index", "links":null, "manifest_path":"derive-example/Cargo.toml", "targets":[{"kind":["proc-macro"]}]},
+                {"id":"unused", "name":"dev-only", "version":"1.0.0", "source":"registry+https://github.com/rust-lang/crates.io-index", "links":"example", "manifest_path":"dev-only/Cargo.toml", "targets":[{"kind":["custom-build"]}]}
             ]
         })).unwrap()
     }
+    #[test]
+    fn shares_normal_target_dependencies_through_local_crates_only_between_consumers() {
+        let mut metadata = metadata();
+        for name in ["local", "second", "dependent"] {
+            metadata.packages.push(Package {
+                id: name.into(),
+                name: name.into(),
+                version: "1.0.0".into(),
+                source: None,
+                links: None,
+                targets: vec![Target {
+                    kind: vec!["lib".into()],
+                }],
+                manifest_path: Path::new(name).join("Cargo.toml"),
+            });
+        }
+        let normal = |pkg: &str| Dependency {
+            pkg: pkg.into(),
+            dep_kinds: vec![Kind { kind: None }],
+        };
+        metadata.resolve.nodes.extend([
+            Node {
+                id: "local".into(),
+                deps: vec![normal("script"), normal("macro")],
+            },
+            Node {
+                id: "second".into(),
+                deps: vec![normal("local")],
+            },
+            Node {
+                id: "dependent".into(),
+                deps: vec![normal("root")],
+            },
+        ]);
+        let roots = ["mod", "second", "dependent"].map(|name| Path::new(name).join("Cargo.toml"));
+        let (packages, users) = metadata.shared_libraries(&roots, Path::new("sdk")).unwrap();
+        assert_eq!(users, BTreeSet::from([0, 1]));
+        assert_eq!(
+            packages
+                .iter()
+                .map(|package| package.name.as_str())
+                .collect::<Vec<_>>(),
+            ["native-sys"],
+        );
+    }
+
     #[test]
     fn consent_counts_only_reachable_build_packages_and_names_executable_code() {
         let inventory = metadata()
