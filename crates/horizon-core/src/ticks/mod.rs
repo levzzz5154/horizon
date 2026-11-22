@@ -307,7 +307,9 @@ mod tests {
         level.finish_tick().unwrap();
 
         let mut ran = Vec::new();
-        level.tick(0, 100, |_| true, |_, tick| ran.push(tick)).unwrap();
+        level
+            .tick(0, 100, |_| true, |_, tick| ran.push(tick))
+            .unwrap();
         assert_eq!(ran, [earlier, deferred]);
         assert_eq!(level.count(), 0);
     }
@@ -557,7 +559,7 @@ impl std::error::Error for TickError {}
 
 /// The head's collection order and next deadline, without the block position
 /// and tick kind that are needed only when we poll the chunk itself.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct DueChunk {
     key: i64,
     deadline: i64,
