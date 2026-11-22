@@ -219,6 +219,7 @@ impl InsideEffects {
 
     /// Keep only the writes the local player predicts. The server owns the
     /// other effects; discard them before mixing with vanilla's step.
+    // hidden: local player prediction filters the engine's plan, not a mod's write collector.
     #[doc(hidden)]
     pub fn retain_player_movement(&mut self) {
         debug_assert!(self.planned.is_empty());
