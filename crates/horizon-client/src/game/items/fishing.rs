@@ -966,7 +966,7 @@ impl Game<'_> {
         // The players a server serves are sent them too.
         self.lan_send_particles(super::lan_particles::QueuedParticle {
             dimension: self.dim.id(),
-            options,
+            options: options.into(),
             state: None,
             at,
             spread,
