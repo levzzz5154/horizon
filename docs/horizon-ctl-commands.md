@@ -196,6 +196,10 @@ The reply fields of the commands described so far (more follow, a group at a tim
 | `display` | object, null | the monitor: width, height, scale, refresh_hz; null without a window |
 | `server` | object, null | the connected server's address, name and state; null when not connected |
 
+For a connected server, `server.status` is localized connection or terrain-loading text,
+or the empty string once the client has acknowledged its level. Use `terrain_loading` or
+`wait-ready` to wait for the rest of the view; the text is not a readiness signal.
+
 ### `hello`
 
 | Field | Type | Meaning |

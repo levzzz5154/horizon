@@ -295,7 +295,8 @@ impl Game<'_> {
             // ServerboundPlayerLoadedPacket sent: the level around the
             // player is ready, and the client ticks and sends its moves.
             "loaded": r.loaded_sent,
-            "status": r.status,
+            // The connection text is progress, not the state of an already loaded level.
+            "status": if r.loaded_sent { "" } else { r.status.as_str() },
             "entity_id": r.entity_id,
             "dimension": r.dimension.name,
             "game_mode": r.game_mode,
