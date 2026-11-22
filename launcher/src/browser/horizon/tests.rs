@@ -485,6 +485,7 @@ fn native_registry_install_and_update_follow_the_target_instances_build() {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
+                "--include-ignored",
                 "browser::horizon::tests::native_registry_install_and_update_follow_the_target_instances_build",
                 "--nocapture",
             ])
