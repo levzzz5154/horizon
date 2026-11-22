@@ -200,7 +200,7 @@ mod client_screen_tests {
                     game.renderer.is_none(),
                     "identity does not need a render view"
                 );
-                let stack = super::ItemStack::new("minecraft:enchanted_book", 1);
+                let stack = horizon_client::items::ItemStack::new("minecraft:enchanted_book", 1);
                 let sample = |game: &Game<'_>| {
                     drop(game.stack_tooltip(&stack));
                 };
