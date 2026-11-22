@@ -2,80 +2,399 @@
 //! Saved NBT upgrades use Horizon's vanilla datafix implementation; values stored here are pinned.
 use super::*;
 use crate::Error;
+use horizon_core::nbt::{self, Limits};
 use horizon_world::datafix::{self, dynamic as d, schema::Ty};
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, VecDeque};
 
 const CACHE_ENTRIES: usize = 1024;
 const CACHE_BYTES: usize = 8 * 1024 * 1024;
 const CACHE_ENTRY_BYTES: usize = 256 * 1024;
-#[derive(Debug)]
-struct Original {
-    tag: Option<Tag>,
+
+/// The signature is a bucket index, never proof that a stack is unchanged.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct Signature {
+    item: i32,
+    added: u64,
+    removed: u64,
     bytes: usize,
 }
+
+#[derive(Clone, Copy)]
+struct WireHash {
+    hash: u64,
+    len: usize,
+}
+impl WireHash {
+    fn new() -> Self {
+        Self {
+            hash: 0xcbf2_9ce4_8422_2325,
+            len: 0,
+        }
+    }
+}
+
+trait WireSink: Copy {
+    fn put(&mut self, bytes: &[u8]);
+}
+impl WireSink for WireHash {
+    fn put(&mut self, bytes: &[u8]) {
+        self.len += bytes.len();
+        for &byte in bytes {
+            self.hash = (self.hash ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3);
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct CompareWire<'a>(Option<&'a [u8]>);
+impl WireSink for CompareWire<'_> {
+    fn put(&mut self, bytes: &[u8]) {
+        self.0 = self.0.and_then(|left| left.strip_prefix(bytes));
+    }
+}
+
+struct PinnedOutput<S>(S);
+impl<S: WireSink> ComponentOutput for PinnedOutput<S> {
+    fn bytes(&mut self, bytes: &[u8]) {
+        self.0.put(bytes);
+    }
+    fn nbt(&mut self, tag: &Tag) {
+        let start = self.0;
+        if nbt::visit_network(tag, Limits::default(), |bytes| self.bytes(bytes)).is_err() {
+            // The packet writer rolls back an unencodable tag and writes End.
+            self.0 = start;
+            self.u8(0);
+        }
+    }
+    fn template(&mut self, stack: &Stack) {
+        write_template(stack, self);
+    }
+    fn value(&mut self, kind: i32, component: &Component) {
+        component.write_to(kind, self);
+    }
+}
+
+fn added(stack: &Stack) -> impl Iterator<Item = &(i32, Component)> + Clone {
+    stack.added.iter().filter(|(kind, _)| *kind >= 0)
+}
+fn removed(stack: &Stack) -> impl Iterator<Item = i32> + Clone + '_ {
+    stack.removed.iter().copied().filter(|&kind| kind >= 0)
+}
+
+/// Under `unrenumbered`, only the root count, patch order, and negative ids are
+/// normalized. Nested template counts/order and raw payloads are still wire data.
+fn signature(stack: &Stack) -> Option<Signature> {
+    use crate::buf::varint_size;
+    if stack.item < 0 {
+        return None;
+    }
+    let mut sig = Signature {
+        item: stack.item,
+        added: 0,
+        removed: 0,
+        bytes: 1 + varint_size(stack.item),
+    };
+    let mut n = 0;
+    for (kind, value) in added(stack) {
+        let mut part = PinnedOutput(WireHash::new());
+        part.varint(*kind);
+        part.value(*kind, value);
+        sig.added = sig.added.wrapping_add(part.0.hash);
+        sig.bytes += part.0.len;
+        n += 1;
+    }
+    sig.bytes += varint_size(n);
+    let mut n = 0;
+    for kind in removed(stack) {
+        let mut part = PinnedOutput(WireHash::new());
+        part.varint(kind);
+        sig.removed = sig.removed.wrapping_add(part.0.hash);
+        sig.bytes += part.0.len;
+        n += 1;
+    }
+    sig.bytes += varint_size(n);
+    (sig.bytes <= CACHE_ENTRY_BYTES).then_some(sig)
+}
+
+/// A structural match proves identical pinned output without writing it again.
+/// Structural inequality is not proof of different wire output (for example a
+/// raw alias, an optional book field, or two independently mapped registry ids).
+fn same_value(a: &Component, b: &Component) -> bool {
+    use Component::*;
+    fn same_floats(a: &[f32], b: &[f32]) -> bool {
+        a.iter()
+            .map(|f| f.to_bits())
+            .eq(b.iter().map(|f| f.to_bits()))
+    }
+    match a {
+        AttackRange(a) => matches!(b, AttackRange(b) if same_floats(a, b)),
+        CustomModelData {
+            floats,
+            flags,
+            strings,
+            colors,
+        } => matches!(
+            b, CustomModelData { floats: f, flags: g, strings: s, colors: c }
+                if same_floats(floats, f) && flags == g && strings == s && colors == c
+        ),
+        Stacks(a) => matches!(b, Stacks(b) if a.len() == b.len() && a.iter().zip(b).all(
+            |(a, b)| a.item == b.item
+                && a.count == b.count
+                && removed(a).eq(removed(b))
+                && added(a).map(|x| x.0).eq(added(b).map(|x| x.0))
+                && added(a).zip(added(b)).all(|((_, a), (_, b))| same_value(a, b))
+        )),
+        Int(_)
+        | Unit
+        | Bool(_)
+        | Text(_)
+        | Nbt(_)
+        | Ident(_)
+        | Lore(_)
+        | Enchantments(_)
+        | Potion { .. }
+        | Profile(_)
+        | TooltipDisplay { .. }
+        | WritableBook { .. }
+        | WrittenBook(_)
+        | Fireworks { .. }
+        | FireworkExplosion(_)
+        | LodestoneTracker { .. }
+        | Trim { .. }
+        | TrimDirect { .. }
+        | StewEffects(_)
+        | Instrument(_)
+        | BannerPatterns(_)
+        | PaintingVariant(_)
+        | Raw(_) => a == b,
+    }
+}
+
+#[derive(Debug)]
+struct KeyPart {
+    value: Component,
+    end: usize,
+}
+#[derive(Debug)]
+struct Key {
+    added: Vec<(i32, KeyPart)>,
+    removed: Vec<i32>,
+    wire: Vec<u8>,
+    synced: bool,
+}
+impl Key {
+    fn new(stack: &Stack, bytes: usize) -> Self {
+        let mut components: Vec<_> = added(stack).collect();
+        components.sort_by_key(|(kind, _)| *kind);
+        let mut w = Writer {
+            data: Vec::with_capacity(bytes),
+        };
+        let added = components
+            .into_iter()
+            .map(|(kind, value)| {
+                value.write(*kind, &mut w);
+                (
+                    *kind,
+                    KeyPart {
+                        value: value.clone(),
+                        end: w.data.len(),
+                    },
+                )
+            })
+            .collect();
+        let mut removed: Vec<_> = removed(stack).collect();
+        removed.sort_unstable();
+        Self {
+            added,
+            removed,
+            wire: w.data,
+            synced: ids::synced_set(),
+        }
+    }
+
+    fn matches(&self, stack: &Stack) -> bool {
+        let actual_removed = removed(stack);
+        if !actual_removed.clone().eq(self.removed.iter().copied())
+            && (actual_removed.clone().count() != self.removed.len()
+                || self.removed.chunk_by(|a, b| a == b).any(|group| {
+                    actual_removed
+                        .clone()
+                        .filter(|&kind| kind == group[0])
+                        .count()
+                        != group.len()
+                }))
+        {
+            return false;
+        }
+        let structural = !self.synced && !ids::synced_set();
+        let compare = |i: usize, (kind, value): &(i32, Component)| {
+            let (expected_kind, part) = &self.added[i];
+            if kind != expected_kind {
+                return false;
+            }
+            if structural && same_value(&part.value, value) {
+                return true;
+            }
+            let start = i.checked_sub(1).map_or(0, |i| self.added[i].1.end);
+            let mut output = PinnedOutput(CompareWire(Some(&self.wire[start..part.end])));
+            output.value(*kind, value);
+            (output.0).0 == Some(&[])
+        };
+        let added = added(stack);
+        if added
+            .clone()
+            .map(|entry| entry.0)
+            .eq(self.added.iter().map(|entry| entry.0))
+        {
+            return added.enumerate().all(|(i, entry)| compare(i, entry));
+        }
+        if added.clone().count() != self.added.len() {
+            return false;
+        }
+        // Stable sort semantics: values with equal ids retain their relative order.
+        let mut start = 0;
+        for group in self.added.chunk_by(|a, b| a.0 == b.0) {
+            let mut actual = added.clone().filter(|(kind, _)| *kind == group[0].0);
+            if !(start..start + group.len()).all(|i| actual.next().is_some_and(|v| compare(i, v)))
+                || actual.next().is_some()
+            {
+                return false;
+            }
+            start += group.len();
+        }
+        true
+    }
+}
+
+#[derive(Debug)]
+enum OriginalTag {
+    Wire(Vec<u8>),
+    // Retain structural identity for poisoning even if the packet writer emits End.
+    Unencodable(Tag),
+}
+impl OriginalTag {
+    fn new(tag: Tag) -> Self {
+        match nbt::write_network(&tag, Limits::default()) {
+            Ok(wire) => Self::Wire(wire),
+            Err(_) => Self::Unencodable(tag),
+        }
+    }
+    fn matches(&self, tag: &Tag) -> bool {
+        match self {
+            Self::Wire(wire) => {
+                // Successful network NBT is lossless for Tag, including float bits and
+                // the escaping of mixed-list wrappers. An error is never an exact match.
+                let mut compare = CompareWire(Some(wire));
+                nbt::visit_network(tag, Limits::default(), |bytes| compare.put(bytes)).is_ok()
+                    && compare.0 == Some(&[])
+            }
+            Self::Unencodable(old) => old == tag,
+        }
+    }
+    fn bytes(&self) -> &[u8] {
+        match self {
+            Self::Wire(wire) => wire,
+            Self::Unencodable(_) => &[0],
+        }
+    }
+}
+
+#[derive(Debug)]
+struct Original {
+    key: Key,
+    tag: Option<OriginalTag>,
+    bytes: usize,
+}
+
+/// Usually there is one exact key per signature. Only a collision allocates a queue.
+#[derive(Debug)]
+struct Bucket {
+    first: Original,
+    rest: VecDeque<Original>,
+}
+
 /// Original NBT for unchanged stacks. Two old encodings that normalize to the same value are
 /// ambiguous: neither original is reused. Every session owns its cache; nothing is persisted.
 #[derive(Debug, Default)]
 pub(crate) struct Cache {
-    entries: HashMap<Vec<u8>, Original>,
-    order: VecDeque<Vec<u8>>,
+    entries: HashMap<Signature, Bucket>,
+    order: VecDeque<Signature>,
     bytes: usize,
 }
 impl Cache {
-    fn key(stack: &Stack) -> Option<Vec<u8>> {
-        if stack.item < 0 {
-            return None;
-        }
-        let _pinned = ids::unrenumbered();
-        let mut value = stack.clone();
-        value.count = 1;
-        value.wire = WirePatch::default();
-        value.added.sort_by_key(|(kind, _)| *kind);
-        value.removed.sort_unstable();
-        let mut w = Writer::new();
-        Slot::write(&Some(value), &mut w);
-        (w.data.len() <= CACHE_ENTRY_BYTES).then_some(w.data)
-    }
     fn remember(&mut self, stack: &Stack, tag: Tag) {
-        let Some(key) = Self::key(stack) else {
+        let _pinned = ids::unrenumbered();
+        let Some(sig) = signature(stack) else {
             return;
         };
-        if let Some(original) = self.entries.get_mut(&key) {
-            if original.tag.as_ref().is_some_and(|old| *old != tag) {
+        if let Some(original) = self.entries.get_mut(&sig).and_then(|bucket| {
+            std::iter::once(&mut bucket.first)
+                .chain(&mut bucket.rest)
+                .find(|original| original.key.matches(stack))
+        }) {
+            if original.tag.as_ref().is_some_and(|old| !old.matches(&tag)) {
                 self.bytes -= original.bytes;
                 original.tag = None;
-                original.bytes = key.len() * 2;
+                original.bytes = sig.bytes * 2;
                 self.bytes += original.bytes;
             }
             return;
         }
-        let mut w = Writer::new();
-        w.nbt(&tag);
-        // Count both copies of the FIFO key, conservatively, in the serialized byte budget.
-        let bytes = key.len() * 2 + w.data.len();
+        let tag = OriginalTag::new(tag);
+        // Keep the original serialized budget for the stored exact key and its index.
+        let bytes = sig.bytes * 2 + tag.bytes().len();
         if bytes > CACHE_ENTRY_BYTES {
             return;
         }
-        while self.entries.len() >= CACHE_ENTRIES || self.bytes + bytes > CACHE_BYTES {
+        let key = Key::new(stack, sig.bytes);
+        while self.order.len() >= CACHE_ENTRIES || self.bytes + bytes > CACHE_BYTES {
             let Some(old) = self.order.pop_front() else {
                 break;
             };
-            if let Some(old) = self.entries.remove(&old) {
-                self.bytes -= old.bytes;
-            }
+            let Entry::Occupied(mut bucket) = self.entries.entry(old) else {
+                unreachable!("cache FIFO entry");
+            };
+            let first = if let Some(next) = bucket.get_mut().rest.pop_front() {
+                std::mem::replace(&mut bucket.get_mut().first, next)
+            } else {
+                bucket.remove().first
+            };
+            self.bytes -= first.bytes;
         }
         self.bytes += bytes;
-        self.order.push_back(key.clone());
-        self.entries.insert(
+        self.order.push_back(sig);
+        let original = Original {
             key,
-            Original {
-                tag: Some(tag),
-                bytes,
-            },
-        );
+            tag: Some(tag),
+            bytes,
+        };
+        match self.entries.entry(sig) {
+            Entry::Occupied(mut bucket) => bucket.get_mut().rest.push_back(original),
+            Entry::Vacant(bucket) => {
+                bucket.insert(Bucket {
+                    first: original,
+                    rest: VecDeque::new(),
+                });
+            }
+        }
     }
-    fn original(&self, stack: &Stack) -> Option<Tag> {
-        self.entries.get(&Self::key(stack)?)?.tag.clone()
+    fn original(&self, stack: &Stack) -> Option<&[u8]> {
+        let _pinned = ids::unrenumbered();
+        self.original_with_signature(stack, signature(stack)?)
+    }
+
+    fn original_with_signature(&self, stack: &Stack, sig: Signature) -> Option<&[u8]> {
+        if stack.item != sig.item {
+            return None;
+        }
+        let bucket = self.entries.get(&sig)?;
+        std::iter::once(&bucket.first)
+            .chain(&bucket.rest)
+            .find(|original| original.key.matches(stack))?
+            .tag
+            .as_ref()
+            .map(OriginalTag::bytes)
     }
 }
 
@@ -688,21 +1007,24 @@ pub(super) fn write_stack(stack: Option<&Stack>, w: &mut Writer) {
         w.bool(false);
         return;
     }
-    let cached = ids::legacy_item_cache().and_then(|cache| cache.lock().unwrap().original(stack));
-    let from_cache = cached.is_some();
-    let tag = if let Some(tag) = cached {
-        tag
-    } else {
-        let Ok(tag) = legacy_tag(stack) else {
-            w.bool(false);
-            return;
-        };
-        tag
+    let header = |w: &mut Writer| {
+        w.bool(true);
+        w.varint(item);
+        w.i8(stack.count as i8);
     };
-    w.bool(true);
-    w.varint(item);
-    w.i8(stack.count as i8);
-    if !from_cache && matches!(&tag, Tag::Compound(map) if map.is_empty()) {
+    if let Some(cache) = ids::legacy_item_cache()
+        && let Some(original) = cache.lock().unwrap().original(stack)
+    {
+        header(w);
+        w.bytes(original);
+        return;
+    }
+    let Ok(tag) = legacy_tag(stack) else {
+        w.bool(false);
+        return;
+    };
+    header(w);
+    if matches!(&tag, Tag::Compound(map) if map.is_empty()) {
         w.nbt(&Tag::End);
     } else {
         w.nbt(&tag);

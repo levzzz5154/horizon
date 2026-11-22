@@ -1,8 +1,6 @@
 //! Direct ArmorTrim holders, using the existing stream holder convention.
-use crate::{
-    Result,
-    buf::{Reader, Writer},
-};
+use super::ComponentOutput;
+use crate::{Result, buf::Reader};
 use horizon_core::nbt::Tag;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -40,7 +38,7 @@ impl<T> TrimHolder<T> {
             id => Ok(Self::Id(id - 1)),
         }
     }
-    pub(super) fn write(&self, w: &mut Writer, direct: impl FnOnce(&T, &mut Writer)) {
+    pub(super) fn write<W: ComponentOutput>(&self, w: &mut W, direct: impl FnOnce(&T, &mut W)) {
         match self {
             Self::Id(id) => w.varint(id + 1),
             Self::Direct(value) => {
@@ -57,7 +55,7 @@ impl TrimMaterial {
             description: r.nbt()?,
         })
     }
-    pub(super) fn write(&self, w: &mut Writer) {
+    pub(super) fn write(&self, w: &mut impl ComponentOutput) {
         w.string(&self.palette_id);
         w.nbt(&self.description);
     }
@@ -70,7 +68,7 @@ impl TrimPattern {
             decal: r.bool()?,
         })
     }
-    pub(super) fn write(&self, w: &mut Writer) {
+    pub(super) fn write(&self, w: &mut impl ComponentOutput) {
         w.string(&self.asset_id);
         w.nbt(&self.description);
         w.bool(self.decal);

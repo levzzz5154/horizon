@@ -266,7 +266,7 @@ impl FireworkExplosion {
             twinkle: r.bool()?,
         })
     }
-    fn write(&self, w: &mut Writer) {
+    fn write(&self, w: &mut impl ComponentOutput) {
         w.varint(self.shape);
         w.varint(self.colors.len() as i32);
         self.colors.iter().for_each(|c| w.i32(*c));
@@ -329,7 +329,7 @@ impl SkinPatch {
             slim,
         })
     }
-    fn write(&self, w: &mut Writer) {
+    fn write(&self, w: &mut impl ComponentOutput) {
         for texture in [&self.body, &self.cape, &self.elytra] {
             w.bool(texture.is_some());
             if let Some(texture) = texture {
@@ -342,6 +342,71 @@ impl SkinPatch {
         }
     }
 }
+
+/// The component encoder also feeds the legacy original-NBT cache, which compares
+/// pinned wire bytes without building another packet.
+trait ComponentOutput {
+    fn bytes(&mut self, bytes: &[u8]);
+    fn nbt(&mut self, tag: &Tag);
+    fn template(&mut self, stack: &Stack);
+    fn value(&mut self, kind: i32, component: &Component);
+
+    fn u8(&mut self, v: u8) {
+        self.bytes(&[v]);
+    }
+    fn bool(&mut self, v: bool) {
+        self.u8(u8::from(v));
+    }
+    fn varint(&mut self, v: i32) {
+        let mut bytes = [0; 5];
+        let mut v = v as u32;
+        let mut n = 0;
+        while v >= 128 {
+            bytes[n] = v as u8 | 128;
+            v >>= 7;
+            n += 1;
+        }
+        bytes[n] = v as u8;
+        self.bytes(&bytes[..=n]);
+    }
+    fn i32(&mut self, v: i32) {
+        self.bytes(&v.to_be_bytes());
+    }
+    fn i64(&mut self, v: i64) {
+        self.bytes(&v.to_be_bytes());
+    }
+    fn f32(&mut self, v: f32) {
+        self.bytes(&v.to_be_bytes());
+    }
+    fn uuid(&mut self, v: u128) {
+        self.bytes(&v.to_be_bytes());
+    }
+    fn string(&mut self, value: &str) {
+        self.varint(value.len() as i32);
+        self.bytes(value.as_bytes());
+    }
+}
+impl ComponentOutput for Writer {
+    fn bytes(&mut self, bytes: &[u8]) {
+        self.bytes(bytes);
+    }
+    fn nbt(&mut self, tag: &Tag) {
+        self.nbt(tag);
+    }
+    fn template(&mut self, stack: &Stack) {
+        Template::write(stack, self);
+    }
+    fn value(&mut self, kind: i32, component: &Component) {
+        write_value(kind, component, self);
+    }
+    fn u8(&mut self, v: u8) {
+        self.u8(v);
+    }
+    fn varint(&mut self, v: i32) {
+        self.varint(v);
+    }
+}
+
 impl Component {
     pub(crate) fn read(kind: i32, r: &mut Reader) -> Result<Self> {
         if kind == component::CONTAINER && ids::quirks().count_first_templates {
@@ -622,6 +687,10 @@ impl Component {
         (r.remaining() == 0).then_some(layers)
     }
     pub(crate) fn write(&self, kind: i32, w: &mut Writer) {
+        self.write_to(kind, w);
+    }
+
+    fn write_to(&self, kind: i32, w: &mut impl ComponentOutput) {
         match self {
             Self::Raw(bytes) => {
                 let legacy = if kind == component::CONTAINER
@@ -643,14 +712,13 @@ impl Component {
             }
             Self::BannerPatterns(layers) => {
                 // A pattern an older client lacks is left out (ids::synced_down).
-                let layers: Vec<(i32, i32)> = layers
-                    .iter()
-                    .filter_map(|(p, c)| {
+                let kept = || {
+                    layers.iter().filter_map(|(p, c)| {
                         ids::synced_down("minecraft:banner_pattern", *p).map(|p| (p, *c))
                     })
-                    .collect();
-                w.varint(layers.len() as i32);
-                for (pattern, color) in layers {
+                };
+                w.varint(kept().count() as i32);
+                for (pattern, color) in kept() {
                     w.varint(pattern + 1);
                     w.varint(color);
                 }
@@ -685,14 +753,13 @@ impl Component {
                     ) =>
             {
                 // An enchantment an older client lacks is left out (ids::synced_down).
-                let list: Vec<(i32, i32)> = list
-                    .iter()
-                    .filter_map(|(e, l)| {
+                let kept = || {
+                    list.iter().filter_map(|(e, l)| {
                         ids::synced_down("minecraft:enchantment", *e).map(|e| (e, *l))
                     })
-                    .collect();
-                w.varint(list.len() as i32);
-                for (e, level) in list {
+                };
+                w.varint(kept().count() as i32);
+                for (e, level) in kept() {
                     w.varint(e);
                     w.varint(level);
                 }
@@ -786,7 +853,7 @@ impl Component {
             }
             Self::Stacks(stacks) => {
                 w.varint(stacks.len() as i32);
-                stacks.iter().for_each(|s| Template::write(s, w));
+                stacks.iter().for_each(|s| w.template(s));
             }
             Self::Fireworks { flight, explosions } => {
                 w.varint(*flight);
@@ -865,7 +932,7 @@ fn read_optional_profile(r: &mut Reader) -> Result<Profile> {
         skin: SkinPatch::default(),
     })
 }
-fn write_optional_profile(p: &Profile, w: &mut Writer) {
+fn write_optional_profile(p: &Profile, w: &mut impl ComponentOutput) {
     w.bool(p.name.is_some());
     if let Some(name) = &p.name {
         w.string(name);
@@ -1308,13 +1375,13 @@ fn value_down(kind: i32, quirks: ids::Quirks, pinned: &[u8]) -> Result<Vec<u8>> 
 }
 
 /// A stack's components, without those an older client being written for lacks.
-fn write_patch(s: &Stack, w: &mut Writer) {
+fn write_patch(s: &Stack, w: &mut impl ComponentOutput) {
     let has = |kind: i32| ids::component(kind) >= 0;
     w.varint(s.added.iter().filter(|(k, _)| has(*k)).count() as i32);
     w.varint(s.removed.iter().filter(|k| has(**k)).count() as i32);
     for (kind, c) in s.added.iter().filter(|(k, _)| has(*k)) {
         w.varint(ids::component(*kind));
-        write_value(*kind, c, w);
+        w.value(*kind, c);
     }
     for kind in s.removed.iter().filter(|k| has(**k)) {
         w.varint(ids::component(*kind));
@@ -1472,10 +1539,14 @@ impl Codec<Stack> for Template {
             write_slot(Some(s), w);
             return;
         }
-        w.varint(ids::item(s.item));
-        w.varint(s.count);
-        write_patch(s, w);
+        write_template(s, w);
     }
+}
+
+fn write_template(s: &Stack, w: &mut impl ComponentOutput) {
+    w.varint(ids::item(s.item));
+    w.varint(s.count);
+    write_patch(s, w);
 }
 
 /// HashedStack: what the client believes a slot holds. Component values are

@@ -903,9 +903,37 @@ fn read_network_with_reader(reader: &mut Reader<'_, '_>) -> Result<(Tag, usize),
     Ok((tag, reader.offset))
 }
 
-struct Writer<'a> {
-    bytes: &'a mut Vec<u8>,
-    start: usize,
+trait ByteOutput {
+    fn put(&mut self, bytes: &[u8]);
+    fn ascii(&mut self, units: &[u16]);
+}
+impl ByteOutput for Vec<u8> {
+    fn put(&mut self, bytes: &[u8]) {
+        self.extend_from_slice(bytes);
+    }
+    fn ascii(&mut self, units: &[u16]) {
+        self.extend(units.iter().map(|&unit| unit as u8));
+    }
+}
+struct VisitBytes<F>(F);
+impl<F: FnMut(&[u8])> ByteOutput for VisitBytes<F> {
+    fn put(&mut self, bytes: &[u8]) {
+        (self.0)(bytes);
+    }
+    fn ascii(&mut self, units: &[u16]) {
+        for units in units.chunks(32) {
+            let mut bytes = [0; 32];
+            for (byte, &unit) in bytes.iter_mut().zip(units) {
+                *byte = unit as u8;
+            }
+            self.put(&bytes[..units.len()]);
+        }
+    }
+}
+
+struct Writer<'a, O> {
+    bytes: &'a mut O,
+    len: usize,
     max_len: usize,
     max_nodes: usize,
     max_depth: usize,
@@ -918,7 +946,7 @@ struct Writer<'a> {
     /// is written as the canonical one. The network writer keeps its bits.
     canonical_nan: bool,
 }
-impl Writer<'_> {
+impl<O: ByteOutput> Writer<'_, O> {
     fn root(&mut self, name: Option<&JavaString>, tag: &Tag) -> Result<(), Error> {
         let id = tag.id();
         self.put(&[id])?;
@@ -932,15 +960,16 @@ impl Writer<'_> {
 
     fn error(&self, reason: &'static str) -> Error {
         Error {
-            offset: self.bytes.len() - self.start,
+            offset: self.len,
             reason,
         }
     }
     fn put(&mut self, bytes: &[u8]) -> Result<(), Error> {
-        if bytes.len() > self.max_len - self.bytes.len() {
+        if bytes.len() > self.max_len - self.len {
             return Err(self.error("byte limit exceeded"));
         }
-        self.bytes.extend_from_slice(bytes);
+        self.bytes.put(bytes);
+        self.len += bytes.len();
         Ok(())
     }
     fn count(&mut self, len: usize) -> Result<(), Error> {
@@ -965,9 +994,9 @@ impl Writer<'_> {
         };
         self.put(&len.to_be_bytes())?;
         // One byte per unit (most strings): written at once while they fit.
-        if usize::from(len) == string.0.len() && usize::from(len) <= self.max_len - self.bytes.len()
-        {
-            self.bytes.extend(string.0.iter().map(|&c| c as u8));
+        if usize::from(len) == string.0.len() && usize::from(len) <= self.max_len - self.len {
+            self.bytes.ascii(&string.0);
+            self.len += usize::from(len);
             return Ok(());
         }
         for &c in &string.0 {
@@ -1108,6 +1137,12 @@ pub fn write_network_into(tag: &Tag, limits: Limits, out: &mut Vec<u8>) -> Resul
     write_into(None, tag, limits, out)
 }
 
+/// Visit the same bytes as [`write_network_into`], without collecting them.
+/// On error the visitor may have seen an incomplete encoding.
+pub fn visit_network(tag: &Tag, limits: Limits, visit: impl FnMut(&[u8])) -> Result<(), Error> {
+    write_to(None, tag, limits, &mut VisitBytes(visit))
+}
+
 fn write_into(
     name: Option<&JavaString>,
     tag: &Tag,
@@ -1115,22 +1150,30 @@ fn write_into(
     out: &mut Vec<u8>,
 ) -> Result<(), Error> {
     let start = out.len();
-    let result = Writer {
+    let result = write_to(name, tag, limits, out);
+    if result.is_err() {
+        out.truncate(start);
+    }
+    result
+}
+
+fn write_to(
+    name: Option<&JavaString>,
+    tag: &Tag,
+    limits: Limits,
+    out: &mut impl ByteOutput,
+) -> Result<(), Error> {
+    Writer {
         bytes: out,
-        start,
-        // This absolute limit is never less than the length of the borrowed buffer.
-        max_len: start.saturating_add(limits.max_bytes),
+        len: 0,
+        max_len: limits.max_bytes,
         max_nodes: limits.max_nodes,
         max_depth: limits.max_depth,
         nodes: 0,
         empty_long_strings: name.is_some(),
         canonical_nan: name.is_some(),
     }
-    .root(name, tag);
-    if result.is_err() {
-        out.truncate(start);
-    }
-    result
+    .root(name, tag)
 }
 
 /// Validate an opaque native component against network limits and a stable disk round trip.

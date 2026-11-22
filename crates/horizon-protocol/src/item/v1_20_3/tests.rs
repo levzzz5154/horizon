@@ -1,12 +1,22 @@
 use super::*;
 
+fn cached_tag(cache: &Cache, stack: &Stack) -> Option<Tag> {
+    cache
+        .original(stack)
+        .map(|wire| Reader::new(wire).nbt().unwrap())
+}
+
 #[test]
-fn original_nbt_cache_preserves_json_and_opaque_entity_fields_and_rejects_collisions() {
+fn original_nbt_cache_preserves_json_and_opaque_entity_fields_and_poisons_ambiguity() {
     let mut stack = Stack::new(1, 64);
     stack.added.push((
         component::CUSTOM_NAME,
         Component::Text(Tag::compound([("text", d::string("Fixture"))])),
     ));
+    stack
+        .added
+        .push((component::REPAIR_COST, Component::Int(3)));
+    stack.removed = vec![component::DAMAGE, component::MAX_DAMAGE];
     let first = Tag::compound([
         (
             "display",
@@ -21,7 +31,8 @@ fn original_nbt_cache_preserves_json_and_opaque_entity_fields_and_rejects_collis
     cache.remember(&stack, first.clone());
     stack.count = 1;
     stack.added.reverse();
-    assert_eq!(cache.original(&stack), Some(first.clone()));
+    stack.removed.reverse();
+    assert_eq!(cached_tag(&cache, &stack), Some(first.clone()));
     stack.added.push((component::DAMAGE, Component::Int(7)));
     assert_eq!(cache.original(&stack), None);
     stack.added.pop();
@@ -36,15 +47,51 @@ fn original_nbt_cache_preserves_json_and_opaque_entity_fields_and_rejects_collis
 }
 
 #[test]
+fn original_nbt_cache_verifies_full_pinned_key_after_a_signature_collision() {
+    let mut source = Stack::new(1, 1);
+    source.added.push((
+        component::CUSTOM_MODEL_DATA,
+        Component::CustomModelData {
+            floats: vec![0.0],
+            flags: Vec::new(),
+            strings: Vec::new(),
+            colors: Vec::new(),
+        },
+    ));
+    let mut cache = Cache::default();
+    cache.remember(&source, Tag::compound([("original", Tag::Int(1))]));
+    let sig = signature(&source).unwrap();
+    assert!(cache.original_with_signature(&source, sig).is_some());
+    let mut different = source.clone();
+    let Component::CustomModelData { floats, .. } = &mut different.added[0].1 else {
+        unreachable!();
+    };
+    floats[0] = -0.0;
+    assert_eq!(source, different); // Rust float equality alone would falsely hit.
+    assert!(cache.original_with_signature(&different, sig).is_none());
+
+    // A representation that actually writes the same pinned bytes still matches
+    // and can poison the exact key when paired with a different old tag.
+    let mut alias = source.clone();
+    let (kind, value) = &mut alias.added[0];
+    let mut w = Writer::new();
+    value.write(*kind, &mut w);
+    *value = Component::Raw(w.data);
+    assert!(cache.original(&alias).is_some());
+    cache.remember(&alias, Tag::End);
+    assert!(cache.original(&source).is_none());
+}
+
+#[test]
 fn original_nbt_cache_obeys_entry_size_total_size_and_fifo_bounds() {
     let mut cache = Cache::default();
     for item in 0..=CACHE_ENTRIES {
         cache.remember(&Stack::new(item as i32, 1), Tag::End);
     }
-    assert_eq!(cache.entries.len(), CACHE_ENTRIES);
+    assert_eq!(cache.order.len(), CACHE_ENTRIES);
     assert_eq!(cache.original(&Stack::new(0, 1)), None);
     assert_eq!(
-        cache.original(&Stack::new(CACHE_ENTRIES as i32, 1)),
+        cached_tag(&cache, &Stack::new(CACHE_ENTRIES as i32, 1)),
         Some(Tag::End)
     );
     let mut cache = Cache::default();
@@ -56,9 +103,9 @@ fn original_nbt_cache_obeys_entry_size_total_size_and_fifo_bounds() {
         cache.remember(&Stack::new(item, 1), large.clone());
     }
     assert!(cache.bytes <= CACHE_BYTES);
-    assert!(cache.entries.len() < 64);
+    assert!(cache.order.len() < 64);
     assert_eq!(cache.original(&Stack::new(0, 1)), None);
-    assert_eq!(cache.original(&Stack::new(63, 1)), Some(large));
+    assert_eq!(cached_tag(&cache, &Stack::new(63, 1)), Some(large));
 }
 fn bytes(hex: &str) -> Vec<u8> {
     (0..hex.len())
