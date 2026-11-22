@@ -1,5 +1,6 @@
 //! OptiFine-format Better Grass rules resolved to block states and atlas layers.
 use crate::{connected::TileLayer, resource_source::ResourceRoot, sprites::Sprites};
+use horizon_assets::model::Direction;
 use horizon_core::fast_hash::FxHashMap;
 use horizon_optifine::better_grass::{Mode, Rules, Surface};
 use horizon_world::registry::{BlockRegistry, BlockStateId};
@@ -17,6 +18,37 @@ pub(crate) struct Side {
 pub(crate) struct Ground {
     surface: Surface,
     snowy: bool,
+}
+
+impl Ground {
+    /// Replace a stock-sized side (including its coextensive overlay), not a resource pack's
+    /// inset or partial element that happens to declare the same cull direction.
+    pub(crate) fn is_side(self, positions: [[f32; 3]; 4], facing: Direction) -> bool {
+        let (fixed, across, plane) = match facing {
+            Direction::North => (2, 0, 0.0),
+            Direction::South => (2, 0, 1.0),
+            Direction::West => (0, 2, 0.0),
+            Direction::East => (0, 2, 1.0),
+            _ => return false,
+        };
+        let height = if self.surface == Surface::DirtPath {
+            15.0 / 16.0
+        } else {
+            1.0
+        };
+        let mut corners = 0;
+        for p in positions {
+            let index = match (p[fixed] == plane, p[across], p[1]) {
+                (true, 0.0, 0.0) => 0,
+                (true, 1.0, 0.0) => 1,
+                (true, 0.0, y) if y == height => 2,
+                (true, 1.0, y) if y == height => 3,
+                _ => return false,
+            };
+            corners |= 1 << index;
+        }
+        corners == 0b1111
+    }
 }
 
 pub(crate) struct BetterGrass {

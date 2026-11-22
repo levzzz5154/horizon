@@ -2627,7 +2627,7 @@ impl Mesher<'_> {
                             let side = ground.and_then(|(rules, mode, ground)| {
                                 let facing = face.quad.cull?;
                                 if facing != face.quad.facing
-                                    || matches!(facing, ModelDirection::Up | ModelDirection::Down)
+                                    || !ground.is_side(face.quad.positions, facing)
                                 {
                                     return None;
                                 }
