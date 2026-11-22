@@ -788,9 +788,8 @@ mod tests {
             param("LevelSide", "super::mod_api_host::level_side(self)")
         );
         for (mutable, ticks) in [(Some(true), false), (Some(false), true)] {
-            assert_eq!(
-                super::host_param::validate(&level_both, "test", true, mutable, ticks).unwrap_err(),
-                "test: a both-side level hook takes the read kind until a client level seam exists"
+            assert!(
+                super::host_param::validate(&level_both, "test", true, mutable, ticks).is_err()
             );
         }
         assert_eq!(
@@ -848,7 +847,8 @@ mod tests {
             param("&mut dyn LevelRandomHost", "self")
         );
         super::host_param::validate(&hit, "test", true, Some(true), false).unwrap();
-        // On both sides a hit's level reads, and its host says which side it is.
+        // A both-side hit can read through `LevelSide`, or stage writes with a
+        // random host that limits access on the client.
         let hit_both = Hook {
             side: Side::Both,
             ..hit.clone()
@@ -858,19 +858,17 @@ mod tests {
             host_param(&hit_both, Some(false), false),
             param("LevelSide", "super::mod_api_host::level_side(self)")
         );
+        super::host_param::validate(&hit_both, "test", true, Some(true), false).unwrap();
+        assert_eq!(
+            host_param(&hit_both, Some(true), false),
+            param("&mut dyn LevelRandomHost", "self")
+        );
         assert_eq!(
             super::host_param::validate(&hit_both, "test", true, Some(false), true).unwrap_err(),
             "test: this entry takes no host marker"
         );
         for (hook, mutable) in [
             (hit.clone(), Some(false)),
-            (
-                Hook {
-                    side: Side::Both,
-                    ..hit.clone()
-                },
-                Some(true),
-            ),
             (
                 Hook {
                     host: Some(HostAccess::Level),

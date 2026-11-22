@@ -303,21 +303,36 @@ pub struct MinecartPass {
     pub position: BlockPos,
 }
 
+#[derive(Clone, Copy)]
+enum LevelScope {
+    Server(&'static str),
+    Client(&'static str),
+}
+
 thread_local! {
-    static LEVEL: Cell<Option<&'static str>> = const { Cell::new(None) };
+    static LEVEL: Cell<Option<LevelScope>> = const { Cell::new(None) };
     static PENDING: RefCell<Vec<Pending>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Scope authority to this thread and restore it even on an error or panic.
 /// Nested guest actions may temporarily enter a different dimension.
 pub fn in_level<R>(dimension: Option<&'static str>, f: impl FnOnce() -> R) -> R {
-    struct Restore(Option<&'static str>);
+    in_scope(dimension.map(LevelScope::Server), f)
+}
+
+/// Scope the local player's inside walk without authorizing server contacts.
+pub fn in_client_level<R>(dimension: &'static str, f: impl FnOnce() -> R) -> R {
+    in_scope(Some(LevelScope::Client(dimension)), f)
+}
+
+fn in_scope<R>(level: Option<LevelScope>, f: impl FnOnce() -> R) -> R {
+    struct Restore(Option<LevelScope>);
     impl Drop for Restore {
         fn drop(&mut self) {
             LEVEL.set(self.0);
         }
     }
-    let _restore = Restore(LEVEL.replace(dimension));
+    let _restore = Restore(LEVEL.replace(level));
     f()
 }
 
@@ -326,17 +341,27 @@ pub fn step_on(block: &str, contact: Contact<'_>) {
     if block.starts_with("minecraft:") {
         return;
     }
-    if let Some(dimension) = LEVEL.get()
+    if let Some(dimension) = current_level()
         && let Some(hooks) = HOOKS.get()
     {
         (hooks.step_on)(dimension, contact);
     }
 }
 
-/// The dimension the current thread's contacts answer in, as `inside` and the
-/// landing routes read it: the server's tick set it around the entity passes.
+/// The authoritative dimension of the current thread's server contacts.
 pub fn current_level() -> Option<&'static str> {
-    LEVEL.get()
+    match LEVEL.get() {
+        Some(LevelScope::Server(dimension)) => Some(dimension),
+        _ => None,
+    }
+}
+
+/// The player's inside walk runs on both sides, unlike other contact hooks.
+pub(crate) fn inside_level() -> Option<(&'static str, bool)> {
+    match LEVEL.get()? {
+        LevelScope::Server(dimension) => Some((dimension, false)),
+        LevelScope::Client(dimension) => Some((dimension, true)),
+    }
 }
 
 /// Whether a part of the block `state` answers `fall_on`.
@@ -349,7 +374,7 @@ pub fn fall_listens(state: BlockStateId) -> bool {
 /// ignored and a negative one is zero. The writes the part asked for are kept until the
 /// entity's batch ends. Nothing runs off the server or without a part.
 pub fn fall(level: &mut DamageLevel<'_>, contact: Contact<'_>, distance: f64, damage: f32) -> f32 {
-    let (Some(dimension), Some(hooks)) = (LEVEL.get(), HOOKS.get()) else {
+    let (Some(dimension), Some(hooks)) = (current_level(), HOOKS.get()) else {
         return damage;
     };
     if !(hooks.fall_listens)(contact.state) {
@@ -398,7 +423,7 @@ pub fn bounce(
     fall_distance: f64,
     movement: horizon_core::geometry::Vec3,
 ) -> horizon_core::geometry::Vec3 {
-    let (Some(dimension), Some(hooks)) = (LEVEL.get(), HOOKS.get()) else {
+    let (Some(dimension), Some(hooks)) = (current_level(), HOOKS.get()) else {
         return movement;
     };
     if !(hooks.bounce_listens)(contact.state) {
@@ -463,7 +488,7 @@ pub fn inside_written(state: BlockStateId, position: BlockPos, writes: Vec<Insid
 /// Note a minecart on the rail `state` at `position`, if a part there listens; a world
 /// without such a part pays one test per rail step.
 pub fn minecart_pass(entity: i32, state: BlockStateId, position: BlockPos) {
-    if LEVEL.get().is_some() && HOOKS.get().is_some_and(|hooks| (hooks.pass_listens)(state)) {
+    if current_level().is_some() && HOOKS.get().is_some_and(|hooks| (hooks.pass_listens)(state)) {
         PENDING.with_borrow_mut(|pending| {
             pending.push(Pending::MinecartPass(MinecartPass {
                 entity,

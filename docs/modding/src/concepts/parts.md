@@ -51,3 +51,7 @@ impl Hooks for MyMod {
 - Parts implement `Send + Sync + 'static`.
 - In `has_analog_output`, answer from the block state alone. In `analog_output`, do not change the
   world. The game clamps the comparator signal to the range 0 to 15.
+- `entity_inside` runs on the client for its own player when the part is installed there, so the
+  client can predict movement (including `StuckIn`). Use `host.is_client_side()` to skip code that
+  requires server attachments or randomness. Block writes, damage, fire, and status effects remain
+  server-owned.

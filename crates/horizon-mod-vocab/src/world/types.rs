@@ -1428,6 +1428,11 @@ pub trait LevelHost {
 
 /// Access vanilla's `Level.random`, so draws come in vanilla's order.
 pub trait LevelRandomHost: LevelHost {
+    /// Whether this is a client's prediction level. Only a server owns
+    /// attachments and exposes the level random stream.
+    fn is_client_side(&self) -> bool {
+        false
+    }
     /// The holders' server-owned attachments; `TYPE.get(host, holder)` reads one through it.
     fn attachments(&mut self) -> &mut dyn AttachmentStore {
         unimplemented!("LevelRandomHost::attachments")

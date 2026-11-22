@@ -126,6 +126,7 @@ mod sweep_tests {
         contacts: std::sync::Arc<std::sync::Mutex<Vec<[i32; 3]>>>,
         wither: std::sync::Arc<std::sync::Mutex<Option<mod_api::EffectKey>>>,
         speed: std::sync::Arc<std::sync::Mutex<Option<mod_api::EffectKey>>>,
+        stuck: bool,
         kill_after: Option<usize>,
         panic_after: Option<usize>,
     }
@@ -158,6 +159,14 @@ mod sweep_tests {
                 mod_api::InsideEffect::Freeze,
                 mod_api::EntityWrite::Push([0.5, 0.0, 0.0]),
             );
+            if self.stuck {
+                event.run_after(
+                    mod_api::InsideEffect::Freeze,
+                    mod_api::EntityWrite::StuckIn([0.5, 0.25, 0.5]),
+                );
+                event.apply(mod_api::InsideEffect::Freeze);
+                event.request(mod_api::InsideWrite::DestroyBlock { drop: false });
+            }
             if let Some(wither) = *self.wither.lock().unwrap() {
                 event.run_after(
                     mod_api::InsideEffect::Freeze,
@@ -246,7 +255,9 @@ mod sweep_tests {
         runs: impl FnOnce(&mut horizon_client::motion::MotionWorld) -> crate::Result<()>,
     ) -> (f64, f64, bool) {
         use horizon_client::motion::MotionWorld;
-        let before = game.player.as_ref().unwrap().velocity.x;
+        let player = game.player.as_ref().unwrap();
+        let before = player.velocity.x;
+        let client_side = player.client_side;
         let crate::game::Game {
             world,
             pack,
@@ -259,7 +270,7 @@ mod sweep_tests {
             ..
         } = game;
         let entities: [horizon_core::geometry::Aabb; 0] = [];
-        horizon_client::block_contact::in_level(Some("minecraft:overworld"), || {
+        let sweep = || {
             let mut w = MotionWorld {
                 tag_items: None,
                 block_registries: Some(&pack.block_registries),
@@ -274,9 +285,57 @@ mod sweep_tests {
                 health: health_resources,
             };
             runs(&mut w).unwrap();
-        });
+        };
+        if client_side {
+            horizon_client::block_contact::in_client_level("minecraft:overworld", sweep);
+        } else {
+            horizon_client::block_contact::in_level(Some("minecraft:overworld"), sweep);
+        }
         let player = game.player.as_ref().unwrap();
         (before, player.velocity.x, player.health.dead_or_dying())
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn local_player_predicts_part_movement_without_authoring_server_effects() {
+        let part = InsidePart {
+            stuck: true,
+            ..Default::default()
+        };
+        let mods = install_inside_mod("inside-client-movement", &part);
+        mod_platform::testing::with_mods(mods, || {
+            crate::game::native_entity_refs::tests::with_game(|game| {
+                let _ = horizon_client::block_contact::HOOKS.set(super::BLOCK_CONTACT_HOOKS);
+                let mut player = horizon_client::motion::PlayerMotion::new(
+                    game.motion,
+                    horizon_core::geometry::Vec3::new(0.5, 100.0, 0.5),
+                )
+                .unwrap();
+                player.client_side = true;
+                game.player = Some(player);
+                let (before, after, died) = sweep_game_player(game);
+                let player = game.player.as_ref().unwrap();
+                assert!(!died);
+                assert_eq!(after - before, 1.0, "both client contacts push");
+                assert_eq!(
+                    player.stuck_multiplier,
+                    horizon_core::geometry::Vec3::new(0.5, 0.25, 0.5)
+                );
+                assert!(!player.in_powder_snow, "the part cannot freeze the client");
+                assert!(!player.events.iter().any(|event| matches!(
+                    event,
+                    horizon_client::motion::MotionEvent::InsideEffect { .. }
+                )));
+                game.drain_entity_inside();
+                for x in [1, 2] {
+                    let state = game.world.block(x, 100, 0);
+                    assert_eq!(
+                        game.pack.assets.registry.state(state).unwrap().name,
+                        "minecraft:stone"
+                    );
+                }
+            });
+        });
     }
 
     /// A listening part is told mid-walk, in walk order, and its typed writes reach

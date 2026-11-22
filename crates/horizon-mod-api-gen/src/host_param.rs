@@ -37,13 +37,14 @@ pub(super) fn validate(
     if let Some(marker) = hook.host {
         match marker {
             HostAccess::Read if !is_level && hook.side != Side::Client => {}
-            // A server hit's level writes through its random host; a both-side one reads, as
-            // a both-side `GameLevel` does, and is told its side by `LevelSide`.
+            // A hit's level writes through its random host. A both-side
+            // query uses `LevelSide`; a staged mutable hook uses the random
+            // host, which limits access on the client.
             HostAccess::Level
                 if !game_level(hook)
                     && !ticks
                     && (hook.side == Side::Server && mutable == Some(true)
-                        || hook.side == Side::Both && mutable == Some(false)) => {}
+                        || hook.side == Side::Both && mutable.is_some()) => {}
             HostAccess::Read | HostAccess::Level => {
                 return Err(format!("{name}: this entry takes no host marker"));
             }
@@ -58,9 +59,12 @@ pub(super) fn validate(
             "{name}: a both-side hook with a &self target takes host \"read\""
         ));
     }
-    if is_level && hook.side == Side::Both && (mutable == Some(true) || ticks) {
+    if is_level
+        && hook.side == Side::Both
+        && (ticks || mutable == Some(true) && hook.host != Some(HostAccess::Level))
+    {
         return Err(format!(
-            "{name}: a both-side level hook takes the read kind until a client level seam exists"
+            "{name}: a mutable both-side level hook requires a random host without tick access"
         ));
     }
     Ok(())
@@ -124,7 +128,7 @@ pub(super) fn host_param(hook: &Hook, mutable: Option<bool>, ticks: bool) -> Opt
                 call,
             };
         }
-        if hook.side == Side::Both {
+        if hook.side == Side::Both && !mutable {
             return HostParam {
                 ty: "LevelSide".into(),
                 call: "super::mod_api_host::level_side(self)",

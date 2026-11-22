@@ -217,6 +217,25 @@ impl InsideEffects {
         }
     }
 
+    /// Keep only the writes the local player predicts. The server owns the
+    /// other effects; discard them before mixing with vanilla's step.
+    #[doc(hidden)]
+    pub fn retain_player_movement(&mut self) {
+        debug_assert!(self.planned.is_empty());
+        self.in_step.fill(false);
+        for writes in self.before.iter_mut().chain(&mut self.after) {
+            writes.retain(|write| {
+                matches!(
+                    write,
+                    EntityWrite::Push(_)
+                        | EntityWrite::SetMovement(_)
+                        | EntityWrite::StuckIn(_)
+                        | EntityWrite::ResetFallDistance
+                )
+            });
+        }
+    }
+
     /// Whether nothing is queued: the walk builds no collector work when no part listens.
     pub fn is_empty(&self) -> bool {
         self.planned.is_empty()

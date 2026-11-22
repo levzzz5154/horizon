@@ -178,7 +178,9 @@ impl Game<'_> {
         if let Some(player) = player {
             self.native_player_tick_pre(mod_api::__private::PlayerTickPreCall { player });
         }
-        let result = self.tick_local_player(entity_collisions, pushed, sprint_window);
+        let result = horizon_client::block_contact::in_client_level(self.dim.id(), || {
+            self.tick_local_player(entity_collisions, pushed, sprint_window)
+        });
         entity_section_steps::player_after(self, player_from);
         // `EntityEvent.Size` for the pose the tick set.
         self.native_local_player_size();

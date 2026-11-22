@@ -1491,6 +1491,7 @@ horizon-client game::native_hooks::entity_inside::sweep_tests::a_servers_player_
 horizon-client game::native_hooks::entity_inside::sweep_tests::an_added_effect_keeps_its_collector_position lib daily resources
 horizon-client game::native_hooks::entity_inside::sweep_tests::an_arrow_is_told_once_a_block_stuck_and_flying lib daily resources
 horizon-client game::native_hooks::entity_inside::sweep_tests::an_item_without_a_part_is_left_alone lib daily resources
+horizon-client game::native_hooks::entity_inside::sweep_tests::local_player_predicts_part_movement_without_authoring_server_effects lib daily resources
 horizon-client game::native_hooks::entity_inside::sweep_tests::the_server_passes_without_a_part_keep_vanilla_behavior lib daily resources
 horizon-client game::native_hooks::entity_inside::sweep_tests::without_a_part_the_walk_costs_no_mod_work lib daily resources
 horizon-client game::native_hooks::entity_interact_specific::tests::specific_click_keeps_location_and_stops_after_a_claim lib daily resources

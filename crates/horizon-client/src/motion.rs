@@ -2101,13 +2101,13 @@ impl MotionWorld<'_, '_, '_> {
         effects: &mut mod_api::InsideEffects,
     ) {
         let entity = self.player.entity_id;
-        let Some(dimension) = crate::block_contact::current_level() else {
+        let (Some((dimension, client_side)), Some(hooks)) = (
+            crate::block_contact::inside_level(),
+            crate::block_contact::HOOKS.get(),
+        ) else {
             return;
         };
-        if !crate::block_contact::HOOKS
-            .get()
-            .is_some_and(|hooks| (hooks.inside_listens)(state))
-        {
+        if !(hooks.inside_listens)(state) {
             return;
         }
         // The part is told mid-walk, on the level random host, its whole callback
@@ -2122,22 +2122,25 @@ impl MotionWorld<'_, '_, '_> {
             self.tag_items,
             self.block_registries,
             self.damage_hooks,
+        )
+        .on_client(client_side);
+        (hooks.inside_fire)(
+            &mut level,
+            dimension,
+            entity,
+            "minecraft:player",
+            state,
+            p,
+            precise,
+            &mut staged,
+            &mut writes,
         );
-        if let Some(hooks) = crate::block_contact::HOOKS.get() {
-            (hooks.inside_fire)(
-                &mut level,
-                dimension,
-                entity,
-                "minecraft:player",
-                state,
-                p,
-                precise,
-                &mut staged,
-                &mut writes,
-            );
-            effects.absorb_step(staged);
+        if client_side {
+            staged.retain_player_movement();
+        } else {
             crate::block_contact::inside_written(state, p, writes);
         }
+        effects.absorb_step(staged);
     }
 
     /// A typed entity write an `entity_inside` part queued, applied to this

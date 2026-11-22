@@ -583,19 +583,28 @@ impl mod_api::AttachmentHost for super::native_hooks::HitLevel<'_> {
         holder: mod_api::Holder,
         access: AttachmentAccess,
     ) -> Result<&mut mod_api::Attachments, mod_api::AttachmentError> {
+        if self.0.client_side() {
+            return Err(mod_api::AttachmentError::MissingHolder);
+        }
         let _ = access;
         self.0.attachments(holder)
     }
 }
 
 impl mod_api::LevelRandomHost for super::native_hooks::HitLevel<'_> {
+    fn is_client_side(&self) -> bool {
+        self.0.client_side()
+    }
     fn attachments(&mut self) -> &mut dyn mod_api::AttachmentStore {
         self
     }
     fn random(&mut self) -> Option<mod_api::LegacyRandom> {
-        Some(mod_api::LegacyRandom::clone(self.0.random()))
+        (!self.0.client_side()).then(|| mod_api::LegacyRandom::clone(self.0.random()))
     }
     fn set_random(&mut self, random: mod_api::LegacyRandom) -> bool {
+        if self.0.client_side() {
+            return false;
+        }
         **self.0.random() = random;
         true
     }
