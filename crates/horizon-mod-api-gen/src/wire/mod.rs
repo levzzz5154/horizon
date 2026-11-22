@@ -71,6 +71,7 @@ pub(super) const IMPORTS: &[&str] = &[
     "EnchantmentDamageEffects",
     "PoiTypeExtensions",
     "VillagerProfessions",
+    "VillagerTypes",
     "LoadConditions",
     "CauldronFluidContents",
     "BlockAndTintGetter",
@@ -310,7 +311,7 @@ pub(super) struct Surface<'a> {
     pub(super) types: Types<'a>,
     pub(super) methods: Vec<Method>,
     pub(super) unbound: Vec<Unbound>,
-    /// Methods documented as unavailable on wasm.
+    /// The methods whose doc says `Not on wasm: <why>.`
     pub(super) excused: Vec<(&'static str, String)>,
     /// Each imported trait with the area traits that are parts of it.
     pub(super) parts: Vec<(&'static str, String)>,
@@ -319,11 +320,8 @@ pub(super) struct Surface<'a> {
 /// The line on a method's doc that keeps it off wasm, and says why.
 const NOT_ON_WASM: &str = "Not on wasm: ";
 
-/// A hook declaration that has no guest adapter or wire argument records.
-pub(super) const NATIVE_ONLY: &str = "Native only: ";
-
-/// Whether the method's documentation contains this opt-out with a reason.
-fn doc_reason(attrs: &[syn::Attribute], prefix: &str) -> bool {
+/// Whether `attrs`' doc has a [`NOT_ON_WASM`] line with a reason.
+fn not_on_wasm(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|attr| match &attr.meta {
         syn::Meta::NameValue(doc) if doc.path.is_ident("doc") => match &doc.value {
             syn::Expr::Lit(syn::ExprLit {
@@ -332,7 +330,7 @@ fn doc_reason(attrs: &[syn::Attribute], prefix: &str) -> bool {
             }) => line
                 .value()
                 .trim()
-                .strip_prefix(prefix)
+                .strip_prefix(NOT_ON_WASM)
                 .is_some_and(|why| why.len() > 1),
             _ => false,
         },
@@ -435,12 +433,7 @@ pub(super) fn surface_reading<'a>(
             if hidden(&function.attrs) && !subscription {
                 continue;
             }
-            // Native-only hooks never reserve a record in the guest's type table.
-            if *owner == "Hooks" && doc_reason(&function.attrs, NATIVE_ONLY) {
-                excused.push((*owner, name));
-                continue;
-            }
-            if doc_reason(&function.attrs, NOT_ON_WASM) {
+            if not_on_wasm(&function.attrs) {
                 excused.push((*owner, name.clone()));
             }
             match method(&mut types, *module, owner, function, &subst) {

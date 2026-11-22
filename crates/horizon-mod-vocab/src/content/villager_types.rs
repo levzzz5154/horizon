@@ -3,9 +3,8 @@
 use crate::Identifier;
 
 /// A villager type, its spawn selectors and its two clothing textures.
-// no wire: native registration only.
 // exhaustive: a mod declares its villager type as a struct literal.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, horizon_mod_api_macros::Wire)]
 pub struct VillagerTypeDefinition {
     /// Persistent namespaced identity of the type.
     pub key: Identifier,

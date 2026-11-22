@@ -65,9 +65,6 @@ pub(crate) fn native_only_hook(name: &str) -> Option<&'static str> {
         "general_entity_tick" => Some(
             "general_entity_tick: general entity ticks are not yet available to wasm mods (the wasm adapter is #792's stage 4b)",
         ),
-        "register_villager_types" => Some(
-            "register_villager_types: villager type registration is available to native mods only",
-        ),
         _ => None,
     }
 }

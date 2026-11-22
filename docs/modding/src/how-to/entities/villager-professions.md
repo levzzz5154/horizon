@@ -66,10 +66,9 @@ identities.
 ## Add a biome-selected villager type
 
 A type selects a villager's clothing, independently of its profession and
-trades. In a [native mod](../../start/first-mod.md), implement
-`Hooks::register_villager_types` to declare the persistent ID, biome selectors,
-and separate villager and zombie-villager clothing textures. This hook is
-native-only, runs once per mod load, and does not allow world mutation.
+trades. Implement `Hooks::register_villager_types` to declare the persistent ID,
+biome selectors, and separate villager and zombie-villager clothing textures.
+The hook runs once per mod load and does not allow world mutation.
 
 Create a project with `cargo horizon-mod new meadow_folk --template native`
 using an SDK that includes the hook. Set `side = "both"` in `horizon-mod.toml`

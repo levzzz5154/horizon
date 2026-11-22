@@ -1,3 +1,3 @@
 ids = ["hook:register_villager_types"]
-why = "Native mods can declare biome-selected villager types with separate clothing textures for villagers and zombie villagers, independently of professions."
+why = "Mods can declare biome-selected villager types with separate clothing textures for villagers and zombie villagers, independently of professions."
 migrate = "No changes are needed for existing mods. To add a type, implement Hooks::register_villager_types and pass a VillagerTypeDefinition to event.types.register(...)."

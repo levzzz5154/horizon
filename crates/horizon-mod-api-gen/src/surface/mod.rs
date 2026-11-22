@@ -269,14 +269,11 @@ fn doc(attrs: &[syn::Attribute]) -> String {
         .to_owned()
 }
 
-/// A doc's wasm exclusion reason, to the end of its paragraph.
+/// A doc's `Not on wasm: <why>`, to the end of its paragraph.
 fn not_on_wasm(attrs: &[syn::Attribute]) -> Option<String> {
     let text = doc(attrs);
     let mut lines = text.lines().map(str::trim);
-    let first = lines.find_map(|line| {
-        line.strip_prefix("Not on wasm: ")
-            .or_else(|| line.strip_prefix(crate::wire::NATIVE_ONLY))
-    })?;
+    let first = lines.find_map(|line| line.strip_prefix("Not on wasm: "))?;
     let why: Vec<&str> = std::iter::once(first)
         .chain(lines.take_while(|line| !line.is_empty()))
         .collect();
