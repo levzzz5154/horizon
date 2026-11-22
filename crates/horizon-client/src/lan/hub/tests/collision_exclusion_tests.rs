@@ -115,7 +115,7 @@ fn the_server_checks_a_guests_moves_through_the_same_exclusions_as_its_client() 
         .unwrap();
     place(&mut hub, start);
     for &step in &through {
-        let (wrongly, refused, _) = hub.collide(0, step.0, &ctx);
+        let (wrongly, refused, _, _) = hub.collide(0, step.0, &ctx);
         assert_eq!(
             (wrongly, refused),
             (false, false),
@@ -131,7 +131,7 @@ fn the_server_checks_a_guests_moves_through_the_same_exclusions_as_its_client() 
         .position(|(at, _)| at[0] + 0.3 > 22.0)
         .unwrap();
     place(&mut hub, if into == 0 { start } else { through[into - 1] });
-    let (wrongly, refused, _) = hub.collide(0, through[into].0, &ctx);
+    let (wrongly, refused, _, _) = hub.collide(0, through[into].0, &ctx);
     assert_eq!((wrongly, refused), (false, true));
 }
 

@@ -16,7 +16,7 @@ use horizon_protocol::{
         configuration::{ClientInformation, CustomPayload},
         play,
     },
-    passage_sync,
+    passage_sync, player_displacement,
 };
 use std::{
     collections::VecDeque,
@@ -192,6 +192,9 @@ pub struct Guest {
     pub(super) logout_guard: Option<Arc<()>>,
     /// A validated movement report the mods have not ruled on yet (`player_move`).
     pub pending_move: Option<super::hub::PendingMove>,
+    /// Server translations the client has not echoed on the ordered play stream.
+    player_displacements: VecDeque<(u64, [f64; 3])>,
+    player_displacement_sequence: u64,
     /// Validated movement packets waiting to be told to `player_move_packet`, oldest first, and
     /// the hub tick with how many were told in it (the per-tick budget, `MOVE_PACKET_BUDGET`).
     pub move_packet_queue: VecDeque<super::hub::MovePacket>,
@@ -668,6 +671,7 @@ impl Guest {
             return false;
         }
         self.disconnect_pending = true;
+        self.clear_player_displacements();
         self.left_reason = text;
         self.sender.disconnect(reason);
         true
@@ -744,6 +748,8 @@ impl Guest {
             left_reason: String::new(),
             logout_guard: None,
             pending_move: None,
+            player_displacements: VecDeque::new(),
+            player_displacement_sequence: 0,
             disconnect_pending: false,
             leaving: false,
             personal_sidebar: false,
@@ -971,6 +977,89 @@ impl Guest {
     pub fn negotiated_attachment_sync(&self) -> bool {
         crate::raw_payloads::negotiated(self.sender.payload_transport(), attachment_sync::CHANNEL)
     }
+    /// A connected, loaded player we can move without using a teleport.
+    pub fn next_player_displacement(&self) -> Option<u64> {
+        const MAX_IN_FLIGHT: usize = 64;
+        if !self.participates_online()
+            || !self.placed
+            || !self.client_loaded()
+            || self.disconnect_pending
+            || self.landing
+            || self.handover.is_some()
+            || self.awaiting_teleport.is_some()
+            || self.vehicle.is_some()
+            || self.watching
+            || self.sleeping
+            || self.player_displacements.len() >= MAX_IN_FLIGHT
+            || !crate::raw_payloads::negotiated(
+                self.sender.payload_transport(),
+                player_displacement::CHANNEL,
+            )
+        {
+            return None;
+        }
+        self.player_displacement_sequence.checked_add(1)
+    }
+
+    /// Commit a displacement already sent to this client. The authoritative body and the
+    /// packet validation baselines move together; walking still starts at the old report.
+    pub fn record_player_displacement(
+        &mut self,
+        sequence: u64,
+        from: [f64; 3],
+        at: [f64; 3],
+        grounded: bool,
+    ) {
+        debug_assert_eq!(sequence, self.player_displacement_sequence + 1);
+        let movement = std::array::from_fn(|i| at[i] - from[i]);
+        self.player_displacement_sequence = sequence;
+        self.player_displacements.push_back((sequence, movement));
+        self.previous_position = self.position;
+        self.position = at;
+        self.release_tickets();
+        self.moved = true;
+        self.on_ground = grounded;
+        self.rests_on_ground = grounded;
+        self.client_is_floating = false;
+        for (i, delta) in movement.into_iter().enumerate() {
+            self.first_good[i] += delta;
+            self.last_reported.0[i] += delta;
+            if let Some(pending) = self.pending_move.as_mut() {
+                pending.report.to[i] += delta;
+            }
+        }
+    }
+
+    pub(super) fn has_player_displacement(&self) -> bool {
+        !self.player_displacements.is_empty()
+    }
+
+    pub(super) fn rebase_player_position(&self, mut position: [f64; 3]) -> [f64; 3] {
+        for (_, movement) in &self.player_displacements {
+            for (axis, delta) in position.iter_mut().zip(movement) {
+                *axis += delta;
+            }
+        }
+        position
+    }
+
+    pub(super) fn acknowledge_player_displacement(&mut self, data: &[u8]) {
+        if self
+            .player_displacements
+            .front()
+            .is_some_and(|(sequence, _)| {
+                player_displacement::decode_ack(data).is_ok_and(|ack| ack == *sequence)
+            })
+        {
+            self.player_displacements.pop_front();
+        }
+    }
+
+    pub(super) fn clear_player_displacements(&mut self) {
+        // Sequence numbers are connection-local and never recycled after travel.
+        self.player_displacements.clear();
+    }
+
     /// Passages to hold or forget (arismoko/horizon#3775), if the guest is on a Horizon client, the only
     /// one that reads them, and placed or held (a hand-over's arrival is sent its chunks,
     /// so their passages too); a message that cannot be written is not sent.

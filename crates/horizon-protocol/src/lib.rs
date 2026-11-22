@@ -21,6 +21,7 @@ pub mod mod_list;
 pub mod packets;
 pub mod passage_sync;
 pub mod payload_negotiation;
+pub mod player_displacement;
 pub mod quiet;
 pub mod registry;
 mod resolver;

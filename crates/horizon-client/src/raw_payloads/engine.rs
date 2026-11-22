@@ -13,6 +13,7 @@
 use horizon_protocol::{
     attachment_sync,
     payload_negotiation::{Error, Flow, ManifestBuilder, Phase, RegistrationPhase},
+    player_displacement,
 };
 
 /// One engine declaration: phase, channel, flow and exact version.
@@ -23,13 +24,21 @@ pub(super) struct Declaration {
     pub version: &'static str,
 }
 
-/// Every engine declaration. Attachment sync: play, clientbound only.
-pub(super) const DECLARATIONS: &[Declaration] = &[Declaration {
-    phase: Phase::Play,
-    id: attachment_sync::CHANNEL,
-    flow: Flow::ToClient,
-    version: attachment_sync::VERSION,
-}];
+/// Every engine declaration.
+pub(super) const DECLARATIONS: &[Declaration] = &[
+    Declaration {
+        phase: Phase::Play,
+        id: attachment_sync::CHANNEL,
+        flow: Flow::ToClient,
+        version: attachment_sync::VERSION,
+    },
+    Declaration {
+        phase: Phase::Play,
+        id: player_displacement::CHANNEL,
+        flow: Flow::Bidirectional,
+        version: player_displacement::VERSION,
+    },
+];
 
 /// Add the engine declarations to an installation's manifest, as optional entries.
 pub(super) fn register(manifest: &mut ManifestBuilder) -> Result<(), Error> {

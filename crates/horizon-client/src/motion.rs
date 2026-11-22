@@ -2465,6 +2465,84 @@ impl MotionWorld<'_, '_, '_> {
         }
         entity_move::move_entity(self, mover, gate.delta())
     }
+
+    /// `Entity.move(SELF)`: a game-side move gate has already admitted the mod's
+    /// displacement. Run the normal player physics, then refresh the actual
+    /// support under the new footprint (including a step with no requested Y).
+    pub fn move_player_displacement(&mut self, gate: &MoveGate) -> Result<()> {
+        if !self.player.ground.on_ground {
+            self.refresh_displacement_support()?;
+        }
+        entity_move::move_entity(self, MoverType::SelfMovement, gate.delta())?;
+        self.refresh_displacement_support()
+    }
+
+    /// Apply the server's resolved translation in this player's predicted frame,
+    /// not as velocity or an absolute correction. If walking already changed
+    /// the footprint, clip the granted translation again; do not grant a new step.
+    pub fn predict_player_displacement(&mut self, delta: Vec3) -> Result<()> {
+        let movement = if self.player.spectator {
+            delta
+        } else {
+            self.resolve_player_movement(delta, 0.0)?
+        };
+        self.player.position = self.player.position.add_vector(movement);
+        self.refresh_displacement_support()
+    }
+
+    fn refresh_displacement_support(&mut self) -> Result<()> {
+        let position = self.player.position;
+        let bounds = self.player.bounds();
+        let context = self.context();
+        let mut scene = self.collisions();
+        let mut ground = self.player.ground;
+        let blocks = !self.player.spectator;
+        ground.check_support(blocks, bounds, None, |area| {
+            let exclusions = self.player.collision_exclusions.boxes();
+            if exclusions.is_empty() {
+                find_supporting_block(&mut scene, context, position, area, 1_000_000)
+            } else {
+                find_supporting_block(
+                    &mut collision_exclusions::Excluding {
+                        world: &mut scene,
+                        boxes: exclusions,
+                    },
+                    context,
+                    position,
+                    area,
+                    1_000_000,
+                )
+            }
+        })?;
+        let min = bounds.min_position();
+        let max = bounds.max_position();
+        let feet = Aabb::new(
+            Vec3::new(min.x, min.y - 1.0e-6, min.z),
+            Vec3::new(max.x, min.y, max.z),
+        );
+        ground.on_ground = ground.supporting_block.is_some()
+            || (blocks && self.entities.iter().any(|bounds| bounds.intersects(feet)));
+        ground.on_ground_no_blocks = ground.on_ground && ground.supporting_block.is_none();
+        self.player.ground = ground;
+        Ok(())
+    }
+
+    fn resolve_player_movement(&self, movement: Vec3, max_step: f32) -> Result<Vec3> {
+        Ok(collision_exclusions::resolve_world_movement(
+            &mut self.movement_collisions(),
+            &self.player.collision_exclusions,
+            MovementRequest {
+                entity: EntityIdentity(0),
+                context: self.context(),
+                bounds: self.player.bounds(),
+                movement,
+                max_step,
+                on_ground: self.player.ground.on_ground,
+                candidate_budget: 1_000_000,
+            },
+        )?)
+    }
+
     /// `LocalPlayer.move`: the move, then `updateAutoJump` with the float
     /// horizontal displacement. The gate is this invocation's (arismoko/horizon#2414), armed
     /// here before the move's own handling, no-physics included.
@@ -2649,19 +2727,7 @@ impl EntityMoveWorld for MotionWorld<'_, '_, '_> {
     }
     fn collide(&mut self, movement: Vec3) -> Result<Vec3> {
         let max_step = self.player.attribute("minecraft:step_height")? as f32;
-        Ok(collision_exclusions::resolve_world_movement(
-            &mut self.movement_collisions(),
-            &self.player.collision_exclusions,
-            MovementRequest {
-                entity: EntityIdentity(0),
-                context: self.context(),
-                bounds: self.player.bounds(),
-                movement,
-                max_step,
-                on_ground: self.player.ground.on_ground,
-                candidate_budget: 1_000_000,
-            },
-        )?)
+        self.resolve_player_movement(movement, max_step)
     }
     fn fall_distance(&self) -> f64 {
         self.player.fall_distance

@@ -41,6 +41,16 @@ impl Game<'_> {
             );
         });
         if let Some(host) = self.lan.as_mut() {
+            if !cancel
+                && host
+                    .hub
+                    .guest(conn)
+                    .and_then(|g| g.pending_move.as_ref())
+                    .is_some_and(|pending| pending.report.to != report.to)
+            {
+                host.hub
+                    .recheck_displaced_report(conn, &self.world, self.collision);
+            }
             host.hub.resolve_move(conn, !cancel);
         }
     }

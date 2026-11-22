@@ -1,7 +1,7 @@
 //! The collision part of `ServerGamePacketListenerImpl.handlePlayerPositionChange`, through the
 //! guest's collision exclusions (arismoko/horizon#3717): a mod's boxes in which the level's blocks don't stop the
 //! player are the same boxes its client moves it through.
-use super::{Guest, Hub, TickCtx};
+use super::{BlockCollisionRegistry, Guest, Hub, TickCtx, World};
 use crate::collisions::SceneCollisions;
 use horizon_core::geometry::{Aabb, ShapeOp, Vec3, VoxelShape};
 use horizon_world::{
@@ -17,19 +17,23 @@ use horizon_world::{
 use std::io;
 
 impl Hub {
-    /// The collision part of handlePlayerPositionChange: whether the move
-    /// counts as moved wrongly (logged), and whether it is refused (the
-    /// player is sent back where they were).
-    pub(super) fn collide(&self, i: usize, to: [f64; 3], ctx: &TickCtx) -> (bool, bool, bool) {
+    /// `handlePlayerPositionChange`'s collision check: moved wrongly, refused,
+    /// standing on something, and explicitly overridden by the move gate.
+    pub(super) fn collide(
+        &self,
+        i: usize,
+        to: [f64; 3],
+        ctx: &TickCtx,
+    ) -> (bool, bool, bool, bool) {
         let g = &self.guests[i];
         // noPhysics (spectators) and sleepers move freely.
         let Some(binding) = ctx.collision else {
-            return (false, false, false);
+            return (false, false, false, false);
         };
         if g.spectator() || g.sleeping {
-            return (false, false, false);
+            return (false, false, false, false);
         }
-        let mut scene = SceneCollisions {
+        let scene = SceneCollisions {
             world: ctx.world,
             binding,
             subject: None,
@@ -54,23 +58,85 @@ impl Hub {
         // step is below «moved wrongly»'s threshold, and its cancel must
         // correct the guest all the same.
         let overridden = gate.overridden();
-        // A move with no exclusions pays this one check.
-        if g.collision_exclusions.is_empty() {
-            return check_move(g, to, requested, movement, overridden, &mut scene);
+        let (wrongly, refused, stands) =
+            check_scene_move(g, to, requested, movement, overridden, scene);
+        (wrongly, refused, stands, overridden)
+    }
+
+    /// A mod displaced the player while their already-validated walking report
+    /// was in the move hook. Validate its translated remainder in the new scene
+    /// without firing that hook or the movement gate a second time.
+    pub fn recheck_displaced_report(
+        &mut self,
+        conn: u32,
+        world: &World,
+        binding: &BlockCollisionRegistry<'_>,
+    ) {
+        let Some(i) = self.guests.connection_index(conn) else {
+            return;
+        };
+        let g = &self.guests[i];
+        let Some(pending) = g.pending_move.as_ref() else {
+            return;
+        };
+        let to = pending.report.to;
+        let [x, y, z] = g.position;
+        let requested = Vec3::new(to[0] - x, to[1] - y, to[2] - z);
+        if g.spectator() {
+            return;
         }
-        let boxes = g.collision_exclusions.boxes();
-        check_move(
+        let (_, refused, stands) = check_scene_move(
             g,
             to,
             requested,
-            movement,
-            overridden,
-            &mut Excluding {
-                world: &mut scene,
-                boxes,
+            requested,
+            false,
+            SceneCollisions {
+                world,
+                binding,
+                subject: None,
             },
-        )
+        );
+        self.guests.update(i, |g| {
+            if let Some(pending) = g.pending_move.as_mut() {
+                if refused {
+                    // Keep any look change. Walking cannot be written through
+                    // a block just because it was valid before the displacement.
+                    pending.report.to = g.position;
+                    pending.report.flags = (pending.report.flags & !1) | u8::from(g.on_ground);
+                    pending.report.stands = g.rests_on_ground;
+                    pending.report.floating = false;
+                } else {
+                    pending.report.stands = stands;
+                    pending.report.floating &= !stands;
+                }
+            }
+        });
     }
+}
+
+fn check_scene_move(
+    g: &Guest,
+    to: [f64; 3],
+    requested: Vec3,
+    movement: Vec3,
+    overridden: bool,
+    mut scene: SceneCollisions<'_, '_>,
+) -> (bool, bool, bool) {
+    if g.collision_exclusions.is_empty() {
+        return check_move(g, to, requested, movement, overridden, &mut scene);
+    }
+    check_move(
+        g,
+        to,
+        requested,
+        movement,
+        overridden,
+        &mut Excluding {
+            world: &mut scene,
+            boxes: g.collision_exclusions.boxes(),
+        },
+    )
 }
 
 /// [`Hub::collide`] against `world`'s blocks.

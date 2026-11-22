@@ -9,8 +9,11 @@ use super::{
     commands::{Target, entity_pitch},
     vehicle_teleport::TeleportMotion,
 };
+use horizon_client::{motion::MotionWorld, raw_payloads::Endpoint};
 use horizon_core::geometry::Vec3;
-use mod_api::{EntityRef, PlayerRef};
+use horizon_protocol::player_displacement::{self, Displacement};
+use horizon_world::entity_move::MoverType;
+use mod_api::{EntityRef, PayloadBytes, PayloadId, PlayerRef};
 
 /// `Level.isInSpawnableBounds` and `/tp`'s limits: 30,000,000 blocks out,
 /// 20,000,000 up or down.
@@ -27,6 +30,173 @@ pub(super) fn facing(yaw: f32) -> &'static str {
 }
 
 impl Game<'_> {
+    /// `Entity.move(SELF)`: immediate collision-resolved displacement, not a
+    /// teleport or an addition to the body's velocity.
+    pub(super) fn entity_move_self(&mut self, entity: EntityRef, [x, y, z]: [f64; 3]) -> bool {
+        let Some(target) = self.native_entity_target(entity) else {
+            return false;
+        };
+        if self.target_level(target) != self.dim
+            || !self
+                .target_position(target)
+                .is_some_and(|[px, py, pz]| in_bounds([px + x, py + y, pz + z]))
+        {
+            return false;
+        }
+        let delta = Vec3::new(x, y, z);
+        match target {
+            Target::Player => self
+                .lan_acting
+                .is_some_and(|conn| self.move_acting_player(conn, delta)),
+            Target::Guest(conn) => {
+                if self
+                    .lan
+                    .as_ref()
+                    .and_then(|h| h.hub.guest(conn))
+                    .and_then(|g| g.next_player_displacement())
+                    .is_none()
+                {
+                    return false;
+                }
+                self.as_guest(conn, |game| game.move_acting_player(conn, delta))
+                    .unwrap_or(false)
+            }
+            _ => {
+                if self.passenger_vehicle_target(target).is_some() {
+                    return false;
+                }
+                self.native_walk_entity(entity.id())
+                    .is_some_and(|handle| self.move_unridden_entity(handle, delta))
+            }
+        }
+    }
+
+    fn move_acting_player(&mut self, conn: u32, delta: Vec3) -> bool {
+        use super::move_gate::MoveWho;
+        let Some((sequence, sender)) = self.lan.as_ref().and_then(|h| {
+            let guest = h.hub.guest(conn)?;
+            Some((guest.next_player_displacement()?, guest.sender.clone()))
+        }) else {
+            return false;
+        };
+        let Some(player) = self
+            .player
+            .as_ref()
+            .filter(|p| !p.teleported && !p.health.dead_or_dying())
+        else {
+            return false;
+        };
+        if self.riding.is_some() {
+            return false;
+        }
+        let (from, ground, collision) = (player.position, player.ground, player.collision);
+        let gate = self.entity_move(MoveWho::Player, MoverType::SelfMovement, delta);
+        if gate.skipped() || !in_bounds(from.add_vector(gate.delta()).components()) {
+            return false;
+        }
+        let result = self.with_displacement_motion(|motion| motion.move_player_displacement(&gate));
+        let player = self.player.as_mut().unwrap();
+        let at = player.position;
+        if result.is_err() || !in_bounds(at.components()) {
+            // An unsuccessful sweep must not leave the guest turn with a
+            // position discrepancy for its teleport handling.
+            (player.position, player.ground, player.collision) = (from, ground, collision);
+            return false;
+        }
+        let on_ground = player.ground.on_ground;
+        let moved = at.subtract(from);
+        if moved == Vec3::ZERO {
+            if let Some(host) = self.lan.as_mut() {
+                host.hub.update_guest(conn, |g| {
+                    g.on_ground = on_ground;
+                    g.rests_on_ground = on_ground;
+                });
+            }
+            return true;
+        }
+        let entity = player.entity_id as u32;
+        let result = self.queue_current_payload(
+            Endpoint::server(sender.clone()),
+            &PayloadId(player_displacement::CHANNEL.into()),
+            PayloadBytes(player_displacement::encode(Displacement {
+                sequence,
+                delta: moved.components(),
+            })),
+        );
+        // Publish the server body's position to tracking immediately, not as
+        // a position discrepancy for `leave_guest` to turn into a teleport.
+        if let Some(host) = self.lan.as_mut() {
+            host.hub.update_guest(conn, |g| {
+                g.record_player_displacement(
+                    sequence,
+                    from.components(),
+                    at.components(),
+                    on_ground,
+                );
+            });
+        }
+        if result.is_err() {
+            sender.close();
+            return false;
+        }
+        self.entity_section_moved_id(entity);
+        true
+    }
+
+    pub(super) fn remote_player_displacement(&mut self, data: &[u8]) -> horizon_client::Result<()> {
+        let displacement = player_displacement::decode(data)?;
+        let [x, y, z] = displacement.delta;
+        let delta = Vec3::new(x, y, z);
+        if let Some(player) = self.player.as_ref().filter(|_| self.riding.is_none()) {
+            let from = player.position;
+            if in_bounds(from.add_vector(delta).components()) {
+                self.with_displacement_motion(|motion| motion.predict_player_displacement(delta))?;
+            }
+            let player = self.player.as_ref().unwrap();
+            let (position, id) = (player.position, player.entity_id as u32);
+            let moved = position.subtract(from);
+            self.previous_position = self.previous_position.add_vector(moved);
+            if let Some(remote) = self.remote.as_mut() {
+                // The server already knows about this translation, but not any walking
+                // the client hasn't reported, or a local obstruction the server didn't see.
+                remote.position_sender.displace_baseline(delta);
+                if moved.subtract(delta).length_squared() > 1.0e-12 {
+                    remote.position_sender.request_position();
+                }
+            }
+            self.entity_section_moved_id(id);
+        }
+        if self.replay.playing() {
+            return Ok(());
+        }
+        self.send_payload_to_server(
+            &PayloadId(player_displacement::CHANNEL.into()),
+            PayloadBytes(displacement.sequence.to_be_bytes().to_vec()),
+        )
+        .map_err(|e| format!("acknowledge player displacement: {e:?}"))?;
+        Ok(())
+    }
+
+    fn with_displacement_motion<R>(
+        &mut self,
+        f: impl FnOnce(&mut MotionWorld<'_, '_, '_>) -> R,
+    ) -> R {
+        let entities = self.player_entity_collisions();
+        f(&mut MotionWorld {
+            entities: &entities,
+            player: self.player.as_mut().expect("checked player body"),
+            scene: &mut self.world,
+            assets: &self.pack.assets,
+            collision_binding: self.collision,
+            resources: self.motion,
+            health: &self.health_resources,
+            loop_context: &self.loop_context,
+            damage_hooks: &self.damage_hooks,
+            tag_items: Some(world_items!(self)),
+            block_registries: Some(&self.pack.block_registries),
+        })
+    }
+
     /// Moves the entity to `pos` in its level (`Entity.teleportTo`), as
     /// `/tp` does: a player is placed there and told, a rider gets off. With
     /// `rotation` (yaw, pitch in degrees) it also turns. False for a position
@@ -314,6 +484,265 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "daily"]
+    fn physical_move_adds_to_outstanding_player_walk_and_stops_at_a_wall() {
+        use super::super::native_entity_refs::tests::with_client_game;
+        use horizon_client::{lan::guest::InboxItem, save::WorldPreset, title::WorldOptions};
+        use horizon_core::geometry::Vec3;
+        use horizon_protocol::packets::{Empty, configuration::CustomPayload, play};
+        use std::time::{Duration, Instant};
+
+        fn near(actual: [f64; 3], expected: [f64; 3]) {
+            for (actual, expected) in actual.into_iter().zip(expected) {
+                assert!((actual - expected).abs() < 1.0e-6, "{actual} != {expected}");
+            }
+        }
+
+        with_client_game(|client| {
+            client.settings.render_distance = 2;
+            client.settings.simulation_distance = 2;
+            client
+                .open_integrated(
+                    "physical_move",
+                    Some("Physical movement"),
+                    Some(1),
+                    true,
+                    Some(&WorldOptions {
+                        world_type: WorldPreset::Flat,
+                        ..Default::default()
+                    }),
+                )
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(60);
+            while !client.remote.as_ref().is_some_and(|r| r.joined) {
+                client.poll_remote().unwrap();
+                assert!(Instant::now() < deadline, "client join");
+                std::thread::yield_now();
+            }
+            client.send(play::Serverbound::PlayerLoaded(Empty));
+            let integrated = client.integrated.as_ref().unwrap();
+            integrated
+                .call(|server| {
+                    server.set_allow_commands(true);
+                    assert!(server.run_command("forceload add 0 0"));
+                })
+                .unwrap();
+            while !integrated
+                .call(|server| server.world.chunks.contains_key(&(0, 0)))
+                .unwrap()
+            {
+                assert!(
+                    Instant::now() < deadline,
+                    "server loaded the fixture's chunk"
+                );
+                std::thread::yield_now();
+            }
+            let (conn, id) = client
+                .integrated
+                .as_ref()
+                .unwrap()
+                .call(|server| {
+                    let g = &server.lan.as_ref().unwrap().hub.guests[0];
+                    let conn = g.conn;
+                    let id = g.entity_id as u32;
+                    assert!(server.run_command("fill 0 99 0 8 99 7 stone"));
+                    assert!(
+                        server
+                            .run_command("fill 3 100 0 5 100 7 minecraft:stone_slab[type=bottom]")
+                    );
+                    assert!(server.run_command("fill 6 100 0 6 103 7 stone"));
+                    let entity = server.entity(id).unwrap();
+                    assert!(entity.teleport_to(server, [1.5, 100.0, 1.5], None));
+                    (conn, id)
+                })
+                .unwrap();
+            while !client
+                .player
+                .as_ref()
+                .is_some_and(|p| p.position == Vec3::new(1.5, 100.0, 1.5))
+                || !client
+                    .integrated
+                    .as_ref()
+                    .unwrap()
+                    .call(move |server| {
+                        let g = server.lan.as_ref().unwrap().hub.guest(conn).unwrap();
+                        g.next_player_displacement().is_some()
+                    })
+                    .unwrap()
+            {
+                client.poll_remote().unwrap();
+                assert!(Instant::now() < deadline, "client ready for displacement");
+                std::thread::yield_now();
+            }
+
+            // The client walked on +Z and turned before either +X translation reached it.
+            // Hold that pre-displacement packet on the hub so the race is deterministic.
+            let own_velocity = Vec3::new(0.0, 0.0, 0.14);
+            let player = client.player.as_mut().unwrap();
+            player.position.z += 0.25;
+            player.velocity = own_velocity;
+            (client.yaw, client.pitch) = (-24.0, 19.0);
+            client
+                .integrated
+                .as_ref()
+                .unwrap()
+                .call(move |server| {
+                    let entity = server.entity(id).unwrap();
+                    let host: &mut dyn mod_api::ServerHost = server;
+                    assert!(entity.move_self(host, [1.0, 0.0, 0.0]));
+                    near(entity.position(host).unwrap(), [2.5, 100.0, 1.5]);
+                    assert!(entity.move_self(host, [1.0, 0.0, 0.0]));
+                    near(entity.position(host).unwrap(), [3.5, 100.5, 1.5]);
+                    assert_eq!(entity.on_ground(host), Some(true));
+                    server.lan.as_mut().unwrap().hub.update_guest(conn, |g| {
+                        // Sequence 2 cannot acknowledge sequence 1 or remove its translation.
+                        g.inbox.push_back(InboxItem::Packet(
+                            play::Serverbound::CustomPayload(CustomPayload {
+                                channel: super::player_displacement::CHANNEL.into(),
+                                data: 2_u64.to_be_bytes().to_vec(),
+                            }),
+                            None,
+                        ));
+                        g.inbox.push_back(InboxItem::Packet(
+                            play::Serverbound::MovePlayerPosRot(play::MovePlayerPosRot {
+                                x: 1.5,
+                                y: 100.0,
+                                z: 1.75,
+                                yaw: -24.0,
+                                pitch: 19.0,
+                                flags: 1,
+                            }),
+                            None,
+                        ));
+                        g.inbox.push_back(InboxItem::Packet(
+                            play::Serverbound::ClientTickEnd(Empty),
+                            None,
+                        ));
+                    });
+                    server.tick_lan_packets();
+                    let g = server.lan.as_ref().unwrap().hub.guest(conn).unwrap();
+                    near(g.position, [3.5, 100.5, 1.75]);
+                    assert_eq!((g.yaw, g.pitch), (-24.0, 19.0));
+                    assert!(g.awaiting_teleport.is_none());
+                })
+                .unwrap();
+
+            while !client.player.as_ref().is_some_and(|p| p.position.x >= 3.5) {
+                client.poll_remote().unwrap();
+                assert!(
+                    Instant::now() < deadline,
+                    "client received both translations"
+                );
+                std::thread::yield_now();
+            }
+            let player = client.player.as_ref().unwrap();
+            near(player.position.components(), [3.5, 100.5, 1.75]);
+            assert_eq!(player.velocity, own_velocity);
+            assert_eq!((client.yaw, client.pitch), (-24.0, 19.0));
+            assert!(player.ground.on_ground);
+
+            // The client's real acknowledgement is sent before this new-frame walking report.
+            // Its already translated X/Y must not acquire another copy of either move.
+            client.player.as_mut().unwrap().position.z = 2.0;
+            client.send(play::Serverbound::MovePlayerPos(play::MovePlayerPos {
+                x: 3.5,
+                y: 100.5,
+                z: 2.0,
+                flags: 1,
+            }));
+            client.send(play::Serverbound::ClientTickEnd(Empty));
+            while !client
+                .integrated
+                .as_ref()
+                .unwrap()
+                .call(move |server| {
+                    let g = server.lan.as_ref().unwrap().hub.guest(conn).unwrap();
+                    assert!(g.awaiting_teleport.is_none());
+                    g.position == [3.5, 100.5, 2.0]
+                })
+                .unwrap()
+            {
+                assert!(Instant::now() < deadline, "new-frame walk accepted");
+                std::thread::yield_now();
+            }
+
+            // This time the player's own predicted walk is towards the wall. Its old
+            // report cannot be translated all the way; neither body may pass the wall.
+            client.player.as_mut().unwrap().position.x += 0.25;
+            (client.yaw, client.pitch) = (-48.0, 22.0);
+            client
+                .integrated
+                .as_ref()
+                .unwrap()
+                .call(move |server| {
+                    let entity = server.entity(id).unwrap();
+                    assert!(entity.move_self(server, [4.0, 0.0, 0.0]));
+                    near(entity.position(server).unwrap(), [5.7, 100.5, 2.0]);
+                    assert!(entity.move_self(server, [1.0, 0.0, 0.0]));
+                    near(entity.position(server).unwrap(), [5.7, 100.5, 2.0]);
+                    server.lan.as_mut().unwrap().hub.update_guest(conn, |g| {
+                        g.inbox.push_back(InboxItem::Packet(
+                            play::Serverbound::MovePlayerPosRot(play::MovePlayerPosRot {
+                                x: 3.75,
+                                y: 100.5,
+                                z: 2.0,
+                                yaw: -48.0,
+                                pitch: 22.0,
+                                flags: 1,
+                            }),
+                            None,
+                        ));
+                    });
+                    server.tick_lan_packets();
+                    let g = server.lan.as_ref().unwrap().hub.guest(conn).unwrap();
+                    near(g.position, [5.7, 100.5, 2.0]);
+                    assert_eq!((g.yaw, g.pitch), (-48.0, 22.0));
+                    assert!(g.awaiting_teleport.is_none());
+
+                    let kind = server
+                        .res
+                        .mob_types()
+                        .get("minecraft:zombie")
+                        .unwrap()
+                        .clone();
+                    let mob_id = server.take_entity_id();
+                    let mut mob = horizon_client::mobs::Mob::new(
+                        mob_id,
+                        kind,
+                        Vec3::new(1.5, 100.0, 3.5),
+                        90.0,
+                    );
+                    mob.on_ground = true;
+                    mob.no_ai = true;
+                    server.mobs.push(mob);
+                    let mob = server.entity(mob_id).unwrap();
+                    assert!(mob.move_self(server, [2.0, 0.0, 0.0]));
+                    near(mob.position(server).unwrap(), [3.5, 100.5, 3.5]);
+                    assert_eq!(mob.on_ground(server), Some(true));
+                    assert_eq!(mob.rotation(server).unwrap()[0], 90.0);
+                    assert!(!mob.move_self(server, [f64::NAN, 0.0, 0.0]));
+                    let handle = server.native_walk_entity(mob_id).unwrap();
+                    server.discard_entity(handle);
+                    assert!(!mob.move_self(server, [1.0, 0.0, 0.0]));
+                })
+                .unwrap();
+            while !client.player.as_ref().is_some_and(|p| p.position.x > 5.0) {
+                client.poll_remote().unwrap();
+                assert!(
+                    Instant::now() < deadline,
+                    "client received wall-clipped translation"
+                );
+                std::thread::yield_now();
+            }
+            near(
+                client.player.as_ref().unwrap().position.components(),
+                [5.7, 100.5, 2.0],
+            );
+            assert_eq!((client.yaw, client.pitch), (-48.0, 22.0));
+        });
+    }
+
     #[test]
     #[ignore = "daily"]
     fn moves_and_pushes_a_live_mob() {

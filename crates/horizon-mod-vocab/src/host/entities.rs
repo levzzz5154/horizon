@@ -734,6 +734,15 @@ pub trait EntitiesBackendMut {
     /// or on a client. API 379.
     #[access(WorldOnly)]
     fn entity_set_velocity(&mut self, entity: EntityRef, velocity: [f64; 3]) -> bool;
+    /// Side: server. Runs one collision-resolved `Entity.move(SELF)` by `delta`
+    /// (blocks, not velocity), without changing rotation or dismounting.
+    /// A blocked move is successful. False for a stale or unsupported body,
+    /// an invalid displacement, or a move the `entity_move` hook cancels.
+    /// Connected players must be loaded, unmounted, and on a Horizon client
+    /// which negotiated player displacement; vanilla and older clients are
+    /// not moved. Their own movement and view remain independent.
+    #[access(WorldOnly)]
+    fn entity_move_self(&mut self, entity: EntityRef, delta: [f64; 3]) -> bool;
     /// Side: server.
     /// Moves the entity to `pos` in its level (`Entity.teleportTo`), as
     /// `/tp` does: a player is placed there and told, a rider gets off. With

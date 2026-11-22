@@ -1,0 +1,2 @@
+ids = ["handle:EntityRef::move_self"]
+why = "Lets native server mods move an entity immediately through its collisions without changing its look or replacing walking with teleports. An actual player needs a Horizon client that negotiated additive displacement."

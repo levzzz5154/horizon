@@ -204,6 +204,19 @@ where `entity_push` adds to it, and the client moves by it from its next tick. I
 unchanged, for a stale or unavailable player, a displaced outer player or a component that is not finite.
 `entity_set_velocity` refuses players.
 
+`entity.move_self(host, [dx, dy, dz])` moves an entity immediately, in blocks, through the collision sweep,
+step-up and ground check (`Entity.move(SELF)`, `WorldOnly`). Use this for a conveyor or moving platform, not
+`set_velocity` or a teleport. A player's own walking and look remain independent; this does not dismount
+or rotate a rider. A valid move stopped by a wall returns `true`; a stale handle, canceled move, invalid
+destination or unsupported body returns `false`.
+
+Use it in the entity's active server level. A connected player must be loaded and using a Horizon client
+that negotiated additive movement; vanilla and older Horizon clients are refused before anything moves.
+Players sleeping, spectating through another entity, riding, or waiting for a teleport or level arrival
+are not moved. Independently simulated mobs, armor stands, dropped items, orbs, falling blocks, TNT,
+projectiles, fireworks, tridents and empty vehicles can move; occupied vehicles, attached and
+unsimulated entities cannot.
+
 ## Player rules and sleep
 
 Reads accept `Host`; writes accept `ServerHost`.

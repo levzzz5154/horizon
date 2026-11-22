@@ -21,6 +21,13 @@ impl PositionSender {
         self.reminder = POSITION_REMINDER_TICKS - 1;
     }
 
+    /// A known server translation also moves the coordinate frame of the last report.
+    pub fn displace_baseline(&mut self, delta: Vec3) {
+        for (axis, change) in self.position.iter_mut().zip(delta.components()) {
+            *axis += change;
+        }
+    }
+
     /// While export waits for view streaming, a chunk crossing cannot wait for another tick.
     pub fn request_position_for_chunk_change(&mut self, position: [f64; 3]) {
         let column = |[x, _, z]: [f64; 3]| ((x.floor() as i32) >> 4, (z.floor() as i32) >> 4);

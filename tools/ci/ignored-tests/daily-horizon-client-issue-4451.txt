@@ -1229,6 +1229,7 @@ horizon-client game::native_entity_motion::tests::on_block_picks_the_support_nea
 horizon-client game::native_entity_motion::tests::only_a_mount_its_rider_controls_takes_the_riders_speed lib daily resources
 horizon-client game::native_entity_motion::tests::reset_fall_distance_forgets_a_fall_for_mobs_carts_and_players lib daily resources
 horizon-client game::native_entity_moves::tests::moves_and_pushes_a_live_mob lib daily resources
+horizon-client game::native_entity_moves::tests::physical_move_adds_to_outstanding_player_walk_and_stops_at_a_wall lib daily resources
 horizon-client game::native_entity_refs::dragon_query::tests::a_client_lists_the_dragon_and_its_parts_in_a_box lib daily resources
 horizon-client game::native_entity_refs::dragon_query::tests::all_entities_uses_lookup_order_without_bounds_or_parts lib daily resources
 horizon-client game::native_entity_refs::dragon_query::tests::entities_in_includes_dragon_and_separate_parts lib daily resources

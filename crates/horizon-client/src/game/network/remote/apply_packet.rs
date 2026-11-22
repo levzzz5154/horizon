@@ -32,6 +32,9 @@ impl Game<'_> {
             C::CustomPayload(p) if p.channel == horizon_protocol::attachment_sync::CHANNEL => {
                 self.remote_attachment_sync(&p.data);
             }
+            C::CustomPayload(p) if p.channel == horizon_protocol::player_displacement::CHANNEL => {
+                self.remote_player_displacement(&p.data)?;
+            }
             // A mod menu type's block and its mod's bytes, just before the
             // menu's `OpenScreen`.
             C::CustomPayload(p) if p.channel == horizon_protocol::menu_extra::CHANNEL => {

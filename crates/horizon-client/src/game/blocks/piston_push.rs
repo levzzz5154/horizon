@@ -518,6 +518,125 @@ impl Game<'_> {
         }
     }
 
+    /// `Entity.move(SELF)` for an independently simulated non-player body.
+    /// Like a lid push, this uses the family's position write after the
+    /// ordinary world/border sweep; it has no piston movement budget.
+    pub(super) fn move_unridden_entity(&mut self, handle: EntityHandle, delta: Vec3) -> bool {
+        if !matches!(
+            handle,
+            EntityHandle::Mob(_)
+                | EntityHandle::Item(_)
+                | EntityHandle::Orb(_)
+                | EntityHandle::Boat(_)
+                | EntityHandle::Cart(_)
+                | EntityHandle::ArmorStand(_)
+                | EntityHandle::Tnt(_)
+                | EntityHandle::Falling(_)
+                | EntityHandle::Projectile(_)
+                | EntityHandle::Rocket(_)
+                | EntityHandle::Trident(_)
+        ) {
+            return false;
+        }
+        let (id, from, bounds, on_ground, step, no_physics, alive) = with_entity!(self, handle, entity => (
+            entity.id(),
+            entity.position(),
+            Entity::bounds(entity),
+            entity.on_ground(),
+            entity.get_step_height(),
+            entity.no_physics(self.persist.no_physics.get(&entity.id()).copied()),
+            entity.is_alive(),
+        ));
+        if !alive || !self.ordered_live_passengers(id).is_empty() {
+            return false;
+        }
+        let target = MoveWho::Entity(handle);
+        let mut gate = self.entity_move(target, MoverType::SelfMovement, delta);
+        let movement = gate.delta();
+        let in_bounds = super::native_entity_moves::in_bounds;
+        if gate.skipped() || !in_bounds(from.add_vector(movement).components()) {
+            return false;
+        }
+        if no_physics {
+            self.write_entity_displacement(handle, id, &mut gate, movement);
+            return true;
+        }
+        let entities = match handle {
+            EntityHandle::Boat(i) => self.boat_move_obstacles(&self.boats[i]),
+            EntityHandle::Cart(i) => self.cart_entity_collisions(&self.carts[i]),
+            _ => self.pushed_entity_colliders(target),
+        };
+        let scene = || SceneCollisions {
+            world: &self.world,
+            binding: self.collision,
+            subject: None,
+        };
+        let Ok(moved) = pushed_movement(
+            &mut gate,
+            scene(),
+            self.border.geometry(),
+            [from.x, from.z],
+            bounds,
+            movement,
+            step,
+            on_ground,
+            None,
+            &entities,
+        ) else {
+            return false;
+        };
+        let length = moved.length_squared();
+        let moved = if length > 1.0e-7 || movement.length_squared() - length < 1.0e-7 {
+            moved
+        } else {
+            Vec3::ZERO
+        };
+        let position = from.add_vector(moved);
+        if !in_bounds(position.components()) {
+            return false;
+        }
+        let mut ground = horizon_world::ground_support::GroundState::default();
+        if ground
+            .check_support(true, bounds.move_by(moved), None, |area| {
+                horizon_world::ground_support::find_supporting_block(
+                    &mut scene(),
+                    CollisionContext::position(position.y),
+                    position,
+                    area,
+                    1_000_000,
+                )
+            })
+            .is_err()
+        {
+            return false;
+        }
+        let below = movement.y < 0.0 && movement.y != moved.y;
+        let grounded = below || ground.supporting_block.is_some();
+        with_entity_mut!(self, handle, entity => entity.set_on_ground(grounded));
+        if let EntityHandle::Mob(i) = handle {
+            let mob = &mut self.mobs[i];
+            mob.supporting = ground.supporting_block.map(|b| [b.x, b.y, b.z]);
+            mob.horizontal_collision = (movement.x - moved.x).abs() >= f64::from(1.0e-5_f32)
+                || (movement.z - moved.z).abs() >= f64::from(1.0e-5_f32);
+            mob.vertical_collision_below = below;
+        }
+        if moved != Vec3::ZERO {
+            self.write_entity_displacement(handle, id, &mut gate, moved);
+        }
+        true
+    }
+
+    fn write_entity_displacement(
+        &mut self,
+        handle: EntityHandle,
+        id: u32,
+        gate: &mut MoveGate,
+        movement: Vec3,
+    ) {
+        with_entity_mut!(self, handle, entity => entity.move_entity(gate, movement));
+        self.entity_section_moved_id(id);
+    }
+
     /// `Entity.move(lid.mover(), movement)` for one body a lid pushes.
     fn move_by_lid(
         &mut self,

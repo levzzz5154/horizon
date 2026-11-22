@@ -85,6 +85,7 @@ fn uses_registered_payload_codec(channel: &str, play: bool, clientbound: bool) -
         crate::menu_extra::CHANNEL => !play || clientbound,
         "horizon:recipe_transfer" => play,
         crate::passage_sync::CROSS_CHANNEL => play && !clientbound,
+        crate::player_displacement::CHANNEL => play,
         crate::custom_book::CHANNEL => play || clientbound,
         // Configuration both ways (the capability), play clientbound only.
         crate::viewed_levels::CHANNEL => !play || clientbound,
@@ -234,6 +235,7 @@ mod tests {
             ("horizon:anvil_cost", [false, false, false, true]),
             ("horizon:passage_sync", [false, false, false, true]),
             ("horizon:passage_cross", [false, false, true, false]),
+            ("horizon:player_displacement", [false, false, true, true]),
             ("horizon:lod", [false, true, true, true]),
             ("horizon:block_registry", [true, true, false, false]),
             ("horizon:recipe_content", [false, false, false, true]),

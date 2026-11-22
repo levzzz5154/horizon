@@ -2217,6 +2217,7 @@ impl Hub {
             g.teleport_tick = ticks;
             g.held_ticket_chunk = Some(g.ticket_chunk()); // teleport has no move
             g.pending_move = None;
+            g.clear_player_displacements();
             if let Some(p) = position {
                 g.position = p;
                 g.previous_position = p;
@@ -4383,6 +4384,13 @@ impl Hub {
                     self.move_player(i, None, None, p.flags, ctx, events);
                 }
                 S::CustomPayload(p)
+                    if p.channel == horizon_protocol::player_displacement::CHANNEL =>
+                {
+                    // The echo and ordinary movement arrive on the same play stream.
+                    self.guests
+                        .update(i, |g| g.acknowledge_player_displacement(&p.data));
+                }
+                S::CustomPayload(p)
                     if p.channel == horizon_protocol::passage_sync::CROSS_CHANNEL =>
                 {
                     *held = self.passage_leg(i, p, ctx, events);
@@ -4680,6 +4688,9 @@ impl Hub {
             self.kick(conn, invalid_movement());
             return;
         }
+        // A position sent before a server displacement was seen is still in the old
+        // coordinate frame. Rotation-only/status reports already use the current position.
+        let pos = pos.map(|p| self.guests[i].rebase_player_position(p));
         if self.anticheat.is_some() {
             self.anticheat_moved(i, pos, rot, flags);
         }
@@ -4791,14 +4802,29 @@ impl Hub {
                 return;
             }
         };
-        let (wrongly, refused, stands) = self.collide(i, to, ctx);
-        if wrongly {
+        let (wrongly, refused, stands, overridden) = self.collide(i, to, ctx);
+        // Walking and a displacement may not commute at a wall. An old-frame
+        // report that cannot be rebased legally must not move the server body,
+        // but a teleport for it would discard the client's newer prediction.
+        let stale_at_obstacle = refused
+            && !overridden
+            && hearing == Hearing::Heard
+            && has_position
+            && self.guests[i].has_player_displacement();
+        if wrongly && !stale_at_obstacle {
             let line = format!("{} moved wrongly!", self.guests[i].name);
             events.push(HostEvent::Warn(line));
         }
         if refused {
-            self.guests.update(i, |g| (g.yaw, g.pitch) = (yaw, pitch));
-            self.resend_teleport(i, Some(start));
+            self.guests.update(i, |g| {
+                (g.yaw, g.pitch) = (yaw, pitch);
+                if stale_at_obstacle {
+                    g.head_yaw = yaw;
+                }
+            });
+            if !stale_at_obstacle {
+                self.resend_teleport(i, Some(start));
+            }
             return;
         }
         // The anticheat's `ground`: a claim of the ground with nothing to
@@ -5245,6 +5271,7 @@ impl Hub {
             super::chunk_watch::unwatch_all(&mut self.chunk_watches, g);
             // PlayerList.respawn: into the level in place (the respawn level).
             g.dimension = self.config.dimension.clone();
+            g.clear_player_displacements();
             // A new player: a mod's collision exclusions were the dead one's (arismoko/horizon#3717).
             g.collision_exclusions.clear();
             // restartClientLoadTimerAfterRespawn: the client loads a whole new level before it
@@ -5409,6 +5436,7 @@ impl Hub {
             super::chunk_watch::unwatch_all(&mut self.chunk_watches, g);
             g.dimension = self.config.dimension.clone();
             g.level_entered = self.ticks;
+            g.clear_player_displacements();
             // A mod's collision exclusions were the old level's (arismoko/horizon#3717).
             g.collision_exclusions.clear();
             // The load timer is not restarted: vanilla resets the client's loaded state on death and
