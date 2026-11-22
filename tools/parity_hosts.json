@@ -96,7 +96,6 @@
   "dedicated_server": "#18133: extra config custom_payload horizon:payloads and one extra recipe_book_add entry",
   "dispenser": "#18133: container-entity slot0 and sapling-growth `set` records missing",
   "dragon_render": "#18133: dragon tests exit 101; Rust log not in the artifact",
-  "fishing_rng": "#18133: test fixture leaves 5 hooks extracted (UnbalancedPass)",
   "menu_click": "#18133: writable_book_content:{pages:[]} and damage:0 kept",
   "mob_ai": "#18133: enderman hurt twice in a tick teleports differently",
   "numeric_damage_component": "#18133: damage:0 kept and readable by /data",
