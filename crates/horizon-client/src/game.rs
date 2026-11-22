@@ -9359,6 +9359,12 @@ impl Game<'_> {
                     pressed: *state == ElementState::Pressed,
                 });
             }
+            if let Some(post) = &mouse_post
+                && self.container_mouse_input_pre(post)
+            {
+                mouse_post = None;
+                return Ok(());
+            }
             self.key_focus_mouse_press(&event);
             match event {
                 WindowEvent::CloseRequested => {
@@ -9439,7 +9445,12 @@ impl Game<'_> {
                         }
                         match self.screen_mouse_dragged(previous) {
                             native_hooks::ScreenMousePre::Canceled => return Ok(()),
-                            native_hooks::ScreenMousePre::Passed(post) => mouse_post = Some(post),
+                            native_hooks::ScreenMousePre::Passed(post) => {
+                                if self.container_mouse_input_pre(&post) {
+                                    return Ok(());
+                                }
+                                mouse_post = Some(post);
+                            }
                             native_hooks::ScreenMousePre::NotFired => {}
                         }
                         if self.dialog_open() {
@@ -9526,6 +9537,12 @@ impl Game<'_> {
                             scaled(raw_x),
                             scaled(raw_y),
                         ]));
+                    }
+                    if let Some(post) = &mouse_post
+                        && self.container_mouse_input_pre(post)
+                    {
+                        mouse_post = None;
+                        return Ok(());
                     }
                     // A prompt is vanilla's `Minecraft.screen`, the only one MouseHandler.onScroll
                     // tells: the top one hears the wheel, as the click arms below pick it, and
