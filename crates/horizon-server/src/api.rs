@@ -777,7 +777,10 @@ pub fn route(shared: &Arc<Shared>, request: &Request) -> Response {
         }
         ("POST", "/api/v1/restore") => {
             let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
-            match backup::find(&shared.dir, body["name"].as_str().unwrap_or_default()) {
+            let Some(name) = body["name"].as_str().filter(|name| !name.trim().is_empty()) else {
+                return Response::error(400, "a backup name is required");
+            };
+            match backup::find(&shared.dir, name) {
                 Ok(name) => {
                     let dimension = match body["dimension"].as_str() {
                         None => None,
@@ -1748,6 +1751,39 @@ mod tests {
         );
         assert!(backup::list(&dir).is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn restore_requires_a_nonblank_backup_name() {
+        let root = std::env::temp_dir().join(format!(
+            "horizon-server-restore-validation-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let shared = Shared::with_install(&root, None);
+        for body in [
+            "",
+            "{}",
+            r#"{"name":null}"#,
+            r#"{"name":42}"#,
+            r#"{"name":""}"#,
+            r#"{"name":" "}"#,
+        ] {
+            let response = route(
+                &shared,
+                &Request {
+                    method: "POST".into(),
+                    path: "/api/v1/restore".into(),
+                    query: String::new(),
+                    headers: Vec::new(),
+                    body: body.as_bytes().to_vec(),
+                },
+            );
+            assert_eq!(response.status, 400, "{body:?}");
+            assert!(shared.restore.lock().unwrap().is_none(), "{body:?}");
+            assert!(!shared.restart.load(Ordering::SeqCst), "{body:?}");
+        }
+        std::fs::remove_dir(&root).unwrap();
     }
 
     fn backup_reply(mut response: Response) -> Value {
