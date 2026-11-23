@@ -7741,6 +7741,12 @@ impl Renderer {
         if self.device_lost() {
             return Err("the graphics device was lost".into());
         }
+        if let Some(pages) = self.hud.font_pages() {
+            if pages.needs_upload() {
+                pages.upload(&self.device, &self.queue);
+            }
+            self.prepare_world_text();
+        }
         if !frame_export::Readbacks::draw_allowed(self.frame_export.as_ref()) {
             // A settling redraw only drains terrain transfers. Running the world
             // passes here would spend a TAA phase and mutate shader-pack history.
@@ -9567,6 +9573,10 @@ impl Renderer {
             frame.see_through,
             oit_on,
         );
+        let pack_polygon_text = self
+            .core_text
+            .as_ref()
+            .is_some_and(core_text::CoreText::has_polygon_offset);
         self.entity_batch.append_shadow_only(frame.shadow_only);
         // The posed models' vertices come first: the ordinary entities' draw takes them in.
         let posed = if pack_skin {
@@ -11375,10 +11385,15 @@ impl Renderer {
             }
             if text_quads > 0 && !oit_on {
                 pass.stage(self.own_timing.as_mut(), "entity text");
-                pass.set_pipeline(&self.text_polygon_offset_pipeline);
-                self.bind_world_text(&mut pass, true, false);
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
-                pass.draw_indexed(0..text_quads * 6, (entity_quads * 4) as i32, 0..1);
+                self.draw_world_text(
+                    &mut pass,
+                    core_text::Mode::PolygonOffset,
+                    &self.text_polygon_offset_pipeline,
+                    entity_quads,
+                    text_quads,
+                    posed,
+                );
                 pass.set_bind_group(0, &self.group, &[]);
             }
             // FeatureRenderDispatcher.PreparedFrame.executeTranslucent: the shadows
@@ -11642,7 +11657,9 @@ impl Renderer {
                                 pass.draw_indexed(0..count * 6, (first * 4) as i32, 0..1);
                             }
                         };
-                        quads(pass, &f.text[s], text_quads, entity_quads);
+                        if !pack_polygon_text {
+                            quads(pass, &f.text[s], text_quads, entity_quads);
+                        }
                         if !hdr_gain {
                             quads(
                                 pass,
@@ -11709,7 +11726,7 @@ impl Renderer {
                         }
                     };
                     let has_oit_features = oit::FeatureCounts {
-                        text_quads,
+                        text_quads: if pack_polygon_text { 0 } else { text_quads },
                         crumbling_quads: if hdr_gain {
                             0
                         } else {
@@ -11842,23 +11859,39 @@ impl Renderer {
             // Native world text is an ordinary depth-tested overlay, after
             // particles (also after the OIT composite) and before the hand.
             // Its own geometry is independent of block-entity lifetime.
-            if world_text_quads + world_text_offset_quads > 0 {
+            if world_text_quads + world_text_offset_quads > 0
+                || oit_on && pack_polygon_text && text_quads > 0
+            {
                 pass.stage(self.own_timing.as_mut(), "world text");
-                pass.set_bind_group(0, &self.entity_group, &[]);
                 pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
+                if oit_on && pack_polygon_text && text_quads > 0 {
+                    self.draw_world_text(
+                        &mut pass,
+                        core_text::Mode::PolygonOffset,
+                        &self.text_polygon_offset_pipeline,
+                        entity_quads,
+                        text_quads,
+                        posed,
+                    );
+                }
                 let first = base_quads + oit_entity_quads + fluid_quads;
-                for (pipeline, count, offset) in [
-                    (&self.world_text_pipeline, world_text_quads, first),
+                for (mode, pipeline, count, offset) in [
                     (
+                        core_text::Mode::Normal,
+                        &self.world_text_pipeline,
+                        world_text_quads,
+                        first,
+                    ),
+                    (
+                        core_text::Mode::PolygonOffset,
                         &self.text_polygon_offset_pipeline,
                         world_text_offset_quads,
                         first + world_text_quads,
                     ),
                 ] {
                     if count > 0 {
-                        pass.set_pipeline(pipeline);
-                        pass.draw_indexed(0..count * 6, (offset * 4) as i32, 0..1);
+                        self.draw_world_text(&mut pass, mode, pipeline, offset, count, posed);
                     }
                 }
                 pass.set_bind_group(0, &self.group, &[]);
@@ -11926,13 +11959,14 @@ impl Renderer {
             // LevelRenderer.executeSeeThrough, after the rest of the world.
             if see_through_quads > 0 {
                 pass.stage(self.own_timing.as_mut(), "see-through");
-                pass.set_pipeline(&self.see_through_pipeline);
-                self.bind_world_text(&mut pass, true, true);
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
-                pass.draw_indexed(
-                    0..see_through_quads * 6,
-                    ((world_quads + additive_quads + hand_quads) * 4) as i32,
-                    0..1,
+                self.draw_world_text(
+                    &mut pass,
+                    core_text::Mode::SeeThrough,
+                    &self.see_through_pipeline,
+                    world_quads + additive_quads + hand_quads,
+                    see_through_quads,
+                    posed,
                 );
             }
             // Native mods' primitives: after the entities and the rest of the world, into its

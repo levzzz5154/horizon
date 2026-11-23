@@ -1794,9 +1794,36 @@ pub struct HudVertex {
     /// The `GLINT_TEXTURING` UV into the repeating glint texture, unused
     /// unless `uv.x >= 2`.
     pub glint_uv: [f32; 2],
-    /// 1 for the GUI's text (`RenderPipelines.GUI_TEXT`), which a resource
-    /// pack's text shader draws when it has one.
+    /// Zero for ordinary GUI vertices; otherwise the pack text page marker.
+    /// A real page uses `glint_uv` for its UV and keeps `uv` for native drawing.
     pub text: u32,
+}
+
+impl HudVertex {
+    /// Carry a baked font page through the GUI-to-world quad conversion.
+    /// The entity shaders use only the first two light bytes for text.
+    pub fn world_text_vertex(self, pos: [f32; 3], layer: u32, light: u32) -> crate::mesher::Vertex {
+        let [lo, hi, page_a, page_b] = self.text.to_le_bytes();
+        crate::mesher::Vertex {
+            pos,
+            uv: self.uv,
+            layer,
+            color: self.color,
+            light: (light & 0xffff) | (u32::from(u16::from_le_bytes([lo, hi])) << 16),
+            normal: [page_a as i8, page_b as i8, 0, 0],
+            glint_uv: self.glint_uv,
+        }
+    }
+}
+
+/// `BakedSheetGlyph.buildEffect`: a decoration uses a different UV corner order than a character.
+fn stamp_text_effect(vertices: &mut [HudVertex], effect: crate::font::PageGlyph) {
+    let r = effect.glyph.rect.unwrap();
+    let uv = [[r.u1, r.v0], [r.u1, r.v1], [r.u0, r.v1], [r.u0, r.v0]];
+    for (i, v) in vertices.iter_mut().enumerate() {
+        v.glint_uv = uv[[0, 1, 2, 0, 2, 3][i % 6]];
+        v.text = effect.page;
+    }
 }
 /// Sutherland-Hodgman against one half plane, interpolating every attribute.
 fn clip_polygon(poly: &[HudVertex], axis: usize, limit: f32, keep_below: bool) -> Vec<HudVertex> {
@@ -2391,7 +2418,17 @@ impl HudBatch {
         color: u32,
         shadow: bool,
     ) -> f32 {
-        self.styled_text(atlas, text, x, y, color, shadow, false, None)
+        self.styled_text(
+            atlas,
+            text,
+            x,
+            y,
+            color,
+            shadow,
+            false,
+            None,
+            atlas.text_shaders.has_gui(),
+        )
     }
     /// `text_styled` for text drawn in the world (`TextRenderable.render`
     /// with `flat` false): each quad's `depth` is its z in text units, the
@@ -2407,7 +2444,17 @@ impl HudBatch {
         color: u32,
         shadow: bool,
     ) -> f32 {
-        self.styled_text(atlas, text, x, y, color, shadow, true, None)
+        self.styled_text(
+            atlas,
+            text,
+            x,
+            y,
+            color,
+            shadow,
+            true,
+            None,
+            atlas.text_shaders.has_world(),
+        )
     }
     /// `Font.prepare8xTextOutline`: eight glyph offsets in the outline color,
     /// then the original text. Returns (advance, first front-text vertex), so
@@ -2434,13 +2481,24 @@ impl HudBatch {
                         false,
                         true,
                         Some((outline, [dx as f32, dy as f32])),
+                        atlas.text_shaders.has_world(),
                     );
                 }
             }
         }
         let front = self.vertices.len();
         (
-            self.styled_text(atlas, text, x, y, color, false, true, None),
+            self.styled_text(
+                atlas,
+                text,
+                x,
+                y,
+                color,
+                false,
+                true,
+                None,
+                atlas.text_shaders.has_world(),
+            ),
             front,
         )
     }
@@ -2455,6 +2513,7 @@ impl HudBatch {
         shadow: bool,
         world: bool,
         outline: Option<(u32, [f32; 2])>,
+        use_pages: bool,
     ) -> f32 {
         // StringDecomposer.iterateFormatted inside Font.drawInternal:
         // `§` codes inside a span restyle what follows and are not drawn.
@@ -2495,19 +2554,41 @@ impl HudBatch {
             } else {
                 font.glyph_styled(ch, style)
             };
+            let mut page = if use_pages && object.is_none() {
+                font.page_glyph(ch, style)
+            } else {
+                None
+            };
             // Font.StringRenderOutput.accept: obfuscated characters draw a
             // random glyph of the same width each frame.
             if object.is_none() && style.obfuscated == Some(true) && ch != ' ' {
-                g = font.random_glyph(style, g.advance);
+                (g, page) = font.obfuscated_glyphs(
+                    style,
+                    page.map_or(g.advance, |p| p.glyph.advance),
+                    use_pages,
+                );
             }
+            if g.rect.is_none() && page.is_some_and(|p| p.glyph.rect.is_some()) {
+                g.rect = font.native_missing_rect();
+            }
+            let effect = if use_pages
+                && (style.underlined == Some(true) || style.strikethrough == Some(true))
+            {
+                font.page_white()
+            } else {
+                None
+            };
             let c = style.color.map_or(color, |rgb| {
                 rgba((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8, alpha)
             });
             let bold = object.is_none() && style.is_bold();
-            let advance = g.advance + if bold { g.offset } else { 0.0 };
+            let drawn_glyph = page.map_or(g, |p| p.glyph);
+            let advance = drawn_glyph.advance + if bold { drawn_glyph.offset } else { 0.0 };
             glyphs.push((
                 cursor,
                 g,
+                page,
+                effect,
                 c,
                 style.shadow_color,
                 bold,
@@ -2526,7 +2607,7 @@ impl HudBatch {
             && (shadow
                 || glyphs
                     .iter()
-                    .any(|glyph| glyph.3.is_some_and(|color| color != 0)));
+                    .any(|glyph| glyph.5.is_some_and(|color| color != 0)));
         let passes: &[bool] = if has_shadow { &[true, false] } else { &[false] };
         // ARGB.scaleRGB(color, 0.25): the default shadow colour.
         let shade = |c: u32| {
@@ -2542,6 +2623,8 @@ impl HudBatch {
             for (
                 gx,
                 g,
+                page,
+                effect,
                 c,
                 custom_shadow,
                 bold,
@@ -2553,6 +2636,8 @@ impl HudBatch {
                 object,
             ) in &glyphs
             {
+                let native_rect = g.rect;
+                let g = page.map_or(*g, |p| p.glyph);
                 let shadow_color = if let Some(argb) = custom_shadow {
                     let text_alpha = (c >> 24) as u8 as u16;
                     let shadow_alpha = (argb >> 24) as u8 as u16;
@@ -2610,6 +2695,23 @@ impl HudBatch {
                             [[r.u0, r.v0], [r.u1, r.v0], [r.u1, r.v1], [r.u0, r.v1]],
                             col,
                         );
+                        if let Some(page) = page.filter(|p| p.page != 0) {
+                            let vertices = &mut batch.vertices;
+                            let start = vertices.len() - 6;
+                            let stock = native_rect.unwrap_or(white);
+                            for (v, (u, y)) in vertices[start..].iter_mut().zip([
+                                (stock.u0, stock.v0),
+                                (stock.u1, stock.v0),
+                                (stock.u1, stock.v1),
+                                (stock.u0, stock.v0),
+                                (stock.u1, stock.v1),
+                                (stock.u0, stock.v1),
+                            ]) {
+                                v.glint_uv = v.uv;
+                                v.uv = [u, y];
+                                v.text = page.page;
+                            }
+                        }
                     }
                     None if g.right > 0.0 => {
                         // SpecialGlyphs.MISSING: a 5x8 outline.
@@ -2633,7 +2735,6 @@ impl HudBatch {
                         }
                     }
                 };
-                let glyph = self.vertices.len();
                 let start = self.vertices.len();
                 draw(self, 0.0);
                 lift(self, start, base);
@@ -2651,10 +2752,8 @@ impl HudBatch {
                     self.rect_uv(x0, py + 8.0, px + *advance - x0, 1.0, white, col);
                 }
                 lift(self, start, base + 0.01);
-                if !world {
-                    for v in &mut self.vertices[glyph..] {
-                        v.text = 1;
-                    }
+                if let Some(effect) = effect {
+                    stamp_text_effect(&mut self.vertices[start..], *effect);
                 }
             }
         }
@@ -2735,7 +2834,17 @@ impl HudBatch {
     ) -> usize {
         let x = -atlas.font.width_text(text) / 2.0;
         let start = self.vertices.len();
-        let advance = self.text_styled(atlas, text, x, y, color, false);
+        let advance = self.styled_text(
+            atlas,
+            text,
+            x,
+            y,
+            color,
+            false,
+            false,
+            None,
+            atlas.text_shaders.has_world(),
+        );
         if background >> 24 == 0 {
             return 0;
         }
@@ -2743,6 +2852,11 @@ impl HudBatch {
         // from a pixel above the line to 9 below its top.
         let glyphs = self.vertices.split_off(start);
         self.fill(atlas, x - 1.0, y - 1.0, advance + 1.0, 10.0, background);
+        if atlas.text_shaders.has_world()
+            && let Some(effect) = atlas.font.page_white()
+        {
+            stamp_text_effect(&mut self.vertices[start..], effect);
+        }
         let behind = self.vertices.len() - start;
         self.vertices.extend(glyphs);
         behind
@@ -2809,6 +2923,11 @@ pub struct HudRenderer {
     atlas_view: wgpu::TextureView,
     /// The resource pack's text shader, when it has one that works.
     pack_text: Option<pack_text::PackText>,
+    pack_text_grayscale: Option<pack_text::PackText>,
+    font_pages: Option<crate::font::FontPages>,
+    font_page_sampler: Option<wgpu::Sampler>,
+    font_page_generation: u64,
+    font_page_groups: Vec<(crate::font::PageKind, Option<wgpu::BindGroup>)>,
     /// The resource pack's `position_tex_color`, when it has one that works, and its bind
     /// group for each picture a `Blend::PackBlit` reads.
     pack_blit: Option<pack_text::PackText>,
@@ -3096,6 +3215,11 @@ impl HudRenderer {
             coverage,
             atlas_view: view.clone(),
             pack_text: None,
+            pack_text_grayscale: None,
+            font_pages: None,
+            font_page_sampler: None,
+            font_page_generation: 0,
+            font_page_groups: Vec::new(),
             pack_blit: None,
             pack_blit_groups: HashMap::new(),
             zoom: 1.0,
@@ -3113,22 +3237,50 @@ impl HudRenderer {
             cit_glint::CitGlintPass::new(device, queue, self.format, &self.layout, t, self.coverage)
         });
     }
-    /// Draw the GUI's text with `shader` (`HudAtlas::text_shader`), or natively.
-    pub fn set_text_shader(
+    /// Install a generation's GUI text programs and its shared font textures.
+    pub fn set_text_shaders(
         &mut self,
         device: &wgpu::Device,
-        shader: Option<&crate::core_shader::CoreProgram>,
+        shaders: &crate::gfx::core_text::TextShaders,
     ) {
-        self.pack_text = shader.and_then(|shader| {
-            pack_text::PackText::new(
-                device,
-                self.format,
-                &self.atlas_view,
-                shader,
-                self.coverage,
-                "text",
-            )
-        });
+        let build = |shader: Option<&crate::core_shader::CoreProgram>, label| {
+            pack_text::PackText::new(device, self.format, shader?, self.coverage, label)
+        };
+        self.pack_text = build(shaders.gui.as_deref(), "text");
+        self.pack_text_grayscale = build(shaders.gui_grayscale.as_deref(), "text grayscale");
+        self.font_pages.clone_from(&shaders.pages);
+        self.font_page_sampler = self
+            .font_pages
+            .as_ref()
+            .map(|_| crate::font::nearest_repeat(device));
+        self.font_page_groups.clear();
+    }
+
+    pub(crate) fn font_pages(&self) -> Option<&crate::font::FontPages> {
+        self.font_pages.as_ref()
+    }
+
+    fn prepare_font_groups(&mut self, device: &wgpu::Device) {
+        if let (Some(pages), Some(sampler)) = (&self.font_pages, &self.font_page_sampler) {
+            let generation = pages.generation();
+            if self.font_page_generation != generation {
+                self.font_page_groups.clear();
+                self.font_page_generation = generation;
+            }
+            let groups = &mut self.font_page_groups;
+            let (color, grayscale) = (&self.pack_text, &self.pack_text_grayscale);
+            pages.for_each_view(groups.len(), |kind, view| {
+                let pack = match kind {
+                    crate::font::PageKind::Color => color,
+                    crate::font::PageKind::Grayscale => grayscale,
+                };
+                groups.push((
+                    kind,
+                    pack.as_ref()
+                        .map(|p| p.texture_group(device, view, sampler)),
+                ));
+            });
+        }
     }
     /// Draw the menu textures `HudBatch::pack_blit` records with `shader`
     /// (`HudAtlas::blit_shader`), or natively.
@@ -3144,7 +3296,6 @@ impl HudRenderer {
             pack_text::PackText::new(
                 device,
                 self.format,
-                &self.atlas_view,
                 shader,
                 self.coverage,
                 "position_tex_color",
@@ -3203,6 +3354,7 @@ impl HudRenderer {
         if batch.vertices.is_empty() || size.contains(&0) {
             return;
         }
+        self.prepare_font_groups(device);
         let count = batch.vertices.len() as u64;
         if count > self.capacity {
             self.capacity = count.next_power_of_two();
@@ -3234,7 +3386,10 @@ impl HudRenderer {
                 batch.glint_colour,
             )),
         );
-        for pack in [&self.pack_text, &self.pack_blit].into_iter().flatten() {
+        for pack in [&self.pack_text, &self.pack_text_grayscale, &self.pack_blit]
+            .into_iter()
+            .flatten()
+        {
             pack.prepare(uploads, encoder, batch, size, batch.scale * self.zoom);
         }
     }
@@ -3373,22 +3528,31 @@ impl HudRenderer {
                     Blend::PackBlitNative(_) => &self.pipeline,
                 };
                 let pipeline = pipeline.get(coverage.is_some());
-                match &self.pack_text {
-                    Some(pack_text) if *blend == Blend::Alpha => {
-                        for (part, text) in pack_text::text_runs(&batch.vertices, range.clone()) {
-                            if text {
-                                pack_text.draw(&mut pass, part, coverage.is_some());
-                                pass.set_bind_group(0, &self.group, &[]);
-                            } else {
-                                pass.set_pipeline(pipeline);
-                                pass.draw(part, 0..1);
-                            }
+                if *blend == Blend::Alpha
+                    && (self.pack_text.is_some() || self.pack_text_grayscale.is_some())
+                {
+                    for (part, page) in pack_text::text_runs(&batch.vertices, range.clone()) {
+                        let group = page
+                            .checked_sub(1)
+                            .and_then(|id| self.font_page_groups.get(id as usize));
+                        let text = group.and_then(|(kind, group)| {
+                            let pack = match kind {
+                                crate::font::PageKind::Color => &self.pack_text,
+                                crate::font::PageKind::Grayscale => &self.pack_text_grayscale,
+                            };
+                            Some((pack.as_ref()?, group.as_ref()?))
+                        });
+                        if let Some((pack, group)) = text {
+                            pack.draw_with(&mut pass, group, part, coverage.is_some());
+                            pass.set_bind_group(0, &self.group, &[]);
+                        } else {
+                            pass.set_pipeline(pipeline);
+                            pass.draw(part, 0..1);
                         }
                     }
-                    _ => {
-                        pass.set_pipeline(pipeline);
-                        pass.draw(range.clone(), 0..1);
-                    }
+                } else {
+                    pass.set_pipeline(pipeline);
+                    pass.draw(range.clone(), 0..1);
                 }
             }
             at = end;
