@@ -2375,3 +2375,62 @@ fn shared_memory_and_atomics_are_refused_and_an_ordinary_member_links() {
         .is_none()
     );
 }
+
+#[test]
+fn epoch_ticker_parks_while_idle_and_interrupts_active_guest_calls() {
+    crate::test_stack::on_guest_stack(|| {
+        let ticker = Arc::new(EpochTicker::new());
+        let engine = Engine::new(&engine_config()).unwrap();
+        {
+            let mut state = ticker.state.lock().unwrap();
+            state.engines.push(engine.weak());
+            state.started = true;
+        }
+        let thread = std::thread::spawn({
+            let ticker = Arc::clone(&ticker);
+            move || ticker.run()
+        });
+
+        // No active guest call: the ticker stays parked and records zero ticks.
+        std::thread::sleep(Duration::from_millis(25));
+        assert_eq!(ticker.ticks(), 0, "epoch ticker must not tick while idle");
+
+        // An active guest call wakes the ticker and interrupts a runaway loop.
+        let bytes = wat::parse_str(r#"(module (func (export "spin") (loop br 0)))"#).unwrap();
+        let module = wasmtime::Module::new(&engine, &bytes).unwrap();
+        let mut store = Store::new(&engine, ());
+        store.set_epoch_deadline(10);
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+        let spin = instance
+            .get_typed_func::<(), ()>(&mut store, "spin")
+            .unwrap();
+
+        let guard = ticker.enter();
+        let started = Instant::now();
+        let err = spin.call(&mut store, ()).unwrap_err();
+        drop(guard);
+
+        assert_eq!(
+            err.downcast_ref::<wasmtime::Trap>(),
+            Some(&wasmtime::Trap::Interrupt),
+            "expected epoch interrupt trap, got {err:#}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
+        let ticks_after_call = ticker.ticks();
+        assert!(
+            ticks_after_call >= 10,
+            "expected >= 10 ticks, got {ticks_after_call}"
+        );
+
+        // Once the guard drops, the ticker parks again and stops ticking.
+        std::thread::sleep(Duration::from_millis(25));
+        assert_eq!(
+            ticker.ticks(),
+            ticks_after_call,
+            "epoch ticker must stop ticking once idle again"
+        );
+
+        ticker.stop();
+        thread.join().unwrap();
+    });
+}

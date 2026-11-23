@@ -24,7 +24,7 @@ use mod_api::{
 use std::{
     cell::Cell,
     sync::{
-        Arc, Mutex, Weak,
+        Arc, Condvar, Mutex, Weak,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
@@ -190,19 +190,143 @@ pub(crate) fn engine_config() -> wasmtime::Config {
     config
 }
 
+struct EpochState {
+    started: bool,
+    #[cfg(test)]
+    stopped: bool,
+    engines: Vec<wasmtime::EngineWeak>,
+    active_calls: usize,
+    #[cfg(test)]
+    ticks: u64,
+}
+
+/// Shared epoch ticker for all Wasm engines: parks idle on a condvar while no guest call is
+/// running, and ticks every 1 ms only while at least one [`EpochCallGuard`] is live.
+struct EpochTicker {
+    state: Mutex<EpochState>,
+    wake: Condvar,
+}
+
+static EPOCH_TICKER: EpochTicker = EpochTicker::new();
+
+impl EpochTicker {
+    const fn new() -> Self {
+        Self {
+            state: Mutex::new(EpochState {
+                started: false,
+                #[cfg(test)]
+                stopped: false,
+                engines: Vec::new(),
+                active_calls: 0,
+                #[cfg(test)]
+                ticks: 0,
+            }),
+            wake: Condvar::new(),
+        }
+    }
+
+    fn register(&'static self, engine: &Engine) -> std::io::Result<()> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.engines.retain(|weak| weak.upgrade().is_some());
+        state.engines.push(engine.weak());
+        if !state.started {
+            std::thread::Builder::new()
+                .name("wasm epoch".into())
+                .spawn(move || self.run())?;
+            state.started = true;
+        }
+        Ok(())
+    }
+
+    fn run(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            while state.active_calls == 0 {
+                #[cfg(test)]
+                if state.stopped {
+                    return;
+                }
+                state = self.wake.wait(state).unwrap_or_else(|e| e.into_inner());
+            }
+            let deadline = Instant::now() + Duration::from_millis(1);
+            while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+                #[cfg(test)]
+                if state.stopped {
+                    return;
+                }
+                if remaining.is_zero() {
+                    break;
+                }
+                let (next, wait_result) = self
+                    .wake
+                    .wait_timeout(state, remaining)
+                    .unwrap_or_else(|e| e.into_inner());
+                state = next;
+                if state.active_calls == 0 || wait_result.timed_out() {
+                    break;
+                }
+            }
+            #[cfg(test)]
+            if state.stopped {
+                return;
+            }
+            if state.active_calls == 0 {
+                continue;
+            }
+            state.engines.retain(|weak| {
+                let Some(engine) = weak.upgrade() else {
+                    return false;
+                };
+                engine.increment_epoch();
+                true
+            });
+            #[cfg(test)]
+            {
+                state.ticks = state.ticks.wrapping_add(1);
+            }
+        }
+    }
+
+    fn enter(&self) -> EpochCallGuard<'_> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.active_calls += 1;
+        if state.active_calls == 1 {
+            self.wake.notify_one();
+        }
+        EpochCallGuard { ticker: self }
+    }
+
+    #[cfg(test)]
+    fn ticks(&self) -> u64 {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).ticks
+    }
+
+    #[cfg(test)]
+    fn stop(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.stopped = true;
+        self.wake.notify_one();
+    }
+}
+
+struct EpochCallGuard<'a> {
+    ticker: &'a EpochTicker,
+}
+
+impl Drop for EpochCallGuard<'_> {
+    fn drop(&mut self) {
+        let mut state = self.ticker.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.active_calls -= 1;
+        if state.active_calls == 0 {
+            self.ticker.wake.notify_one();
+        }
+    }
+}
+
 pub(crate) fn engine() -> wasmtime::Result<Engine> {
     let config = engine_config();
     let engine = Engine::new(&config)?;
-    let weak = engine.weak();
-    std::thread::Builder::new()
-        .name("wasm epoch".into())
-        .spawn(move || {
-            loop {
-                std::thread::sleep(Duration::from_millis(1));
-                let Some(engine) = weak.upgrade() else { break };
-                engine.increment_epoch();
-            }
-        })?;
+    EPOCH_TICKER.register(&engine)?;
     Ok(engine)
 }
 
@@ -959,16 +1083,16 @@ impl WasmMod {
         let mut store = Store::new(engine, State::new(limits));
         store.limiter(|state| &mut state.limits);
         store.set_epoch_deadline(horizon_mod_runtime::MAX_GUEST_CALL_BUDGET_MILLIS);
-        let mut armed = false;
+        let mut epoch_guard = None;
         // Each API call is its own import, linked by name: what the group imports, and the
         // first import this game changed or doesn't have.
         let mut imported = std::collections::BTreeSet::new();
         let mut unlinked = None;
         let mut group = Group::link_cached_with(store, members, cache, |store, module, name| {
             // Compilation is not guest execution and must not consume its load deadline.
-            if !armed {
+            if epoch_guard.is_none() {
                 store.set_epoch_deadline(horizon_mod_runtime::MAX_GUEST_CALL_BUDGET_MILLIS);
-                armed = true;
+                epoch_guard = Some(EPOCH_TICKER.enter());
             }
             if module != "horizon" {
                 return None;
@@ -997,6 +1121,7 @@ impl WasmMod {
             }
         })
         .map_err(|error| unlinked.take().unwrap_or_else(|| Refusal::from_link(error)))?;
+        let _epoch_guard = epoch_guard.unwrap_or_else(|| EPOCH_TICKER.enter());
         group.store.data_mut().memory = Some(group.memory);
         let mut exports = Vec::new();
         // Every mod of a group shares its memory and std: they must agree exactly.
@@ -1261,6 +1386,7 @@ impl WasmMod {
         // This guard unwinds before the resource scope, whose native destructors
         // must already see the group stopped.
         let panic_stop = PoisonOnPanic(&self.running.poisoned);
+        let epoch_guard = EPOCH_TICKER.enter();
         let result = (|| -> Result<R, CallError> {
             if top {
                 for (slot, generation) in self.prepared_releases.take() {
@@ -1306,6 +1432,7 @@ impl WasmMod {
             }
             Ok(value)
         })();
+        drop(epoch_guard);
         store.data_mut().inputs[depth] = w;
         store.data_mut().outputs[depth] = output;
         // A failed guest release may leave retained state in the slot.
