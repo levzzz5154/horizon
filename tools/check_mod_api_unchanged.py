@@ -11,8 +11,9 @@ the hook catalog (catalog.json, hook-notes.md) and the guest's generated hook di
   (`cargo horizon-mod update` reports signature-hash changes for declared internals);
 - a path a native mod could declare without a kind that gains a second kind (E_INTERNAL_AMBIGUOUS), always;
 - any other difference in the generated files, except a catalog hook added with --allow-added, which explains its
-  generated catalog, new hook-notes sections (the others unchanged) and its own guest dispatch, and a host call added
-  with --allow-added, which explains its own guest forwarder and the guest's import numbers after it.
+  generated catalog, new hook-notes sections (the others unchanged) and its own guest dispatch. A host call added
+  with --allow-added explains its own guest forwarder and shifted import numbers, or a native-only unsupported stub
+  that is compiled out on wasm.
 The injection points' outputs (points.json, points_generated.rs) are never compared: `[[inject]]` and its points are
 removed (#19576), and a base that still writes them compares without them. The mod API's types and calls are the surface report's
 (tools/ci/surface_report.py), which runs beside this check.
@@ -86,6 +87,12 @@ HOST_IMPORT = re.compile(r'host_import!\("([^"]+)", \d+u32')
 
 # The guest implementation of an area trait begins on its own line and each forwarder occupies one line.
 GUEST_HOST_IMPL = re.compile(r"^impl (?:\w+\s*::\s*)*\w+ for Guest \{\n", re.MULTILINE)
+GUEST_NATIVE_STUB = re.compile(
+    r'^#\[cfg\(not\(target_arch = "wasm32"\)\)\]\n'
+    r'fn (?P<method>\w+)\b[^\n{}]* \{ crate::wire::guest::unsupported\("'
+    r'(?P<name>\w+::(?P=method))"\) \}\n',
+    re.MULTILINE,
+)
 
 
 def read_text(path, root_marks):
@@ -255,6 +262,24 @@ def notes_only_add_sections(base, head):
     return all(any(section == other for other in remaining) for section in base[1:])
 
 
+def guest_wire_without_native_stubs(guest, base):
+    """Omit new native-only methods on Guest: these stubs disappear entirely when built for wasm."""
+    def stubs(text):
+        for area in GUEST_HOST_IMPL.finditer(text):
+            end = text.find("\n}\n", area.end() - 1)
+            if end >= 0:
+                for stub in GUEST_NATIVE_STUB.finditer(text, area.end(), end + 1):
+                    yield (area[0], stub["name"]), stub
+
+    known = {key for key, _ in stubs(base)}
+    additions = [(key, stub) for key, stub in stubs(guest) if key not in known]
+    if len({key for key, _ in additions}) != len(additions):
+        return guest, set()
+    for _, stub in reversed(additions):
+        guest = guest[:stub.start()] + guest[stub.end():]
+    return guest, {name for (_, name), _ in additions}
+
+
 def guest_wire_without_calls(guest, base):
     """The head's and the base's guest wire with the head's added host calls' forwarders removed and every import's
     position number blanked, and the names of those calls; (None, None, set()) when an added call's line holds another.
@@ -331,6 +356,7 @@ def explained_additions(base_dir, head_dir, diffs, base_root, head_root):
     if GUEST_WIRE in changed:
         base = read_text(base_dir / GUEST_WIRE, [base_root] if base_root else [])
         head = read_text(head_dir / GUEST_WIRE, [head_root] if head_root else [])
+        head, native_calls = guest_wire_without_native_stubs(head, base)
         head, base, calls = guest_wire_without_calls(head, base)
         if head is None:
             return nothing
@@ -342,12 +368,13 @@ def explained_additions(base_dir, head_dir, diffs, base_root, head_root):
             head, base = records_in_order(head), records_in_order(base)
             explained = head
         else:
-            explained = None
+            explained = head if native_calls else None
         if explained != base:
             if explained is not None:
                 print(f"{GUEST_WIRE} differs after the added hooks and host calls, first at: "
                       + first_difference(explained, base)[:300])
             return nothing
+        calls.update(native_calls)
     return hooks, calls
 
 

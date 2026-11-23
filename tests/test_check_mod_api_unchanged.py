@@ -442,6 +442,40 @@ class CompareTests(unittest.TestCase):
             self.assertEqual(self.compare_call_addition(head, records=(40, 43))[0], 0)
             self.assertEqual(self.compare_call_addition(head, records=(42, 43))[0], 0)
 
+    NATIVE_STUB = ('#[cfg(not(target_arch = "wasm32"))]\n'
+                   'fn preview(&self, p0: u32) -> bool { crate::wire::guest::unsupported("Players::preview") }\n')
+
+    def test_a_new_cfg_gated_unsupported_guest_method_has_no_wasm_import(self):
+        base = self.forwarders(self.BASE_CALLS)
+        head = base.replace("}\n}\n", "}\n" + self.NATIVE_STUB + "}\n", 1)
+
+        def files(text):
+            return {"wire_guest_generated.rs": text}
+
+        status, text = self.run_compare(files(base), files(head), allow_added=True)
+        self.assertEqual(status, 0, text)
+        self.assertIn("Host calls added (accepted): Players::preview", text)
+        self.assertEqual(self.run_compare(files(base), files(head))[0], 1)
+
+    def test_a_new_native_stub_does_not_explain_changes_to_retained_guest_code(self):
+        base = self.forwarders(self.BASE_CALLS)
+        old_stub = self.NATIVE_STUB.replace("preview", "previous")
+        base = base.replace("}\n}\n", "}\n" + old_stub + "}\n", 1)
+        head = base.replace(old_stub, old_stub + self.NATIVE_STUB)
+        cases = {
+            "removed native method": head.replace(old_stub, ""),
+            "changed native signature": head.replace(old_stub, old_stub.replace("u32", "u64")),
+            "ungated stub": head.replace(self.NATIVE_STUB, self.NATIVE_STUB.split("\n", 1)[1]),
+            "different method": head.replace("Players::preview", "Players::previous"),
+            "changed retained record": head.replace("__wire_record_40", "__wire_record_39"),
+            "stub outside its impl": base + self.NATIVE_STUB,
+        }
+        for name, candidate in cases.items():
+            with self.subTest(name):
+                status, text = self.run_compare({"wire_guest_generated.rs": base},
+                                                {"wire_guest_generated.rs": candidate}, allow_added=True)
+                self.assertEqual(status, 1, text)
+
     def test_a_changed_or_removed_host_call_beside_an_added_one_fails(self):
         added = ("Players::raw#dd", 1092)
         cases = {
