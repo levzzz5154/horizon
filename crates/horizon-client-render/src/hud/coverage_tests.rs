@@ -451,7 +451,7 @@ fn coverage_uses_pack_texts_final_alpha_and_discard() {
         .upload(&gpu.device, &gpu.queue);
     gpu.hud.prepare_font_groups(&gpu.device);
     for v in &mut batch.vertices {
-        v.text = glyph.page;
+        v.set_font_page(glyph.page);
     }
     gpu.check(&batch, 0.0, [191, 191, 0, 0]);
 }

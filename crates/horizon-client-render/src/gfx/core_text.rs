@@ -462,7 +462,9 @@ impl CoreText {
             Mode::SeeThrough => &self.see_through,
         };
         let mut quads = vertices
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|quad| {
                 let vertex = &quad[0];
                 let high = u16::from_le_bytes([vertex.normal[0] as u8, vertex.normal[1] as u8]);

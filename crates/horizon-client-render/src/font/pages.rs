@@ -460,44 +460,6 @@ fn page_fishy(glyph: Glyph) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn vanilla_font_tree_uses_first_fit_and_one_texel_separators() {
-        let mut set = PageSet::new(FontPages::default(), Vec::new(), Glyph::default());
-        let origin = |baked: Baked| {
-            let uv = baked.glyph.rect.unwrap();
-            (
-                (uv.u0 * 256.0).floor() as u32,
-                (uv.v0 * 256.0).floor() as u32,
-            )
-        };
-        assert_eq!((origin(set.missing), origin(set.white)), ((0, 0), (0, 9)));
-        // A wide strip uses the 250 columns beside the reserved glyphs.
-        // A full page then forces a new color page. Small glyphs return to page one.
-        let mut place = |kind: PageKind, w, h| {
-            let b = set
-                .stitcher
-                .stitch(
-                    Glyph::default(),
-                    kind,
-                    [w, h],
-                    vec![0; (w * h * kind.pixel_size()) as usize],
-                )
-                .unwrap();
-            (b.page, origin(b))
-        };
-        assert_eq!(place(PageKind::Color, 250, 20), (1, (6, 0)));
-        assert_eq!(place(PageKind::Color, 256, 256), (2, (0, 0)));
-        assert_eq!(place(PageKind::Grayscale, 256, 255), (3, (0, 0)));
-        assert_eq!(place(PageKind::Color, 3, 8), (1, (0, 18)));
-        assert_eq!(place(PageKind::Color, 3, 8), (1, (0, 27)));
-        assert_eq!(place(PageKind::Grayscale, 1, 1), (4, (0, 0)));
-    }
-}
-
-#[cfg(test)]
 pub(crate) fn marker_font_atlas(shader: bool) -> (tempfile::TempDir, crate::hud::HudAtlas) {
     use std::fs;
     let dir = tempfile::tempdir().unwrap();
@@ -600,4 +562,42 @@ pub(crate) fn marker_text(name: &str) -> Text {
             ..Default::default()
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vanilla_font_tree_uses_first_fit_and_one_texel_separators() {
+        let mut set = PageSet::new(FontPages::default(), Vec::new(), Glyph::default());
+        let origin = |baked: Baked| {
+            let uv = baked.glyph.rect.unwrap();
+            (
+                (uv.u0 * 256.0).floor() as u32,
+                (uv.v0 * 256.0).floor() as u32,
+            )
+        };
+        assert_eq!((origin(set.missing), origin(set.white)), ((0, 0), (0, 9)));
+        // A wide strip uses the 250 columns beside the reserved glyphs.
+        // A full page then forces a new color page. Small glyphs return to page one.
+        let mut place = |kind: PageKind, w, h| {
+            let b = set
+                .stitcher
+                .stitch(
+                    Glyph::default(),
+                    kind,
+                    [w, h],
+                    vec![0; (w * h * kind.pixel_size()) as usize],
+                )
+                .unwrap();
+            (b.page, origin(b))
+        };
+        assert_eq!(place(PageKind::Color, 250, 20), (1, (6, 0)));
+        assert_eq!(place(PageKind::Color, 256, 256), (2, (0, 0)));
+        assert_eq!(place(PageKind::Grayscale, 256, 255), (3, (0, 0)));
+        assert_eq!(place(PageKind::Color, 3, 8), (1, (0, 18)));
+        assert_eq!(place(PageKind::Color, 3, 8), (1, (0, 27)));
+        assert_eq!(place(PageKind::Grayscale, 1, 1), (4, (0, 0)));
+    }
 }

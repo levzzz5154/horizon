@@ -1794,16 +1794,22 @@ pub struct HudVertex {
     /// The `GLINT_TEXTURING` UV into the repeating glint texture, unused
     /// unless `uv.x >= 2`.
     pub glint_uv: [f32; 2],
-    /// Zero for ordinary GUI vertices; otherwise the pack text page marker.
-    /// A real page uses `glint_uv` for its UV and keeps `uv` for native drawing.
+    /// Zero for ordinary vertices, one for native HUD text, two and up for pack font pages.
+    /// Pack pages use `glint_uv` for their UV and keep `uv` for native drawing.
     pub text: u32,
 }
 
+const NATIVE_HUD_TEXT: u32 = 1;
+
 impl HudVertex {
+    fn set_font_page(&mut self, page: u32) {
+        self.text = page + NATIVE_HUD_TEXT;
+    }
+
     /// Carry a baked font page through the GUI-to-world quad conversion.
     /// The entity shaders use only the first two light bytes for text.
     pub fn world_text_vertex(self, pos: [f32; 3], layer: u32, light: u32) -> crate::mesher::Vertex {
-        let [lo, hi, page_a, page_b] = self.text.to_le_bytes();
+        let [lo, hi, page_a, page_b] = self.text.saturating_sub(NATIVE_HUD_TEXT).to_le_bytes();
         crate::mesher::Vertex {
             pos,
             uv: self.uv,
@@ -1822,7 +1828,7 @@ fn stamp_text_effect(vertices: &mut [HudVertex], effect: crate::font::PageGlyph)
     let uv = [[r.u1, r.v0], [r.u1, r.v1], [r.u0, r.v1], [r.u0, r.v0]];
     for (i, v) in vertices.iter_mut().enumerate() {
         v.glint_uv = uv[[0, 1, 2, 0, 2, 3][i % 6]];
-        v.text = effect.page;
+        v.set_font_page(effect.page);
     }
 }
 /// Sutherland-Hodgman against one half plane, interpolating every attribute.
@@ -2709,7 +2715,7 @@ impl HudBatch {
                             ]) {
                                 v.glint_uv = v.uv;
                                 v.uv = [u, y];
-                                v.text = page.page;
+                                v.set_font_page(page.page);
                             }
                         }
                     }
@@ -2735,9 +2741,9 @@ impl HudBatch {
                         }
                     }
                 };
-                let start = self.vertices.len();
+                let glyph_start = self.vertices.len();
                 draw(self, 0.0);
-                lift(self, start, base);
+                lift(self, glyph_start, base);
                 if *bold {
                     let start = self.vertices.len();
                     draw(self, g.offset);
@@ -2754,6 +2760,13 @@ impl HudBatch {
                 lift(self, start, base + 0.01);
                 if let Some(effect) = effect {
                     stamp_text_effect(&mut self.vertices[start..], *effect);
+                }
+                if !world {
+                    for v in &mut self.vertices[glyph_start..] {
+                        if v.text == 0 {
+                            v.text = NATIVE_HUD_TEXT;
+                        }
+                    }
                 }
             }
         }
@@ -3533,7 +3546,7 @@ impl HudRenderer {
                 {
                     for (part, page) in pack_text::text_runs(&batch.vertices, range.clone()) {
                         let group = page
-                            .checked_sub(1)
+                            .checked_sub(NATIVE_HUD_TEXT + 1)
                             .and_then(|id| self.font_page_groups.get(id as usize));
                         let text = group.and_then(|(kind, group)| {
                             let pack = match kind {
