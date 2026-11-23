@@ -34,6 +34,7 @@ fn stage_shared_libraries(
     projects: &[api::Project<'_>],
     template: &str,
     build: &str,
+    rust: &Toolchain,
 ) -> Result<Option<PathBuf>, String> {
     if projects.len() < 2 {
         return Ok(None);
@@ -46,7 +47,9 @@ fn stage_shared_libraries(
                 .join("Cargo.toml")
         })
         .collect();
-    let (packages, users) = metadata.shared_libraries(&roots, sdk)?;
+    let mut tree = super::cargo(rust, out, "tree");
+    tree.args(["--target", rust.host.target]);
+    let (packages, users) = metadata.shared_libraries(&roots, sdk, tree)?;
     if packages.is_empty() {
         return Ok(None);
     }
@@ -540,8 +543,15 @@ pub(super) fn compile(
     if inventory.added_crates > 0 && !options.consent.is_some_and(|ask| ask(&inventory)) {
         return Err(crate::i18n::tr("Registry dependency compilation was not approved").into());
     }
-    let provider =
-        stage_shared_libraries(out, &sdk_root, &metadata, projects, &template, sdk.commit())?;
+    let provider = stage_shared_libraries(
+        out,
+        &sdk_root,
+        &metadata,
+        projects,
+        &template,
+        sdk.commit(),
+        rust,
+    )?;
     if let Some(provider) = &provider {
         // Resolve the new local edges offline. Their addition may not move any pinned
         // identity or attach new registry edges to the already-approved dependency graph.

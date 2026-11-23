@@ -79,6 +79,43 @@ pub(super) struct Target {
     pub kind: Vec<String>,
 }
 
+type ReleaseDependencies<'a> = BTreeMap<&'a str, BTreeSet<&'a str>>;
+
+/// `cargo tree --edges normal,no-proc-macro`: omit dev features as well as dev edges.
+/// Each package prints its children once; `(*)` still identifies a real incoming edge.
+fn release_tree(mut cargo: std::process::Command) -> Result<String, String> {
+    let output = cargo
+        .args([
+            "--workspace",
+            "--offline",
+            "--locked",
+            "--edges",
+            "normal,no-proc-macro",
+            "--prefix",
+            "depth",
+            "--format",
+            "|{p}",
+            "--color",
+            "never",
+        ])
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+    }
+    String::from_utf8(output.stdout).map_err(|error| format!("Cargo release tree: {error}"))
+}
+
+fn tree_package(label: &str) -> Option<(&str, &str, Option<&Path>)> {
+    let label = label.strip_suffix(" (*)").unwrap_or(label);
+    let (name, version) = label.split_once(" v")?;
+    let (version, directory) = match version.split_once(" (") {
+        Some((version, directory)) => (version, Some(Path::new(directory.strip_suffix(')')?))),
+        None => (version, None),
+    };
+    Some((name, version, directory))
+}
+
 impl Metadata {
     fn reachable(&self, runtime: bool) -> Result<BTreeSet<&str>, String> {
         let nodes: std::collections::BTreeMap<_, _> = self
@@ -133,23 +170,93 @@ impl Metadata {
             .map(|ids| ids.into_iter().map(str::to_owned).collect())
     }
 
+    /// Use metadata for exact identities, but Cargo's release tree for active target edges.
+    fn release_dependencies<'a>(&'a self, tree: &str) -> Result<ReleaseDependencies<'a>, String> {
+        let mut by_label = BTreeMap::new();
+        for package in &self.packages {
+            // The native plan admits crates.io and local paths only. Cargo displays a
+            // directory for local packages, which can share a name/version with crates.io.
+            let key = (
+                package.name.as_str(),
+                package.version.as_str(),
+                if package.source.is_none() {
+                    package.manifest_path.parent()
+                } else {
+                    None
+                },
+            );
+            if by_label.insert(key, package.id.as_str()).is_some() {
+                return Err(format!(
+                    "Cargo release tree: ambiguous package {}",
+                    package.name
+                ));
+            }
+        }
+        let mut dependencies: ReleaseDependencies<'_> = BTreeMap::new();
+        let mut parents = Vec::new();
+        for line in tree.lines().filter(|line| !line.is_empty()) {
+            let invalid = || format!("Cargo release tree: unrecognized entry {line:?}");
+            let (depth, label) = line.split_once('|').ok_or_else(invalid)?;
+            let depth: usize = depth.parse().map_err(|_| invalid())?;
+            let key = tree_package(label).ok_or_else(invalid)?;
+            let id = by_label
+                .get(&key)
+                .copied()
+                .or_else(|| {
+                    // Cargo may display the same local path with different Windows prefixes.
+                    let (name, version, path) = key;
+                    let path = path?.canonicalize().ok()?;
+                    self.packages
+                        .iter()
+                        .find(|package| {
+                            package.name == name
+                                && package.version == version
+                                && package.source.is_none()
+                                && package.manifest_path.parent().is_some_and(|dir| {
+                                    dir.canonicalize().is_ok_and(|dir| dir == path)
+                                })
+                        })
+                        .map(|package| package.id.as_str())
+                })
+                .ok_or_else(invalid)?;
+            if depth > parents.len() {
+                return Err(invalid());
+            }
+            parents.truncate(depth);
+            if let Some(&parent) = parents.last() {
+                dependencies.entry(parent).or_default().insert(id);
+            }
+            dependencies.entry(id).or_default();
+            parents.push(id);
+        }
+        Ok(dependencies)
+    }
+
     /// Target Rust libraries that more than one staged mod would otherwise link statically.
     /// `sdk` is the canonical root used to validate the SDK patch paths.
     pub fn shared_libraries(
         &self,
         roots: &[PathBuf],
         sdk: &Path,
+        cargo_tree: std::process::Command,
+    ) -> Result<(Vec<&Package>, BTreeSet<usize>), String> {
+        self.shared_in_graph(
+            roots,
+            sdk,
+            &self.release_dependencies(&release_tree(cargo_tree)?)?,
+        )
+    }
+
+    fn shared_in_graph(
+        &self,
+        roots: &[PathBuf],
+        sdk: &Path,
+        dependencies: &ReleaseDependencies<'_>,
     ) -> Result<(Vec<&Package>, BTreeSet<usize>), String> {
         let packages: BTreeMap<_, _> = self
             .packages
             .iter()
             .map(|package| (package.id.as_str(), package))
-            .collect();
-        let nodes: BTreeMap<_, _> = self
-            .resolve
-            .nodes
-            .iter()
-            .map(|node| (node.id.as_str(), node))
             .collect();
         let roots: Vec<_> = roots
             .iter()
@@ -198,14 +305,12 @@ impl Metadata {
                         users.extend([owner, index]);
                     }
                 }
-                let node = nodes
-                    .get(id)
-                    .ok_or("Cargo metadata: missing resolved node")?;
                 pending.extend(
-                    node.deps
+                    dependencies
+                        .get(id)
+                        .ok_or("Cargo release tree: missing target package")?
                         .iter()
-                        .filter(|dep| dep.dep_kinds.iter().any(|kind| kind.kind.is_none()))
-                        .map(|dep| dep.pkg.as_str()),
+                        .copied(),
                 );
             }
         }
@@ -321,26 +426,17 @@ mod tests {
                 manifest_path: Path::new(name).join("Cargo.toml"),
             });
         }
-        let normal = |pkg: &str| Dependency {
-            pkg: pkg.into(),
-            dep_kinds: vec![Kind { kind: None }],
-        };
-        metadata.resolve.nodes.extend([
-            Node {
-                id: "local".into(),
-                deps: vec![normal("script"), normal("macro")],
-            },
-            Node {
-                id: "second".into(),
-                deps: vec![normal("local")],
-            },
-            Node {
-                id: "dependent".into(),
-                deps: vec![normal("root")],
-            },
-        ]);
         let roots = ["mod", "second", "dependent"].map(|name| Path::new(name).join("Cargo.toml"));
-        let (packages, users) = metadata.shared_libraries(&roots, Path::new("sdk")).unwrap();
+        let release = metadata
+            .release_dependencies(
+                "0|dependent v1.0.0 (dependent)\n1|mod v1.0.0 (mod)\n2|native-sys v2.0.0\n\
+                 0|mod v1.0.0 (mod) (*)\n\
+                 0|second v1.0.0 (second)\n1|local v1.0.0 (local)\n2|native-sys v2.0.0 (*)\n",
+            )
+            .unwrap();
+        let (packages, users) = metadata
+            .shared_in_graph(&roots, Path::new("sdk"), &release)
+            .unwrap();
         assert_eq!(users, BTreeSet::from([0, 1]));
         assert_eq!(
             packages
@@ -352,12 +448,13 @@ mod tests {
     }
 
     #[test]
-    fn two_mods_share_the_sdk_patch_resolved_by_cargo() {
+    fn two_mods_share_the_sdk_patch_but_not_its_dev_only_feature_dependency() {
         use std::{fs, process::Command};
 
         let scratch = tempfile::tempdir().unwrap();
         let sdk = scratch.path().join("sdk");
-        let patch = sdk.join("patched");
+        let patch = sdk.join("patched library");
+        let dev_only = sdk.join("dev-only");
         let stage = scratch.path().join("stage");
         let mods = ["first", "second"];
         for name in mods {
@@ -372,7 +469,8 @@ mod tests {
                 dir.join("Cargo.toml"),
                 format!(
                     "[package]\nname = '{name}'\nversion = '0.1.0'\nedition = '2024'\n\
-                     [dependencies]\nhorizon-test-sdk-patch = '=0.1.0'\n"
+                     [dependencies]\nhorizon-test-sdk-patch = '=0.1.0'\n\
+                     [dev-dependencies]\nhorizon-test-sdk-patch = {{ version = '=0.1.0', features = ['test-only'] }}\n"
                 ),
             )
             .unwrap();
@@ -381,7 +479,20 @@ mod tests {
         fs::write(patch.join("src/lib.rs"), "pub struct Value;").unwrap();
         fs::write(
             patch.join("Cargo.toml"),
-            "[package]\nname = 'horizon-test-sdk-patch'\nversion = '0.1.0'\nedition = '2024'\n",
+            "[package]\nname = 'horizon-test-sdk-patch'\nversion = '0.1.0'\nedition = '2024'\n\
+             [dependencies]\nhorizon-test-dev-only = { path = '../dev-only', optional = true }\n\
+             [features]\ntest-only = ['dep:horizon-test-dev-only']\n",
+        )
+        .unwrap();
+        fs::create_dir_all(dev_only.join("src")).unwrap();
+        fs::write(
+            dev_only.join("src/lib.rs"),
+            "compile_error!(\"the dev-only crate must not enter a release build\");",
+        )
+        .unwrap();
+        fs::write(
+            dev_only.join("Cargo.toml"),
+            "[package]\nname = 'horizon-test-dev-only'\nversion = '0.1.0'\nedition = '2024'\n",
         )
         .unwrap();
         let patch = patch.canonicalize().unwrap();
@@ -405,8 +516,10 @@ mod tests {
         );
         let metadata: Metadata = serde_json::from_slice(&cargo.stdout).unwrap();
         let roots = mods.map(|name| stage.join(name).join("Cargo.toml"));
+        let mut cargo_tree = Command::new(env!("CARGO"));
+        cargo_tree.arg("tree").current_dir(&stage);
         let (packages, users) = metadata
-            .shared_libraries(&roots, &sdk.canonicalize().unwrap())
+            .shared_libraries(&roots, &sdk.canonicalize().unwrap(), cargo_tree)
             .unwrap();
         assert_eq!(users, BTreeSet::from([0, 1]));
         assert_eq!(
