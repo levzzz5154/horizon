@@ -5,11 +5,11 @@ use horizon_world::registry::BlockRegistry;
 use mod_api::{
     __private::{
         ModPhase, PhaseOwner,
-        built::{BakedModelFaces, BakedModelsAccess},
+        built::{BakedModelFaces, BakedModelsAccess, baked_model_quad},
         game::RegistrationContextNew,
     },
-    BakedModelEditError, BakedModelKey, BakedModelQuad, BakedModelView, BakedModels,
-    BakedQuadChange, Direction as ApiDirection, HookId, RegistrationContext,
+    BakedModelEditError, BakedModelKey, BakedModelQuad, BakedModelView, BakedModels, BakedQuadChange,
+    Direction as ApiDirection, HookId, RegistrationContext,
 };
 
 /// The client-only hook target. Its catalog's borrow ends before the candidate can publish.
@@ -208,19 +208,19 @@ impl BakedModelFaces for BakedModel {
 
 fn quad_view(face: &BakedFace) -> BakedModelQuad<'_> {
     let quad = &face.quad;
-    BakedModelQuad {
-        positions: &quad.positions,
-        uvs: &quad.uv,
-        sprite: &quad.material.sprite,
-        facing: api_direction(quad.facing),
-        cull_face: quad.cull.map(api_direction),
-        tint_index: (quad.tint_index >= 0).then_some(quad.tint_index),
-        shade: quad.shade,
-        shade_direction_override: quad.shade_direction_override.map(api_direction),
-        ambient_occlusion: quad.ambient_occlusion,
-        color: quad.color,
-        light: quad.light,
-    }
+    baked_model_quad(
+        &quad.positions,
+        &quad.uv,
+        &quad.material.sprite,
+        api_direction(quad.facing),
+        quad.cull.map(api_direction),
+        (quad.tint_index >= 0).then_some(quad.tint_index),
+        quad.shade,
+        quad.shade_direction_override.map(api_direction),
+        quad.ambient_occlusion,
+        quad.color,
+        quad.light,
+    )
 }
 
 fn api_direction(direction: Direction) -> ApiDirection {

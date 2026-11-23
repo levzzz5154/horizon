@@ -2,7 +2,9 @@
 use crate::Direction;
 
 /// A model in the current block and standalone bake, addressed without renderer slots.
+// no wire: bake-local lookup key with a borrowed name, used only by the native catalog.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BakedModelKey<'a> {
     /// A transformed model shared by the block states that select it.
     Variant {
@@ -18,7 +20,9 @@ pub enum BakedModelKey<'a> {
 }
 
 /// One already transformed quad, borrowed directly from the current bake.
+// no wire: borrows native baked geometry and sprite metadata for the callback.
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub struct BakedModelQuad<'a> {
     /// Four positions in model-local block units, in draw order.
     pub positions: &'a [[f32; 3]; 4],
@@ -45,7 +49,9 @@ pub struct BakedModelQuad<'a> {
 }
 
 /// An allocation-free view of the candidate model's geometry.
+// no wire: borrows a live native model through its face access trait.
 #[derive(Clone, Copy)]
+#[non_exhaustive]
 pub struct BakedModelView<'a> {
     faces: &'a dyn BakedModelFaces,
 }
@@ -63,6 +69,7 @@ impl<'a> BakedModelView<'a> {
 }
 
 /// A bake-time edit of one quad, keeping its material, tint and lighting metadata on replacement.
+// no wire: edit returned to the native bake callback, not a Wasm operation.
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
 pub enum BakedQuadChange {
@@ -82,6 +89,7 @@ pub enum BakedQuadChange {
 }
 
 /// Why a requested bake-time edit could not be applied.
+// no wire: error from the native catalog editor, which has no Wasm entry point.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum BakedModelEditError {
@@ -92,6 +100,8 @@ pub enum BakedModelEditError {
 }
 
 /// The live candidate for this resource bake, only available during `modify_baking_result`.
+// no wire: exclusive borrow of the native resource bake's in-progress catalog.
+#[non_exhaustive]
 pub struct BakedModels<'a> {
     catalog: &'a mut dyn BakedModelsAccess,
 }
@@ -152,6 +162,35 @@ pub mod built {
             key: BakedModelKey<'_>,
             edit: &mut dyn FnMut(BakedModelQuad<'_>) -> BakedQuadChange,
         ) -> Result<(), BakedModelEditError>;
+    }
+
+    #[inline]
+    pub fn baked_model_quad<'a>(
+        positions: &'a [[f32; 3]; 4],
+        uvs: &'a [[f32; 2]; 4],
+        sprite: &'a str,
+        facing: Direction,
+        cull_face: Option<Direction>,
+        tint_index: Option<i32>,
+        shade: bool,
+        shade_direction_override: Option<Direction>,
+        ambient_occlusion: Option<bool>,
+        color: Option<i32>,
+        light: [u8; 2],
+    ) -> BakedModelQuad<'a> {
+        BakedModelQuad {
+            positions,
+            uvs,
+            sprite,
+            facing,
+            cull_face,
+            tint_index,
+            shade,
+            shade_direction_override,
+            ambient_occlusion,
+            color,
+            light,
+        }
     }
 
     impl<'a> BakedModelView<'a> {

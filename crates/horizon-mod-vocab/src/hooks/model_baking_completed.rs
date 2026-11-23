@@ -17,8 +17,8 @@ load, right after both atlases' `texture_atlas_stitched`: on the first load befo
 successful resource reload before `client_resources_reloaded`. The store `render_assets().model(&id)` reads is already
 the new one, the standalone models included. Resolve the models a mod draws there, once, and keep the `ModelRef`s until
 the next `model_baking_completed`, when the old ones answer `ModelError::StaleModel`; a reload that fails fires nothing
-and leaves them valid. For the native block and standalone geometry before publication, use
-`modify_baking_result` instead. A dedicated server never fires it."#]
+and leaves them valid. It gives no view of the baked geometry and edits nothing (that is #861). A dedicated server never
+fires it."#]
     #[hook(
         side = "client",
         contract = "listen",

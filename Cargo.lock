@@ -2298,7 +2298,6 @@ dependencies = [
 name = "horizon-mod-api-gen-tests"
 version = "0.1.0"
 dependencies = [
- "horizon-client-core",
  "horizon-core",
  "horizon-mod-api-gen",
  "horizon-mod-api-macros",
