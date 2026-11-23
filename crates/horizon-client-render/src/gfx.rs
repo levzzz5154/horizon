@@ -5115,17 +5115,22 @@ impl Renderer {
         self.core_lines =
             program.and_then(|program| core_lines::CoreLines::new(&self.device, format, program));
     }
-    /// The resource packs' `core/sky` and `core/stars` (`HudAtlas::sky_shader`,
-    /// `stars_shader`), or the built-in sky and stars.
+    /// The resource packs' sky disc, stars, and sunrise/sunset programs, or the built-in sky.
     pub fn set_sky_shaders(
         &mut self,
         disc: Option<&crate::core_shader::CoreProgram>,
         stars: Option<&crate::core_shader::CoreProgram>,
+        sunrise: Option<&crate::core_shader::CoreProgram>,
     ) {
         // As `set_lines_shader`: not on a frame of linear light.
         let keep = !self.output.frame.linear_light;
-        let (disc, stars) = (disc.filter(|_| keep), stars.filter(|_| keep));
-        self.core_sky = core_sky::CoreSky::new(&self.device, self.output.frame.format, disc, stars);
+        self.core_sky = core_sky::CoreSky::new(
+            &self.device,
+            self.output.frame.format,
+            disc.filter(|_| keep),
+            stars.filter(|_| keep),
+            sunrise.filter(|_| keep),
+        );
     }
     /// LevelRenderer.submitBlockOutline: the buffer holds `edges` per stroke, the black
     /// secondary stroke first when high contrast is on.
@@ -9415,7 +9420,20 @@ impl Renderer {
                     fog,
                 )
             });
-            core.prepare(&mut self.uploads, &mut encoder, &sky, stars.as_deref());
+            let sunrise_color = frame.sky.sunrise_color;
+            let sunrise = (core.draws_sunrise() && sunrise_color[3] > 0.001).then(|| {
+                core_sky::uniforms(
+                    block,
+                    projection,
+                    core_sky::sunrise_model_view(view.view, frame.sky.sun_angle, sunrise_color[3]),
+                    sunrise_color,
+                    fog_color,
+                    fog,
+                )
+            });
+            core.prepare(
+                &mut self.uploads, &mut encoder, &sky, stars.as_deref(), sunrise.as_deref(),
+            );
         }
         let skin = frame.skin.filter(|skin| match &mut self.entity_skin {
             Some(skinner) => skinner.register(&self.device, &mut self.uploads, &mut encoder, skin),

@@ -467,7 +467,8 @@ impl Game<'_> {
                             ("gui/container/smoker", "container.smoker", "Smoker")
                         }
                     };
-                    part(batch, tex, 0.0, 0.0, 176.0, 166.0, ox, oy);
+                    // `AbstractFurnaceScreen.extractBackground`: a standalone texture.
+                    batch.texture_blit(atlas, tex, [ox, oy, 176.0, 166.0], [0.0; 2], [256.0; 2]);
                     self.draw_screen_phase(
                         batch,
                         horizon_client::screen_draw::RenderPhase::Background,
@@ -563,7 +564,8 @@ impl Game<'_> {
                     } else {
                         "gui/container/inventory"
                     };
-                    part(batch, texture, 0.0, 0.0, 176.0, 166.0, ox, oy);
+                    // `InventoryScreen.extractBackground` / `CraftingScreen.extractBackground`.
+                    batch.texture_blit(atlas, texture, [ox, oy, 176.0, 166.0], [0.0; 2], [256.0; 2]);
                     self.draw_screen_phase(
                         batch,
                         horizon_client::screen_draw::RenderPhase::Background,
