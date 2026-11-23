@@ -19,6 +19,12 @@ use crate::{
     text::Text,
 };
 
+mod benchmark;
+pub use benchmark::{
+    BenchmarkAction, BenchmarkChange, BenchmarkOutcome, BenchmarkResult, BenchmarkRow,
+    BenchmarkView,
+};
+
 /// The language key of the screen's name.
 const TITLE: &str = "Graphics";
 
@@ -33,15 +39,17 @@ pub enum Page {
     Advanced,
     /// HDR output's own settings.
     Hdr,
+    Benchmark,
 }
 impl Page {
-    pub const ALL: [Page; 6] = [
+    pub const ALL: [Page; 7] = [
         Page::General,
         Page::Quality,
         Page::Performance,
         Page::Shaders,
         Page::Advanced,
         Page::Hdr,
+        Page::Benchmark,
     ];
     pub fn name(self) -> &'static str {
         match self {
@@ -51,6 +59,7 @@ impl Page {
             Page::Shaders => "Shaders",
             Page::Advanced => "Advanced",
             Page::Hdr => "HDR",
+            Page::Benchmark => benchmark::NAME,
         }
     }
     /// What the page holds, in the strip while no setting is pointed at.
@@ -62,6 +71,7 @@ impl Page {
             Page::Shaders => "Shader packs, Horizon's and shaders/ folder ones, and their options.",
             Page::Advanced => "How frames reach the screen, and the performance overlay.",
             Page::Hdr => "Brighter-than-white output on an HDR display.",
+            Page::Benchmark => benchmark::ABOUT,
         }
     }
 }
@@ -129,6 +139,7 @@ pub enum Item {
     Horizon(H),
     /// A Horizon extra that changes the picture (`extras::Item`, kept in `horizon-extras.txt`).
     Extra(crate::extras::Item),
+    Benchmark(BenchmarkRow),
 }
 
 #[derive(Clone, Copy)]
@@ -1243,7 +1254,10 @@ impl Item {
     fn steps(self, s: &Settings) -> bool {
         self.switch(s).is_none()
             && self.slider(s).is_none()
-            && !matches!(self, Item::Horizon(H::HdrCalibrate | H::ShaderPacks))
+            && !matches!(
+                self,
+                Item::Horizon(H::HdrCalibrate | H::ShaderPacks) | Item::Benchmark(_)
+            )
     }
     /// On/off settings and their value.
     pub fn switch(self, s: &Settings) -> Option<bool> {
@@ -1286,7 +1300,7 @@ impl Item {
         match self {
             Item::Vanilla(o) => o.slider_position(s),
             Item::Horizon(h) => h.slider(s),
-            Item::Extra(_) => None,
+            Item::Extra(_) | Item::Benchmark(_) => None,
         }
     }
     pub fn label(self, s: &Settings, out: &EffectiveOutput) -> Text {
@@ -1304,6 +1318,7 @@ impl Item {
                 Text::literal(e.caption_text()),
                 Text::literal(e.value(&s.extras)),
             ),
+            Item::Benchmark(_) => Text::literal(lang::get(benchmark::NAME)),
         }
     }
     pub fn set_slider(self, s: &mut Settings, v: f32, out: &EffectiveOutput) {
@@ -1314,7 +1329,7 @@ impl Item {
             // Options.applyGraphicsPreset, as Video Settings' slider does it.
             Item::Vanilla(o) => crate::options_ui::set_slider(o, s, v),
             Item::Horizon(h) => h.set_slider(s, v),
-            Item::Extra(_) => {}
+            Item::Extra(_) | Item::Benchmark(_) => return,
         }
         self.touched(s);
     }
@@ -1326,6 +1341,7 @@ impl Item {
             Item::Vanilla(o) => o.cycle(s, back, framebuffer),
             Item::Horizon(h) => h.cycle(s, back, out),
             Item::Extra(e) => e.cycle(&mut s.extras, back),
+            Item::Benchmark(_) => return,
         }
         self.touched(s);
     }
@@ -1373,7 +1389,7 @@ impl Item {
         match self {
             Item::Vanilla(o) => o.slider_steps(),
             Item::Horizon(h) => h.slider_steps(),
-            Item::Extra(_) => None,
+            Item::Extra(_) | Item::Benchmark(_) => None,
         }
     }
     pub fn step_slider(self, s: &mut Settings, forward: bool, width: f32, out: &EffectiveOutput) {
@@ -1495,6 +1511,7 @@ pub struct GraphicsScreen {
     /// The output of the renderer the settings are drawn for (`OptionsUi::draw_background`), handed in
     /// each time the screen is reached.
     pub(crate) output: EffectiveOutput,
+    pub(crate) benchmark: Option<std::sync::Arc<BenchmarkView>>,
 }
 
 impl Screen for GraphicsScreen {
@@ -1511,7 +1528,13 @@ impl Screen for GraphicsScreen {
             g::translucent_batching_offered(),
             g::gpu_culling_offer(),
         );
-        shell::stamp_of(&(read(s), s.fullbright_held, &s.running_pack, offers))
+        shell::stamp_of(&(
+            read(s),
+            s.fullbright_held,
+            &s.running_pack,
+            offers,
+            self.benchmark.as_ref().map(std::sync::Arc::as_ptr),
+        ))
     }
     fn sheets(&self, s: &Settings) -> Vec<Sheet<Page, Item>> {
         let sheet = |(page, groups): (Page, Vec<(&'static str, Vec<Setting>)>)| Sheet {
@@ -1533,10 +1556,18 @@ impl Screen for GraphicsScreen {
             listed: true,
             heading: None,
         };
-        rows().into_iter().map(sheet).collect()
+        rows()
+            .into_iter()
+            .map(sheet)
+            .chain(self.benchmark.iter().map(benchmark::sheet))
+            .collect()
     }
     fn press(&mut self, s: &mut Settings, item: Item, back: bool) -> Vec<Output> {
         match item {
+            Item::Benchmark(BenchmarkRow::Action(action)) => {
+                vec![Output::Event(Event::GraphicsBenchmark(action))]
+            }
+            Item::Benchmark(_) => Vec::new(),
             Item::Horizon(H::HdrCalibrate) if setup(s, &self.output) == Setup::Changed => {
                 s.horizon.hdr_peak = 0;
                 s.horizon.hdr_paper_white = 0;
