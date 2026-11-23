@@ -1867,6 +1867,8 @@ pub struct HudBatch {
     pub blur_at: u32,
     /// Player object profiles encountered while painting text this frame.
     pub inline_profiles: Vec<std::sync::Arc<serde_json::Value>>,
+    /// The stock HUD's hotbar origin while that layer is drawing and in its post hooks.
+    pub stock_hotbar_origin: Option<[f32; 2]>,
 }
 /// How a run of HUD vertices blends and tests depth.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -2014,6 +2016,7 @@ impl HudBatch {
             game_time: 0.0,
             blur_at: 0,
             inline_profiles: Vec::new(),
+            stock_hotbar_origin: None,
         }
     }
     /// Draw the vertices added since `start` with the inverting blend.
@@ -6072,6 +6075,7 @@ texture=wide",
                 game_time: 0.0,
                 blur_at: 0,
                 inline_profiles: Vec::new(),
+                stock_hotbar_origin: None,
             };
             for (image_width, image_height) in [(195, 136), (176, 166), (176, 222)] {
                 assert_eq!(

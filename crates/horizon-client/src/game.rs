@@ -4967,6 +4967,8 @@ impl Game<'_> {
                         attack,
                     };
                     let draws = hud_layout::hotbar(wi, hi, &inputs);
+                    batch.stock_hotbar_origin =
+                        Some(hud_layout::hotbar_origin(wi, hi).map(|v| v as f32));
                     hud_layout::paint(batch, &g.gui.atlas, &draws);
                     for d in &draws {
                         if let hud_layout::GuiDraw::Item { slot, x, y, .. } = *d {
@@ -4982,6 +4984,7 @@ impl Game<'_> {
                     }
                 }
             });
+            batch.stock_hotbar_origin = None;
             self.gui_layer("minecraft:effects", &mut batch, |g, batch| {
                 // The PvP & HUD effects widget takes the icons' place.
                 if !g.pvp_effects_shown() {
