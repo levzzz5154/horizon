@@ -58,6 +58,37 @@ name as the exclusive cursor. Names are lexicographically ordered; each page has
 `limit` must be between 1 and `CONFIG_LIST_MAX` (1024), or the call returns `ConfigFileError::InvalidPage`.
 Use `ConfigPath::root()` to list your own root, and stop when a page is empty.
 
+### Storage quotas
+
+`write` also checks the total storage that belongs to the calling mod. The current limits are:
+
+| Scope | Total file bytes | Entries |
+| --- | ---: | ---: |
+| Owned files in the game's shared `config/` | 32 MiB | 4,096 |
+| `Host::data_files()` in this game directory | 1 GiB | 4,096 |
+| `ServerHost::world_data_files()` in each world | 1 GiB | 4,096 |
+
+The config allowance is for text and small state; the larger bulk allowances are for tiles and
+exports. The entry limit also bounds filesystem metadata, even for empty files. Quotas are
+separate for each mod ID, not pooled between mods or worlds. Each owned file and directory
+counts as one entry, including the directory named for the mod and leftover temporary files
+hidden by `list`. The shared storage directories themselves do not count. File sizes are
+logical byte lengths, not disk blocks; atomic replacement still needs space for a temporary copy.
+
+A write is admitted only if the resulting totals fit both quotas. Replacing a file charges the
+difference in size, and creating one also charges any missing parent directories. Over-quota
+writes return `ConfigFileError::TooLarge`, leave the old file intact, and create no directories.
+Files already on disk count toward the next write, even those saved in an earlier game
+session. They are not deleted: `read`, `stat`, and `list` keep their existing behavior, including
+the individual file limit for `read`. If the scope is already too full, shrink a file enough
+to fit or move unneeded files out of the scope while the game is stopped. Horizon refuses a
+write rather than guessing if it cannot check usage. For example, it returns `ConfigFileError::Io`
+if the shared `config/` directory has more than 65,536 immediate entries or the write would add
+an entry beyond that limit.
+
+These quotas apply to writes through the file services. They do not change registered config
+loading (including `serverconfig/`) or the separate settings service.
+
 ## Settings
 
 Register each setting from `Hooks::register` with `Registrar::register_setting(SettingSpec { … })`: a key

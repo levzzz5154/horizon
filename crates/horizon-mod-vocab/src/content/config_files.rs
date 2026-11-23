@@ -21,6 +21,9 @@ pub trait ConfigFiles {
     /// Replaces the file's bytes, at most the root's file-size cap, making its
     /// folders when missing. The new bytes replace the old ones at once: a
     /// reader never sees half a write.
+    /// A write must also fit the calling mod's aggregate byte and entry
+    /// limits for the selected scope, including any folders it would create.
+    /// If either limit is exceeded, the old file and folders are unchanged.
     fn write(&self, file: &ConfigPath, bytes: &[u8]) -> Result<(), ConfigFileError>;
     /// An ordered page of entries strictly after `after` (a name, not a path).
     /// Pass `None` for the first page, then the last returned name. An empty
@@ -171,7 +174,8 @@ pub enum ConfigFileError {
     NoWorld,
     /// Page size is zero or exceeds `CONFIG_LIST_MAX`, or the cursor is not a name.
     InvalidPage,
-    /// More bytes than the selected root's per-file size cap.
+    /// The per-file size cap or the selected scope's aggregate byte or entry
+    /// limit would be exceeded.
     TooLarge,
     /// Nothing is at that path.
     NotFound,
