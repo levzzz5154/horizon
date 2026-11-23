@@ -45,12 +45,12 @@ impl Game<'_> {
             .reloading()
             .expect("client listener registration on its owning thread");
         let mut listeners = <mod_api::ClientListenerRegistry as mod_api::__private::game::ClientReloadListenersOrder>::new();
-        if mod_api::__private::listened(HookId::AddClientReloadListeners) {
-            if let Err(refusal) = mod_api::__private::contain_phase_refusals(|| {
+        if mod_api::__private::listened(HookId::AddClientReloadListeners)
+            && let Err(refusal) = mod_api::__private::contain_phase_refusals(|| {
                 self.native_add_client_reload_listeners(&mut listeners);
-            }) {
-                log::warn!("Horizon: refused out-of-phase mod call: {refusal}");
-            }
+            })
+        {
+            log::warn!("Horizon: refused out-of-phase mod call: {refusal}");
         }
         listeners
     }
@@ -62,12 +62,12 @@ pub(super) fn register_startup_client_reload_listeners() -> mod_api::ClientListe
     let phase = mod_api::__private::PhaseOwner::scope(mod_api::__private::ModPhase::Setup);
     let _reload = phase.reloading().expect("initial client registration");
     let mut listeners = <mod_api::ClientListenerRegistry as mod_api::__private::game::ClientReloadListenersOrder>::new();
-    if mod_api::__private::listened(HookId::AddClientReloadListeners) {
-        if let Err(refusal) = mod_api::__private::contain_phase_refusals(|| {
+    if mod_api::__private::listened(HookId::AddClientReloadListeners)
+        && let Err(refusal) = mod_api::__private::contain_phase_refusals(|| {
             mod_api::dispatch_add_client_reload_listeners(&StartupClientHost, &mut listeners);
-        }) {
-            log::warn!("Horizon: refused out-of-phase mod call: {refusal}");
-        }
+        })
+    {
+        log::warn!("Horizon: refused out-of-phase mod call: {refusal}");
     }
     listeners
 }
