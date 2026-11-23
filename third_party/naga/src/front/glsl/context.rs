@@ -611,7 +611,8 @@ impl<'a> Context<'a> {
                     let nesting = nesting.descend(meta)?;
                     let (mut any, mut sum) = (false, 0u64);
                     for member in members {
-                        let Some((integer, count)) = leaves(types, member.ty, nesting, meta)? else {
+                        let Some((integer, count)) = leaves(types, member.ty, nesting, meta)?
+                        else {
                             return Ok(None);
                         };
                         any |= integer;

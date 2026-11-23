@@ -86,7 +86,11 @@ void main() {}
         assert_eq!(error.kind, ErrorKind::NestingLimitExceeded, "{source}");
         let range = error.meta.to_range().unwrap();
         assert_eq!(source.get(range), Some(highlighted), "{source}");
-        assert_eq!(error.location(source).unwrap().line_number, line, "{source}");
+        assert_eq!(
+            error.location(source).unwrap().line_number,
+            line,
+            "{source}"
+        );
         frontend.parse(&options, source).unwrap();
     }
 

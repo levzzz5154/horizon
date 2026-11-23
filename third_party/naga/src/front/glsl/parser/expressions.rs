@@ -99,9 +99,11 @@ impl ParsingContext<'_> {
             meta.subsume(token.meta);
         } else {
             loop {
-                args.push(frontend.with_nesting(*meta, |frontend| {
-                    self.parse_assignment(frontend, ctx, stmt)
-                })?);
+                args.push(
+                    frontend.with_nesting(*meta, |frontend| {
+                        self.parse_assignment(frontend, ctx, stmt)
+                    })?,
+                );
 
                 let token = self.bump(frontend)?;
                 match token.value {
@@ -301,9 +303,8 @@ impl ParsingContext<'_> {
             TokenValue::Plus | TokenValue::Dash | TokenValue::Bang | TokenValue::Tilde => {
                 let Token { value, mut meta } = self.bump(frontend)?;
 
-                let expr = frontend.with_nesting(meta, |frontend| {
-                    self.parse_unary(frontend, ctx, stmt)
-                })?;
+                let expr = frontend
+                    .with_nesting(meta, |frontend| self.parse_unary(frontend, ctx, stmt))?;
                 let end_meta = stmt.hir_exprs[expr].meta;
 
                 let kind = match value {
@@ -329,9 +330,8 @@ impl ParsingContext<'_> {
             TokenValue::Increment | TokenValue::Decrement => {
                 let Token { value, meta } = self.bump(frontend)?;
 
-                let expr = frontend.with_nesting(meta, |frontend| {
-                    self.parse_unary(frontend, ctx, stmt)
-                })?;
+                let expr = frontend
+                    .with_nesting(meta, |frontend| self.parse_unary(frontend, ctx, stmt))?;
 
                 stmt.hir_exprs.append(
                     HirExpr {
