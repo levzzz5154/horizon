@@ -87,6 +87,8 @@ pub(super) struct ModsState {
     /// the window and its server. A later data reload must not overlay an
     /// already generated root recursively.
     pub(super) content_base: Arc<std::sync::OnceLock<PathBuf>>,
+    /// Shared checks from this launch, including for the integrated server's installed-mod list.
+    pub(super) startup_packages: Option<Arc<horizon_mod_package::selection::StartupPackages>>,
     /// `--dev-mod PATH`: content mods always on.
     pub(super) dev: Vec<PathBuf>,
     pub(super) native: std::sync::Arc<horizon_mod_package::runtime::Runtime>,
@@ -178,15 +180,19 @@ impl ModsState {
         game_dir: &std::path::Path,
         enabled: &std::collections::BTreeSet<String>,
     ) {
-        self.selected =
-            horizon_mod_package::selection::content_packages(game_dir, enabled, &self.dev)
-                .filter(|selected| {
-                    let id = &selected.package.manifest.id;
-                    // A refused wasm mod's content stays out with its code.
-                    !self.native.built().iter().any(|built| built.id == *id)
-                        && !crate::entry::code_startup_refused(id)
-                })
-                .collect();
+        self.selected = horizon_mod_package::selection::content_packages_with_snapshot(
+            game_dir,
+            enabled,
+            &self.dev,
+            self.startup_packages.as_deref(),
+        )
+        .filter(|selected| {
+            let id = &selected.package.manifest.id;
+            // A refused wasm mod's content stays out with its code.
+            !self.native.built().iter().any(|built| built.id == *id)
+                && !crate::entry::code_startup_refused(id)
+        })
+        .collect();
         self.refused = Default::default();
     }
 
@@ -1608,7 +1614,20 @@ impl Game<'_> {
             .iter()
             .map(|path| {
                 let file = path.file_name().unwrap_or_default().to_string_lossy();
-                let package = match horizon_mod_package::Package::read(path) {
+                let package;
+                let read = match self
+                    .mods
+                    .startup_packages
+                    .as_ref()
+                    .and_then(|reads| reads.get(path))
+                {
+                    Some(read) => read.map(Arc::as_ref),
+                    None => {
+                        package = horizon_mod_package::Package::read(path);
+                        package.as_ref().map_err(String::as_str)
+                    }
+                };
+                let package = match read {
                     Ok(package) => package,
                     Err(e) => {
                         return Installed {
@@ -1625,7 +1644,7 @@ impl Game<'_> {
                 let refused = crate::entry::code_refusal(&m.id);
                 live_switch_of(
                     path,
-                    &package,
+                    package,
                     self.mods.dev.contains(path),
                     &mut content_ids,
                     &mut live_ids,
@@ -1757,6 +1776,7 @@ impl Game<'_> {
             g.settings.mods.enabled = enabled.clone();
             g.mods.applied = Some(enabled);
             g.mods.selected = selected;
+            g.mods.startup_packages = None;
             g.mods.refused = refused;
             g.mods.data_switched = true;
             if g.world_root.as_os_str().is_empty() {
@@ -3078,7 +3098,7 @@ mod tests {
                 .map(|id| {
                     let path = f.0.join(format!("{id}.hmod"));
                     horizon_mod_package::selection::SelectedPackage {
-                        package: horizon_mod_package::Package::read(&path).unwrap(),
+                        package: horizon_mod_package::Package::read(&path).unwrap().into(),
                         path,
                     }
                 })

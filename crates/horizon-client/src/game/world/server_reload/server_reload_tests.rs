@@ -127,7 +127,7 @@ fn install_mod_resources(
     // inventory reload must see the package that supplied this fixture root.
     game.mods.selected = vec![horizon_mod_package::selection::SelectedPackage {
         path: package.to_owned(),
-        package: horizon_mod_package::Package::read(package).unwrap(),
+        package: horizon_mod_package::Package::read(package).unwrap().into(),
     }]
     .into();
     game.options.resources = root.prepared().to_owned();

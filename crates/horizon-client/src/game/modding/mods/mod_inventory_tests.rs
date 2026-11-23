@@ -49,7 +49,7 @@ fn selected(fixture: &Fixture, id: &str, code: bool, side: &str) -> SelectedPack
     )
     .unwrap();
     SelectedPackage {
-        package: horizon_mod_package::Package::read(&path).unwrap(),
+        package: horizon_mod_package::Package::read(&path).unwrap().into(),
         path,
     }
 }

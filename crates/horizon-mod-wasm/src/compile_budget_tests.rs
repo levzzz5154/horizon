@@ -142,7 +142,7 @@ fn installed_settings_refusal_worker() {
     let launch =
         horizon_mod_package::selection::LaunchArguments::parse(args.into_iter(), root, root, None)
             .unwrap();
-    let loaded = crate::load_installed(&launch, &player);
+    let (loaded, _) = crate::load_installed(&launch, &player);
     let expected =
         crate::Refusal::CompileSetting(crate::compile_budget::SettingError::InvalidValue(value));
     assert!(loaded.mods.is_empty());

@@ -483,7 +483,7 @@ pub fn refusal(id: &str) -> Option<Refusal> {
 pub fn load_installed(
     launch: &horizon_mod_package::selection::LaunchArguments,
     player_dir: &Path,
-) -> Loaded {
+) -> (Loaded, horizon_mod_package::selection::StartupPackages) {
     let game_dir = &launch.context.game_dir;
     let dev = &launch.context.dev_mods;
     let budget = compile_budget::CompileBudget::read(launch, player_dir);
@@ -503,24 +503,12 @@ pub fn load_installed(
             ))
             .chain(dev.iter().cloned())
             .collect();
-    // Each installed package is read once: its refusal, whether it is native and whether it is
-    // selected all come from that read, since every read hashes the whole package.
-    let mut reads = std::collections::HashMap::new();
-    for path in &installed {
-        reads
-            .entry(path.clone())
-            .or_insert_with(|| horizon_mod_package::Package::read(path));
-    }
-    let mut refused: Vec<_> = horizon_mod_package::selection::package_errors(
-        installed
-            .iter()
-            .filter(|path| reads[*path].is_err())
-            .cloned(),
-    )
-    .into_iter()
-    .filter(|(id, _)| enabled.contains(id) || !dev.is_empty())
-    .map(|(id, why)| (id, Refusal::Package(why)))
-    .collect();
+    let reads = horizon_mod_package::selection::StartupPackages::read(&installed);
+    let mut refused: Vec<_> = reads
+        .errors(&installed)
+        .filter(|(id, _)| enabled.contains(id) || !dev.is_empty())
+        .map(|(id, why)| (id, Refusal::Package(why)))
+        .collect();
     let native: Vec<_> =
         horizon_mod_package::find(&game_dir.join(horizon_mod_package::mod_list::NATIVE_DIR))
             .into_iter()
@@ -533,43 +521,40 @@ pub fn load_installed(
                 )
             }))
             .chain(dev.iter().cloned())
-            .filter_map(|path| match reads.remove(&path) {
-                Some(Ok(package)) if package.is_native() => Some(package),
-                Some(other) => {
-                    reads.insert(path, other);
-                    None
-                }
+            .filter_map(|path| match reads.get(&path) {
+                Some(Ok(package)) if package.is_native() => Some(package.clone()),
+                Some(_) => None,
                 None => horizon_mod_package::Package::read(&path)
                     .ok()
-                    .filter(horizon_mod_package::Package::is_native),
+                    .filter(horizon_mod_package::Package::is_native)
+                    .map(std::sync::Arc::new),
             })
             .collect();
     let packages: Vec<WasmPackage> =
-        horizon_mod_package::selection::content_packages_read(game_dir, &enabled, dev, |path| {
-            reads
-                .get(path)
-                .and_then(|result| result.as_ref().ok())
-                .map(|package| horizon_mod_package::Package {
-                    manifest: package.manifest.clone(),
-                    icon: package.icon.clone(),
-                    layouts: package.layouts.clone(),
-                })
-        })
+        horizon_mod_package::selection::content_packages_with_snapshot(
+            game_dir,
+            &enabled,
+            dev,
+            Some(&reads),
+        )
         .filter(|selected| selected.package.manifest.wasm.is_some())
         .filter_map(|selected| {
             if let Some(reason) = native.iter().find_map(|library| {
                 horizon_mod_package::layouts::mixed_refusal(&selected.package, library)
             }) {
-                refused.push((selected.package.manifest.id, Refusal::Package(reason)));
+                refused.push((
+                    selected.package.manifest.id.clone(),
+                    Refusal::Package(reason),
+                ));
                 return None;
             }
             match selected.package.wasm(&selected.path) {
                 Ok(module) => Some(WasmPackage {
-                    manifest: selected.package.manifest,
+                    manifest: selected.package.manifest.clone(),
                     module,
                 }),
                 Err(why) => {
-                    refused.push((selected.package.manifest.id, Refusal::Package(why)));
+                    refused.push((selected.package.manifest.id.clone(), Refusal::Package(why)));
                     None
                 }
             }
@@ -609,7 +594,7 @@ pub fn load_installed(
             .zip(loaded.modules.iter().cloned())
             .collect(),
     );
-    loaded
+    (loaded, reads)
 }
 
 /// Loaded wasm entries are installed in the same dispatch list as native entries.
@@ -967,7 +952,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let loaded = load_installed(&launch, &root);
+        let (loaded, _) = load_installed(&launch, &root);
         assert!(loaded.mods.is_empty());
         assert_eq!(loaded.refused.len(), 2);
         assert!(loaded.refused.iter().all(|(id, refusal)| {
@@ -990,7 +975,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let loaded = load_installed(&launch, &root);
+        let (loaded, _) = load_installed(&launch, &root);
         assert!(
             loaded.refused.iter().any(|(id, reason)| id == "bad_mixin"
                 && reason
@@ -1352,7 +1337,7 @@ mod mixed_install_tests {
             None,
         )
         .unwrap();
-        let loaded = load_installed(&launch, &root);
+        let (loaded, _) = load_installed(&launch, &root);
         std::fs::remove_dir_all(root).unwrap();
         assert!(loaded.mods.is_empty());
         assert_eq!(loaded.refused.len(), 1);

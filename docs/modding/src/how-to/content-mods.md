@@ -121,6 +121,10 @@ Use `cargo horizon-mod build --wasm` to build a Rust mod as `mod.wasm`. A wasm p
 requires a matching `[wasm]` declaration. Loading refuses an undeclared or missing module, a module
 over 64 MiB, invalid WebAssembly or shared-group structure, or bytes that do not match the declared SHA-512.
 
+Each launch shares one full package validation across code admission, content
+selection and the installed-mod list. Explicit installs and resource reloads
+read the current packages again; the startup result is not a disk cache.
+
 ### Java jars as external assets
 
 From a content or native mod's project folder:

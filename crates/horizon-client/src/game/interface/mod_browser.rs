@@ -183,6 +183,7 @@ impl Game<'_> {
         }
         if installed {
             self.settings.save(&Self::options_path());
+            self.mods.startup_packages = None;
             self.start_mods();
             self.switch_mods();
             // A mod with blocks, items or worldgen waits for a restart: the

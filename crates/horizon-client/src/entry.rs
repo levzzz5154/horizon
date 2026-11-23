@@ -94,7 +94,7 @@ pub fn start<G>(
     load: impl FnOnce(
         &horizon_mod_package::runtime::Runtime,
         &LaunchArguments,
-    ) -> (Vec<&'static str>, G),
+    ) -> (horizon_mod_package::selection::StartupPackages, G),
     code: CodeRuntime,
     startup: Startup,
 ) {
@@ -159,7 +159,7 @@ pub fn start<G>(
     // Mods' startup bars and lines (`RegistrationContext::progress`), before they register.
     game::startup_progress::install(side == "server");
     // Mod loading emits refusals; both client and dedicated logs must exist first.
-    let (_ids, _loaded_code) = load(&native, &launch);
+    let (packages, _loaded_code) = load(&native, &launch);
     crash::install(home.clone(), side);
     if horizon_world::native_load_hooks::install(
         horizon_world::native_load_hooks::NativeLoadHooks {
@@ -220,7 +220,7 @@ pub fn start<G>(
     }
     install_client_hooks();
     raise_open_file_limit();
-    if let Err(error) = game::run_with(options, native) {
+    if let Err(error) = game::run_with(options, native, packages) {
         // A bad command line is the caller's mistake, not a crash: no report.
         let missing_mods = game::dedicated::is_missing_mods_refusal(error.as_ref());
         let usage = error.is::<game::UsageError>() || missing_mods;

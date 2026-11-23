@@ -117,7 +117,7 @@ fn load_conditions_recipe_reload_counts_and_failed_candidates_keep_old_recipes()
                 std::fs::write(module.join("horizon-mod.toml"), "id='testmod'\nname='Conditions fixture'\nversion='1'\napi='0.2'\nside='both'\ncapabilities=['registries']\n").unwrap();
                 std::fs::write(module.join("data/testmod/tags/block/flag.json"), r#"{"neoforge:conditions":[{"type":"testmod:flag","value":"content"}],"values":["minecraft:stone"]}"#).unwrap();
                 game.mods.selected = vec![horizon_mod_package::selection::SelectedPackage {
-                    package: horizon_mod_package::Package::read(&module).unwrap(),
+                    package: horizon_mod_package::Package::read(&module).unwrap().into(),
                     path: module.clone(),
                 }]
                 .into();

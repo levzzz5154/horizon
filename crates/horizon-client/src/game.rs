@@ -11315,9 +11315,11 @@ pub use launch_api::{UsageError, exit_code};
 pub(crate) fn run_with(
     options: Options,
     native: horizon_mod_package::runtime::Runtime,
+    packages: horizon_mod_package::selection::StartupPackages,
 ) -> Result<()> {
     let mut options = Options::read(options)?;
     options.mods.native = Arc::new(native);
+    options.mods.startup_packages = Some(Arc::new(packages));
     if options.execution_role == execution_role::ExecutionRole::DedicatedServer
         && !dedicated::preflight(&mut options)?
     {

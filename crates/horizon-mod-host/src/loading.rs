@@ -46,7 +46,7 @@ pub fn main_with(
     horizon_client::entry::start(
         native,
         |native, launch| {
-            let mut wasm =
+            let (mut wasm, packages) =
                 horizon_mod_wasm::load_installed(launch, &horizon_client::logging::player_dir());
             let mut mods = mods;
             mods.extend(std::mem::take(&mut wasm.mods));
@@ -82,10 +82,11 @@ pub fn main_with(
             let code_ids: std::collections::HashSet<_> =
                 mods.iter().map(|entry| entry.fields().id).collect();
             let settings = horizon_mod_package::mod_list::ModList::load(&launch.context.game_dir);
-            let content: Vec<_> = horizon_mod_package::selection::content_packages(
+            let content: Vec<_> = horizon_mod_package::selection::content_packages_with_snapshot(
                 &launch.context.game_dir,
                 &settings.enabled,
                 &launch.context.dev_mods,
+                Some(&packages),
             )
             .collect();
             let manifests: Vec<_> = code_manifests
@@ -147,9 +148,8 @@ pub fn main_with(
                 .filter(|&i| code_ids.contains(manifests[i].id.as_str()))
                 .map(|i| entries.remove(manifests[i].id.as_str()).unwrap())
                 .collect();
-            let ids: Vec<_> = mods.iter().map(|entry| entry.fields().id).collect();
             mod_api::__private::install(mods.into());
-            (ids, wasm)
+            (packages, wasm)
         },
         horizon_client::entry::CodeRuntime {
             initialize: horizon_mod_wasm::initialize,
