@@ -576,7 +576,7 @@ impl World {
                 );
             }
         }
-        for (i, quad) in cpu.chunks_exact(4).enumerate() {
+        for (i, quad) in cpu.as_chunks::<4>().0.iter().enumerate() {
             let v = &quad[0];
             let [u, tagged_v] = v.glint_uv;
             let material = (tagged_v.is_sign_negative()
