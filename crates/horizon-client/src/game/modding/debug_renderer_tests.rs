@@ -473,10 +473,6 @@ fn hitbox_replacement_keeps_other_gizmos_and_reads_the_client_view() {
             assert_eq!(weapon.item().id(host), "minecraft:iron_sword");
             assert_eq!(living.is_blocking(host), Some(true));
             assert_eq!(
-                player.within_entity_reach(host, pig_ref, EntityReach::AttackUnbuffered),
-                Some(false)
-            );
-            assert_eq!(
                 player.within_entity_reach(host, pig_ref, EntityReach::Attack),
                 Some(true)
             );

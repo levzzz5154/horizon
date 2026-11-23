@@ -487,15 +487,16 @@ pub trait PlayersBackend {
     #[access(WorldOnly)]
     fn player_may_fly(&self, player: PlayerRef) -> Option<bool>;
     /// Side: both.
-    /// Whether `entity` is within the player's reach by `reach` ([`EntityReach`]): from
-    /// the player's eyes to the closest point of the entity's box, with the rule's own
-    /// buffer. `AttackUnbuffered` excludes the packet buffer for client indicators.
-    /// The range comes from the player's `minecraft:entity_interaction_range` (3.0,
-    /// 5.0 in creative) or the main hand's `attack_range` component for an attack.
-    /// With the eyes inside the box the distance is 0; there is no ray or fallback.
-    /// None for a stale player or entity, one without a box, or one in another level.
-    /// On a client, `player` must be the local player: the range and main hand are its
-    /// synced copy, its eyes are predicted, and the entity's box is its client tick state.
+    /// Whether `entity` is within the player's reach by the server's rule
+    /// `reach` ([`EntityReach`]): from the player's eyes to the closest point
+    /// of the entity's box, with the rule's own buffer, the range from the
+    /// player's `minecraft:entity_interaction_range` (3.0, 5.0 in creative)
+    /// and, for an attack, the main hand's `attack_range` component. With the
+    /// eyes inside the box the distance is 0; there is no ray and no other
+    /// fallback. This is the server's check, not the client's pick. None for a
+    /// stale player or entity, one whose box Horizon doesn't keep, or one in
+    /// another level. On a client, `player` must be the local player: the range and main hand
+    /// are its synced copy, its eye position is predicted, and the target's box is its client copy.
     #[access(WorldOnly)]
     fn player_within_entity_reach(
         &self,

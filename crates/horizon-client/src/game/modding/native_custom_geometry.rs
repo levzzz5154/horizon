@@ -98,16 +98,14 @@ impl Game<'_> {
             self.native_debug_hitboxes(alpha as f32, &mut hitboxes);
             hitboxes
         });
-        if let Some(hitboxes) = &hitboxes {
-            if builtin {
-                self.native_debug_renderer_view(
-                    mod_api::ENTITY_HITBOX_RENDERER,
-                    &view,
-                    draw,
-                    hitboxes,
-                    &control,
-                );
-            }
+        if builtin && let Some(hitboxes) = &hitboxes {
+            self.native_debug_renderer_view(
+                mod_api::ENTITY_HITBOX_RENDERER,
+                &view,
+                draw,
+                hitboxes,
+                &control,
+            );
         }
         let custom = mod_api::DebugRendererControl::new(false);
         for id in &self.debug_renderers {

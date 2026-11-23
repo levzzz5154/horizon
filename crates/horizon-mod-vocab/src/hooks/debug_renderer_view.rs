@@ -10,6 +10,15 @@ pub trait Hooks {
     /// one-way. `draw` is the same world draw context as `submit_custom_geometry`.
     /// Not called on title or connection screens. Client-side.
     /// Not on wasm: the hitbox projection and draw decision are borrowed native views.
+    #[notes = r#"## Replacing the built-in entity hitboxes
+
+Native `Hooks::debug_renderer_view` sees the interpolated hitbox set for each active
+debug renderer. For `ENTITY_HITBOX_RENDERER` (F3+B), call `event.control.cancel_builtin()`
+before drawing replacement lines with `event.draw`. Other renderers and submitted geometry
+remain, and the F3+B entry stays selected. Each active custom renderer sees the same
+hitboxes even if F3+B is off. The supplied client host exposes `local_player` and level
+block reads. Narrow the player with `host.living(player.entity())` for held items and
+blocking. The entity handles also support live distance and buffered attack reach reads."#]
     #[hook(side = "client", contract = "listen")]
     fn debug_renderer_view();
 }

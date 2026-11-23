@@ -1,3 +1,3 @@
-ids = ["hook:debug_renderer_view", "type:DebugRendererViewEvent", "type:EntityReach"]
-why = "The draw hook now includes the active vanilla entity-hitbox renderer and the interpolated hitbox set. A listener can suppress that built-in draw for the current view without affecting other renderers or the debug setting. EntityReach adds AttackUnbuffered for display-only reach checks."
-migrate = "Existing debug_renderer_draw listeners are unchanged. To replace F3+B, listen to debug_renderer_view, handle ENTITY_HITBOX_RENDERER, and call event.control.cancel_builtin(). Match AttackUnbuffered when exhaustively matching EntityReach."
+ids = ["hook:debug_renderer_view", "type:DebugRendererViewEvent"]
+why = "Native debug renderers can inspect the interpolated hitbox set and suppress the built-in hitbox draw for one view."
+migrate = "Existing debug_renderer_draw listeners are unchanged. To replace F3+B, listen to debug_renderer_view, handle ENTITY_HITBOX_RENDERER, and call event.control.cancel_builtin()."

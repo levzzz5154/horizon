@@ -138,12 +138,15 @@ pub const ENTITY_HITBOX_RENDERER: &str = "minecraft:entity_hitboxes";
 
 /// The built-in draw decision for one call to [`crate::Hooks::debug_renderer_view`].
 /// Cancellation is one-way and does not affect the entry's enabled status.
+// no wire: a native listener changes the draw decision in this view by reference.
+#[non_exhaustive]
 pub struct DebugRendererControl {
     built_in: bool,
     cancelled: std::cell::Cell<bool>,
 }
 
 impl DebugRendererControl {
+    // hidden: only the game can start a view's draw decision.
     #[doc(hidden)]
     pub fn new(built_in: bool) -> Self {
         Self {
@@ -170,6 +173,7 @@ impl DebugRendererControl {
 /// reads such as blocking, equipment and vehicle; those reads are not interpolated.
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
+// no wire: the native renderer lends a view-local slice of these records.
 pub struct DebugEntityHitbox {
     /// The client entity handle, if it is tracked. A transient client effect can lack one.
     pub entity: Option<crate::EntityRef>,
@@ -201,6 +205,7 @@ pub struct DebugEntityHitbox {
 }
 
 impl DebugEntityHitbox {
+    // hidden: the game projects rendered entity geometry into this record.
     #[doc(hidden)]
     pub fn from_box(position: [f64; 3], bounds: [[f64; 3]; 2]) -> Self {
         Self {
