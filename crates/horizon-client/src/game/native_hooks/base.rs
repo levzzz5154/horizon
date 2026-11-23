@@ -553,7 +553,11 @@ impl Game<'_> {
         let _reload = phase
             .reloading()
             .expect("client reload notice on its owning thread");
-        self.fire_client_resources_reloaded();
+        if let Err(refusal) =
+            mod_api::__private::contain_phase_refusals(|| self.fire_client_resources_reloaded())
+        {
+            log::warn!("Horizon: refused out-of-phase mod call: {refusal}");
+        }
     }
     /// The client made a new level for `dimension` (NeoForge's
     /// `LevelEvent.Load` from the `ClientLevel` constructor): on joining a

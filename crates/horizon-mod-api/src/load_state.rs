@@ -593,4 +593,70 @@ mod tests {
             assert_eq!(refused[9], r#"Err(InvalidSettingKey(""))"#);
         });
     }
+
+    #[test]
+    fn contained_out_of_phase_call_returns_named_refusal_without_panicking() {
+        use crate::prelude::EntitiesHost as _;
+        struct LocalHost;
+        impl Host for LocalHost {}
+        crate::impl_host_areas!(LocalHost);
+
+        let _phase = PhaseOwner::scope(ModPhase::Setup);
+        let _mod_guard = crate::content::crash::enter_native_mod(crate::content::crash::ModCall {
+            id: "bad_mod",
+            hook: "client_setup",
+            part: None,
+        });
+        let err = crate::__private::contain_phase_refusals(|| {
+            let _ = LocalHost.entity(1);
+        })
+        .unwrap_err();
+        assert_eq!(err.r#mod, "bad_mod");
+        assert_eq!(err.operation, "entity");
+        assert_eq!(err.phase, ModPhase::Setup);
+        assert!(err.to_string().contains("bad_mod"));
+        assert!(err.to_string().contains("entity"));
+        assert!(err.to_string().contains("Setup"));
+    }
+
+    #[test]
+    fn contained_refusal_latches_first_violation_even_when_mod_catches_unwind() {
+        let _phase = PhaseOwner::scope(ModPhase::Config);
+        let _mod_guard = crate::content::crash::enter_native_mod(crate::content::crash::ModCall {
+            id: "sneaky_mod",
+            hook: "config_loading",
+            part: None,
+        });
+        let err = crate::__private::contain_phase_refusals(|| {
+            let _ = std::panic::catch_unwind(|| check_access("entity", LoadAccess::WorldOnly));
+            let _ = std::panic::catch_unwind(|| check_access("level", LoadAccess::WorldOnly));
+            42
+        })
+        .unwrap_err();
+        assert_eq!(err.r#mod, "sneaky_mod");
+        assert_eq!(err.operation, "entity");
+        assert_eq!(err.phase, ModPhase::Config);
+    }
+
+    #[test]
+    fn contained_scope_allows_valid_calls_and_propagates_non_phase_panics() {
+        let _phase = PhaseOwner::scope(ModPhase::Setup);
+        let ok = crate::__private::contain_phase_refusals(|| {
+            check_access("setting", LoadAccess::WorldOnly);
+            check_access("block_states", LoadAccess::Metadata);
+            7
+        });
+        assert_eq!(ok, Ok(7));
+
+        let panic_payload = std::panic::catch_unwind(|| {
+            let _ = crate::__private::contain_phase_refusals(|| {
+                panic!("ordinary mod bug");
+            });
+        })
+        .unwrap_err();
+        assert_eq!(
+            panic_payload.downcast_ref::<&str>().copied(),
+            Some("ordinary mod bug")
+        );
+    }
 }

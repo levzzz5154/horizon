@@ -11,7 +11,11 @@ impl Game<'_> {
     /// time. A file outside `config/`, or one already registered, is skipped.
     /// API 397.
     pub(in crate::game) fn native_register_configs(&mut self, configs: &mut Vec<mod_api::Config>) {
-        self.fire_register_configs(configs);
+        if let Err(refusal) =
+            mod_api::__private::contain_phase_refusals(|| self.fire_register_configs(configs))
+        {
+            log::warn!("Horizon: refused out-of-phase mod call: {refusal}");
+        }
     }
     /// A registered config was read (`ModConfigEvent.Loading`): `config`
     /// says whose, which file and its text, which the mod parses (TOML by
@@ -19,7 +23,11 @@ impl Game<'_> {
     /// where the config's kind loads (`native_register_configs`), a `Server`
     /// one before `native_server_about_to_start`. API 397.
     pub(in crate::game) fn native_config_loading(&mut self, config: &ConfigFile) {
-        self.fire_config_loading(config);
+        if let Err(refusal) =
+            mod_api::__private::contain_phase_refusals(|| self.fire_config_loading(config))
+        {
+            log::warn!("Horizon: refused out-of-phase mod call: {refusal}");
+        }
     }
     /// A loaded config's file changed on disk (`ModConfigEvent.Reloading`):
     /// its new text. The game looks at the files' modification times once a
@@ -27,7 +35,11 @@ impl Game<'_> {
     /// same text, removed or unreadable fires nothing and keeps its last
     /// text. API 397.
     pub(in crate::game) fn native_config_reloading(&mut self, config: &ConfigFile) {
-        self.fire_config_reloading(config);
+        if let Err(refusal) =
+            mod_api::__private::contain_phase_refusals(|| self.fire_config_reloading(config))
+        {
+            log::warn!("Horizon: refused out-of-phase mod call: {refusal}");
+        }
     }
     /// A `Server` config is dropped as its server stops
     /// (`ModConfigEvent.Unloading`), after `native_server_stopping`; the next

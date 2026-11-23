@@ -6,6 +6,10 @@ impl Game<'_> {
     /// after the first client load has applied and before the title screen's first frame;
     /// never again on a reload (`client_resources_reloaded`) or a new world.
     pub(in crate::game) fn native_client_setup(&mut self) {
-        self.fire_client_setup();
+        if let Err(refusal) =
+            mod_api::__private::contain_phase_refusals(|| self.fire_client_setup())
+        {
+            log::warn!("Horizon: refused out-of-phase mod call: {refusal}");
+        }
     }
 }

@@ -249,17 +249,139 @@ pub(crate) fn unprovided(method: &'static str, operation: &'static str, access: 
     unimplemented!("{}", method)
 }
 
+// no wire: process-local refusal returned when a native mod calls a host operation out of phase.
+/// Returned when a native mod calls a host operation that is unavailable during the current load
+/// phase.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct PhaseRefusal {
+    /// The offending native mod's `[mod] id`, or `"unknown"` outside a native mod call scope.
+    pub r#mod: String,
+    /// The host operation that was refused.
+    pub operation: String,
+    /// The load phase active when the call was attempted.
+    pub phase: ModPhase,
+}
+
+impl std::fmt::Display for PhaseRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "mod '{}' called '{}' during {:?} phase",
+            self.r#mod, self.operation, self.phase
+        )
+    }
+}
+
+impl std::error::Error for PhaseRefusal {}
+
+#[derive(Default)]
+struct PhaseRefusalState {
+    depth: usize,
+    latched: Option<PhaseRefusal>,
+}
+
+thread_local! {
+    static PHASE_REFUSAL: std::cell::RefCell<PhaseRefusalState> =
+        const { std::cell::RefCell::new(PhaseRefusalState { depth: 0, latched: None }) };
+}
+
+struct PhaseContainmentGuard {
+    outer_latched: Option<PhaseRefusal>,
+}
+
+impl PhaseContainmentGuard {
+    fn enter() -> Self {
+        let outer_latched = PHASE_REFUSAL
+            .try_with(|state| {
+                let mut state = state.borrow_mut();
+                state.depth += 1;
+                state.latched.take()
+            })
+            .unwrap_or(None);
+        Self { outer_latched }
+    }
+
+    fn take_latched(&self) -> Option<PhaseRefusal> {
+        PHASE_REFUSAL
+            .try_with(|state| state.borrow_mut().latched.take())
+            .ok()
+            .flatten()
+    }
+}
+
+impl Drop for PhaseContainmentGuard {
+    fn drop(&mut self) {
+        let outer = self.outer_latched.take();
+        let _ = PHASE_REFUSAL.try_with(|state| {
+            let mut state = state.borrow_mut();
+            state.depth = state.depth.saturating_sub(1);
+            state.latched = outer;
+        });
+    }
+}
+
+/// Runs `f` inside a phase-refusal containment scope.
+///
+/// Any out-of-phase host call made through [`check_access`] inside `f` latches a [`PhaseRefusal`]
+/// (first refusal wins) and unwinds without invoking the panic hook, returning `Err(refusal)` even
+/// if the mod caught the unwind internally. Non-phase panics continue to propagate.
+pub fn contain_phase_refusals<R>(f: impl FnOnce() -> R) -> Result<R, PhaseRefusal> {
+    let guard = PhaseContainmentGuard::enter();
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+    let latched = guard.take_latched();
+    drop(guard);
+    match outcome {
+        Ok(value) => match latched {
+            Some(refusal) => Err(refusal),
+            None => Ok(value),
+        },
+        Err(payload) => match latched {
+            Some(refusal) => Err(refusal),
+            None => std::panic::resume_unwind(payload),
+        },
+    }
+}
+
 /// One cell read at the generated API boundary, not a tick scan or registry lookup.
-/// Native callers currently panic on refusal. The wasm host dispatcher checks
-/// `access_allowed` before entering these methods and returns a named phase refusal
-/// instead; the guest must never consult its own independent phase state.
+/// Inside [`contain_phase_refusals`], an out-of-phase call latches a [`PhaseRefusal`] and unwinds
+/// to the containment boundary without panicking the game. Outside a containment scope, it panics
+/// naming the operation and phase. The wasm host dispatcher checks `access_allowed` before entering
+/// these methods and returns a named phase refusal instead; the guest must never consult its own
+/// independent phase state.
 #[inline]
 pub fn check_access(operation: &str, access: LoadAccess) {
-    assert!(
-        access_allowed(operation, access),
-        "mod API {operation} is unavailable during {:?}",
-        current_phase()
-    );
+    if !access_allowed(operation, access) {
+        refuse_access(operation);
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn refuse_access(operation: &str) -> ! {
+    let phase = current_phase();
+    let contained = PHASE_REFUSAL
+        .try_with(|state| state.borrow().depth > 0)
+        .unwrap_or(false);
+    if contained {
+        let refusal = PhaseRefusal {
+            r#mod: crate::content::crash::current_native_mod()
+                .unwrap_or("unknown")
+                .to_owned(),
+            operation: operation.to_owned(),
+            phase,
+        };
+        let _ = PHASE_REFUSAL.try_with(|state| {
+            let mut state = state.borrow_mut();
+            if state.latched.is_none() {
+                state.latched = Some(refusal);
+            }
+        });
+        std::panic::resume_unwind(Box::new(format!(
+            "mod API {operation} is unavailable during {phase:?}"
+        )));
+    }
+    panic!("mod API {operation} is unavailable during {phase:?}");
 }
 
 /// Whether an operation is available in this thread's current load phase.

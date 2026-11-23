@@ -8,7 +8,7 @@ pub use world::phase::{
 };
 mod __private {
     pub use crate::world::phase::{
-        LoadAccess, ModPhase, PhaseError, PhaseOwner, PhaseState, RegistrationData, access_allowed,
-        check_access, current_phase,
+        LoadAccess, ModPhase, PhaseError, PhaseOwner, PhaseRefusal, PhaseState, RegistrationData,
+        access_allowed, check_access, contain_phase_refusals, current_phase,
     };
 }
