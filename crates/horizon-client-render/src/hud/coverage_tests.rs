@@ -637,7 +637,7 @@ fn loaded_gui_textured_blit_samples_and_rescales_the_original_inventory_texture(
     ];
     png.write_header()
         .unwrap()
-        .write_image_data(&[row, row].as_flattened().as_flattened())
+        .write_image_data([row, row].as_flattened().as_flattened())
         .unwrap();
     let stock = HudAtlas::build(&source).unwrap();
     let pack = tempfile::tempdir().unwrap();
