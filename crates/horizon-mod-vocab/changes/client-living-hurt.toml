@@ -1,0 +1,3 @@
+ids = ["hook:client_living_hurt", "type:ClientLivingHurtEvent"]
+why = "Client cosmetic mods can react to applied server damage notices with the live victim and any locally resolvable source handles, without polling a hurt timer or treating tilt as another hit."
+migrate = "Additive: subscribe to client_living_hurt on the client. An absent or untracked source remains None. No Minecraft packet changes."

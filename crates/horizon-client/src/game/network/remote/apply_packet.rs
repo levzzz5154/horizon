@@ -1029,6 +1029,7 @@ impl Game<'_> {
                 } else {
                     self.remote_dragon_hurt(p.id);
                 }
+                self.observe_client_living_hurt(&p);
             }
             C::HurtAnimation(p) => {
                 if self.remote.as_ref().is_some_and(|r| r.entity_id == p.id) {

@@ -4,6 +4,10 @@ mod predicted_block_notice_tests {
     include!("predicted_block_notice_tests.rs");
 }
 
+mod client_living_hurt_tests {
+    include!("client_living_hurt_tests.rs");
+}
+
 #[test]
 #[ignore = "daily"]
 fn menu_title_snapshot_tracks_open_replacement_and_close() {
@@ -4740,9 +4744,17 @@ fn an_unfocused_window_waits_for_the_loading_screen_to_pause() {
             .start_client_load(0, Reason::Other);
         game.focus_lost = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
         game.pause_if_inactive();
-        assert_eq!(game.screen, crate::game::Screen::Playing, "loading screen up");
+        assert_eq!(
+            game.screen,
+            crate::game::Screen::Playing,
+            "loading screen up"
+        );
         game.remote.as_mut().unwrap().level_load.finish();
         game.pause_if_inactive();
-        assert_eq!(game.screen, crate::game::Screen::Paused, "loading screen closed");
+        assert_eq!(
+            game.screen,
+            crate::game::Screen::Paused,
+            "loading screen closed"
+        );
     });
 }
