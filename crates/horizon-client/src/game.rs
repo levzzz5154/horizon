@@ -9544,7 +9544,8 @@ impl Game<'_> {
                     // scrollbar. The hotbar below reads the wheel only while
                     // playing, which the gate excludes. A synthetic wheel
                     // targets the screen hooks only on an editor overlay.
-                    if self.screen_mouse_hooks_input() && let Some(screen) = self.screen_view_now()
+                    if self.screen_mouse_hooks_input()
+                        && let Some(screen) = self.screen_view_now()
                     {
                         let mut canceled = false;
                         self.native_screen_mouse_scrolled_pre(
