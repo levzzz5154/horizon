@@ -198,8 +198,9 @@ mod tests {
             }
             game.renderer = Some(renderer);
             let (default, _) = capture(game);
-            let magenta = |pixel: &[u8]| pixel[..3] == [255, 0, 255];
-            assert!(default.chunks_exact(4).any(|pixel| pixel != &default[..4]));
+            let magenta = |pixel: &[u8; 4]| pixel[..3] == [255, 0, 255];
+            let pixels = default.as_chunks::<4>().0;
+            assert!(pixels.iter().any(|pixel| pixel != &pixels[0]));
             if case != "control" {
                 mod_platform::testing::with_mods(mods, || {
                     assert_eq!(capture(game).0, default, "declining changed the frame");
@@ -208,7 +209,7 @@ mod tests {
                     assert_eq!(size, [640, 480]);
                     assert_eq!(replaced.len(), 640 * 480 * 4);
                     assert!(
-                        replaced.chunks_exact(4).all(magenta),
+                        replaced.as_chunks::<4>().0.iter().all(magenta),
                         "default contents survived or the replacement did not reach the target"
                     );
                 });
