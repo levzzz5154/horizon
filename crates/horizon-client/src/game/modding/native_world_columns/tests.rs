@@ -147,7 +147,7 @@ fn client_map_reads_retained_surfaces_and_chunk_deltas() {
         packets::play::{self, Clientbound as C},
         registry::DimensionType,
     };
-    use mod_api::{ChunkDelta, ChunkDeltaCursor, ClientHost, Heightmap};
+    use mod_api::{ChunkDeltaCursor, ChunkDeltas, ClientHost, Heightmap};
     use std::sync::Arc;
 
     with_client_game(|game| {
@@ -207,22 +207,20 @@ fn client_map_reads_retained_surfaces_and_chunk_deltas() {
         game.handle_packet(layered(1, -1, 0)).unwrap();
         game.handle_packet(map_surface_packet([air.0, stone.0, water.0, log.0]))
             .unwrap();
-        let order = [
-            ChunkDelta {
-                pos: [-1, -1],
-                loaded: true,
-            },
-            ChunkDelta {
-                pos: [1, -1],
-                loaded: true,
-            },
-        ];
+        let order = [([-1, -1], true), ([1, -1], true)];
+        let roster = |deltas: &ChunkDeltas| {
+            deltas
+                .changes
+                .iter()
+                .map(|change| (change.pos, change.loaded))
+                .collect::<Vec<_>>()
+        };
         let arrivals = poll(game, Some(initial.cursor));
         assert!(!arrivals.full);
-        assert_eq!(arrivals.changes, order, "reverse arrival order is sorted");
+        assert_eq!(roster(&arrivals), order, "reverse arrival order is sorted");
         let snapshot = poll(game, None);
         assert!(snapshot.full);
-        assert_eq!(snapshot.changes, order);
+        assert_eq!(roster(&snapshot), order);
 
         let host: &dyn ClientHost = game;
         let surface = host.client_surface_columns(&columns, heights).unwrap();
@@ -289,16 +287,7 @@ fn client_map_reads_retained_surfaces_and_chunk_deltas() {
             .unwrap();
         let changed = poll(game, Some(cursor));
         assert!(!changed.full);
-        assert_eq!(
-            changed.changes,
-            [
-                order[0],
-                ChunkDelta {
-                    pos: [1, -1],
-                    loaded: false,
-                },
-            ]
-        );
+        assert_eq!(roster(&changed), [order[0], ([1, -1], false)]);
         let last = (game as &dyn ClientHost)
             .client_surface_columns(&[(-1, -1), (16, -16)], heights)
             .unwrap();
@@ -317,7 +306,7 @@ fn client_map_reads_retained_surfaces_and_chunk_deltas() {
         }
         let old = poll(game, Some(changed.cursor));
         assert!(old.full);
-        assert_eq!(old.changes, order[..1]);
+        assert_eq!(roster(&old), order[..1]);
         let (map, _) = old.cursor.for_level(level).unwrap();
         let unknown = poll(game, Some(ChunkDeltaCursor::new(level, (map, u64::MAX))));
         assert!(unknown.full);

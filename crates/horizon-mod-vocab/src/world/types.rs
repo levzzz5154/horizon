@@ -470,6 +470,7 @@ impl ChunkRef {
 #[derive(horizon_mod_api_macros::Wire)]
 #[wire(internal_field_layouts)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+// exhaustive: its fields are private, so mods cannot build or destructure it
 pub struct ChunkDeltaCursor {
     level: LevelRef,
     map: u64,
@@ -478,6 +479,7 @@ pub struct ChunkDeltaCursor {
 
 impl ChunkDeltaCursor {
     /// Capture the current position in a chunk map's journal, for the game.
+    // hidden: used by the game's chunk journal, not part of the mod surface
     #[doc(hidden)]
     pub fn new(level: LevelRef, (map, sequence): (u64, u64)) -> Self {
         Self {
@@ -488,6 +490,7 @@ impl ChunkDeltaCursor {
     }
 
     /// The entry to replay from, if this cursor belongs to the requested level.
+    // hidden: used by the game's chunk journal, not part of the mod surface
     #[doc(hidden)]
     pub fn for_level(self, level: LevelRef) -> Option<(u64, u64)> {
         (self.level == level).then_some((self.map, self.sequence))
@@ -496,6 +499,7 @@ impl ChunkDeltaCursor {
 
 /// A changed chunk key and its current residency, not a historical event.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, horizon_mod_api_macros::Wire)]
+#[non_exhaustive]
 pub struct ChunkDelta {
     /// The chunk coordinates, `[x, z]`.
     pub pos: [i32; 2],
@@ -505,6 +509,7 @@ pub struct ChunkDelta {
 
 /// A level's chunk changes, or a replacement snapshot of all its loaded keys.
 #[derive(Clone, Debug, PartialEq, Eq, horizon_mod_api_macros::Wire)]
+#[non_exhaustive]
 pub struct ChunkDeltas {
     /// Pass this back to read later changes.
     pub cursor: ChunkDeltaCursor,

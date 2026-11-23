@@ -219,6 +219,22 @@ pub mod built {
             block_light,
         }
     }
+    /// A chunk journal entry, constructed by the game and read by mods.
+    pub fn chunk_delta(pos: [i32; 2], loaded: bool) -> crate::ChunkDelta {
+        crate::ChunkDelta { pos, loaded }
+    }
+    /// The current result of replaying a loaded chunk journal.
+    pub fn chunk_deltas(
+        cursor: crate::ChunkDeltaCursor,
+        full: bool,
+        changes: Vec<crate::ChunkDelta>,
+    ) -> crate::ChunkDeltas {
+        crate::ChunkDeltas {
+            cursor,
+            full,
+            changes,
+        }
+    }
     /// The replay this window plays, constructed by the game and only read by mods.
     pub fn replay_state(
         recording: String,

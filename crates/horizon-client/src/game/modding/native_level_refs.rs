@@ -12,9 +12,9 @@ use horizon_items::items::ItemStack;
 use horizon_world::registry::BlockStateId;
 use mod_api::world::mod_chunk_tickets::ModTicket;
 use mod_api::{
-    BlockHit, BlockTransformPreview, ChunkDelta, ChunkDeltaCursor, ChunkDeltas, ChunkRef,
-    ChunkStatus, ClipBlock, ClipFluid, DimensionKey, Hand, LevelRef, LightLayer, MapState,
-    PlayerRef, RespawnData, TicketController, Vec3,
+    BlockHit, BlockTransformPreview, ChunkDeltaCursor, ChunkDeltas, ChunkRef, ChunkStatus, ClipBlock,
+    ClipFluid, DimensionKey, Hand, LevelRef, LightLayer, MapState, PlayerRef, RespawnData,
+    TicketController, Vec3,
 };
 
 fn block_pos([x, y, z]: [i32; 3]) -> BlockPos {
@@ -413,10 +413,7 @@ impl Game<'_> {
             .and_then(|since| since.for_level(level))
             .filter(|&(_, seq)| seq <= now.1)
             .and_then(|since| chunks.touched_since(since));
-        let loaded = |&(x, z)| ChunkDelta {
-            pos: [x, z],
-            loaded: true,
-        };
+        let loaded = |&(x, z)| mod_api::__private::built::chunk_delta([x, z], true);
         let full = touched.is_none();
         let mut changes: Vec<_> = match touched {
             Some(keys) => keys.map(loaded).collect(),
@@ -430,11 +427,7 @@ impl Game<'_> {
                 delta.loaded = chunks.contains_key(&(x, z));
             }
         }
-        Some(ChunkDeltas {
-            cursor,
-            full,
-            changes,
-        })
+        Some(mod_api::__private::built::chunk_deltas(cursor, full, changes))
     }
     /// Whether this chunk is loaded; false on a client or for a stale handle.
     pub(super) fn chunk_loaded(&self, chunk: ChunkRef) -> bool {
