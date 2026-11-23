@@ -76,6 +76,7 @@ impl Game<'_> {
                     position,
                     codec_base: position,
                     silent: false,
+                    spawn_data: 0,
                     vehicle: None,
                 },
             );

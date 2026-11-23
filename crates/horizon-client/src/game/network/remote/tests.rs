@@ -332,6 +332,7 @@ fn update_attributes_answers_the_local_players_living_reads() {
                 position: [0.0; 3],
                 codec_base: [0.0; 3],
                 silent: false,
+                spawn_data: 0,
                 vehicle: None,
             },
         );
@@ -4150,6 +4151,7 @@ fn any_tracked_passenger_makes_its_vehicle_a_vehicle() {
         position: [0.0, 64.0, 0.0],
         codec_base: [0.0, 64.0, 0.0],
         silent: false,
+        spawn_data: 0,
         vehicle: None,
     };
     let mut entities = HashMap::from([
@@ -4188,6 +4190,7 @@ fn a_sound_entity_is_heard_where_its_entity_is() {
             position: [8.5, 64.0, -3.5],
             codec_base: [8.5, 64.0, -3.5],
             silent: false,
+            spawn_data: 0,
             vehicle: None,
         },
     );
@@ -4232,6 +4235,7 @@ fn a_sound_entity_retains_silence_for_players_and_non_mob_targets() {
             position: [8.5, 64.0, -3.5],
             codec_base: [8.5, 64.0, -3.5],
             silent: true,
+            spawn_data: 0,
             vehicle: None,
         },
     );

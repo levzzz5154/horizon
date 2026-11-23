@@ -33,11 +33,16 @@ impl Game<'_> {
         Some(match reach {
             EntityReach::Interact => within(3.0),
             EntityReach::Container => within(4.0),
-            EntityReach::Attack => {
+            EntityReach::Attack | EntityReach::AttackUnbuffered => {
                 let creative = self.player_is_creative(player)?;
                 let held = self.living_hand_item(living, Hand::Main);
+                let packet_buffer = if reach == EntityReach::Attack {
+                    3.0
+                } else {
+                    0.0
+                };
                 self.stack_attack_range(held.as_ref(), true, creative, range)
-                    .contains(distance_squared.sqrt(), 3.0)
+                    .contains(distance_squared.sqrt(), packet_buffer)
             }
         })
     }

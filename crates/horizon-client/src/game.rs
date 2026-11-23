@@ -1170,6 +1170,8 @@ struct Game<'a> {
     debug_renderers: Vec<String>,
     /// `DebugRenderer.lastDebugEntriesVersion`: none before the first view of a world.
     debug_renderers_version: Option<u64>,
+    /// Reused storage for the frame-local native debug hitbox projection.
+    debug_hitboxes: Vec<mod_api::DebugEntityHitbox>,
     /// Next undrawn mod layer in HUD `gui_layers::order`; `None` while hidden or outside its pass.
     hud_layer_next: Option<usize>,
     /// The mod block entities' view distances, asked of the parts once (`native_block_entity_draw`).
@@ -8347,14 +8349,8 @@ impl Game<'_> {
             sky.sky_light_factor = 1.0;
         }
         pr.lap("pr_environment");
-        // FishingHookRenderer's line, then DebugRenderer: chunk borders and
-        // hitboxes (F3+G, F3+B).
         let mut lines = self.fishing_line(alpha, size);
-        let mut g = self.debug_gizmos(alpha as f32, camera.to_array());
-        self.studio_camera_path(&mut g);
-        lines.extend(g.lines);
-        let on_top = g.on_top;
-        pr.lap("pr_debug");
+        let fishing_end = lines.len();
         let visuals = if self.title.is_none() {
             self.native_frame_visuals(alpha, &mut lines)
         } else {
@@ -8398,8 +8394,6 @@ impl Game<'_> {
                 crosshair.turn_on_top(at, turn.as_dmat4());
             }
         }
-        let debug_lines = horizon_client::gizmos::camera_relative(&lines, at, view);
-        let debug_lines_on_top = horizon_client::gizmos::camera_relative(&on_top, at, view);
         let debug_crosshair = horizon_client::gizmos::camera_relative(&crosshair.on_top, at, view);
         // LevelExtractor.extractBlockOutline: model translucency controls draw order;
         // no outline when an entity is targeted (Minecraft.hitResult an EntityHitResult).
@@ -8730,7 +8724,7 @@ impl Game<'_> {
             self.client_particle_geometry(camera, alpha, fov_degrees, &mut entities);
         }
         let mut world_geometry = self.world_geometry.take().expect("view storage");
-        self.fill_world_geometry(
+        let mut g = self.fill_world_geometry(
             title,
             camera.to_array(),
             view,
@@ -8738,6 +8732,18 @@ impl Game<'_> {
             &mut world_geometry,
             &mut entities,
         );
+        // FishingHookRenderer's line, then DebugRenderer: chunk borders and
+        // hitboxes (F3+G, F3+B), studio and mod rims in their usual order.
+        let have_rims = lines.len() != fishing_end;
+        self.studio_camera_path(&mut g);
+        let gizmo_count = g.lines.len();
+        lines.extend(g.lines);
+        if have_rims {
+            lines[fishing_end..].rotate_right(gizmo_count);
+        }
+        let debug_lines_on_top = horizon_client::gizmos::camera_relative(&g.on_top, at, view);
+        pr.lap("pr_debug");
+        let debug_lines = horizon_client::gizmos::camera_relative(&lines, at, view);
         let colored_lights = if self.title.is_none() {
             visuals.finish(self, camera)
         } else {
@@ -10803,6 +10809,7 @@ impl<'a> Game<'a> {
             world_geometry: Some(Default::default()),
             debug_renderers: Vec::new(),
             debug_renderers_version: None,
+            debug_hitboxes: Vec::new(),
             hud_layer_next: None,
             mod_view_distances: Default::default(),
             item_level_cache: Default::default(),

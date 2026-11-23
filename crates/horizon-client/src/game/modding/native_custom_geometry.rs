@@ -56,6 +56,7 @@ impl Game<'_> {
     }
     /// One view's geometry, the last view's gone first. `title` views draw no world: the
     /// title and connect screens have no mod geometry, so none outlives leaving a world.
+    /// Returns the view's native gizmos separately to keep their original line pass.
     pub(super) fn fill_world_geometry(
         &mut self,
         title: bool,
@@ -64,15 +65,16 @@ impl Game<'_> {
         alpha: f64,
         draw: &mut WorldGeometry,
         entities: &mut Vec<Vertex>,
-    ) {
+    ) -> horizon_client::gizmos::Gizmos {
         let white = self.gui.atlas.sprites["horizon/white"];
         draw.reset(
             camera,
             view,
             [(white.u0 + white.u1) * 0.5, (white.v0 + white.v1) * 0.5],
         );
+        let builtin = self.debug_entry("entity_hitboxes");
         if title {
-            return;
+            return self.debug_gizmos(alpha as f32, camera, builtin, None);
         }
         draw.set_model_cut(entities.len() as u32);
         // Seconds of game time, wrapping every hour (72,000 ticks) so f32 keeps sub-tick steps.
@@ -88,11 +90,45 @@ impl Game<'_> {
         draw.begin_stage(*last);
         self.native_submit_custom_geometry(&view, draw);
         self.follow_debug_selection();
+        let control = mod_api::DebugRendererControl::new(builtin);
+        let hitboxes = ((builtin || !self.debug_renderers.is_empty())
+            && mod_api::__private::enabled_listened(mod_api::HookId::DebugRendererView))
+        .then(|| {
+            let mut hitboxes = std::mem::take(&mut self.debug_hitboxes);
+            self.native_debug_hitboxes(alpha as f32, &mut hitboxes);
+            hitboxes
+        });
+        if let Some(hitboxes) = &hitboxes {
+            if builtin {
+                self.native_debug_renderer_view(
+                    mod_api::ENTITY_HITBOX_RENDERER,
+                    &view,
+                    draw,
+                    hitboxes,
+                    &control,
+                );
+            }
+        }
+        let custom = mod_api::DebugRendererControl::new(false);
         for id in &self.debug_renderers {
             self.native_debug_renderer_draw(id, &view, draw);
+            if let Some(hitboxes) = &hitboxes {
+                self.native_debug_renderer_view(id, &view, draw, hitboxes, &custom);
+            }
         }
         self.native_render_level_stage(*last, &view, draw);
         self.commit_model_instances(draw, DVec3::from(camera), entities);
+        let gizmos = self.debug_gizmos(
+            alpha as f32,
+            camera,
+            builtin && !control.builtin_cancelled(),
+            hitboxes.as_deref(),
+        );
+        if let Some(mut hitboxes) = hitboxes {
+            hitboxes.clear();
+            self.debug_hitboxes = hitboxes;
+        }
+        gizmos
     }
     /// Submit unlit ARGB world lines atomically. Invalid coordinates or widths,
     /// or a batch exceeding the view's fixed capacity, leave the batch unchanged.

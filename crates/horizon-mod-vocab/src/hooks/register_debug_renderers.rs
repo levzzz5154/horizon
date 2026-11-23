@@ -26,9 +26,18 @@ such entry is logged and left out.
 While a renderer is active, `Hooks::debug_renderer_draw` is asked for each view of a world, after
 `submit_custom_geometry`, with the renderer's id, the same `WorldRenderView` and the same
 `WorldDrawContext`, so [its limits and rules](#custom-world-geometry) apply and are shared. Every
-mod is asked about every id, so a mod ignores ids it does not own. Output clears every view and
-title or connect screens ask no renderer, so nothing stays after leaving a world. A renderer that
-is not active is never asked, so with none active a view only compares the selection's version."#]
+mod is asked about every registered id. To replace F3+B, implement the native
+`Hooks::debug_renderer_view`, check `ENTITY_HITBOX_RENDERER`, and call
+`event.control.cancel_builtin()` before submitting replacement geometry. This leaves F3+B
+selected and does not hide another renderer's lines. The new hook also receives every active
+mod renderer's id, independently of F3+B, with the interpolated hitbox set in `event.entities`;
+use the supplied client host for `local_player`, level block
+reads and the entity handles' live reads. For example, use the local player's living handle
+for main-hand equipment and blocking, or `PlayerRef::within_entity_reach` with
+`EntityReach::AttackUnbuffered` for a range indicator without the server packet buffer.
+
+Output clears every view. Title and connect screens ask no renderer, and no hitbox
+projection is built if no active renderer has a draw listener."#]
     #[hook(
         side = "client",
         contract = "collect",

@@ -485,6 +485,7 @@ horizon-client game::debug_renderer_tests::debug_renderer_respawn_invalidates_un
 horizon-client game::debug_renderer_tests::debug_renderer_same_value_reduced_info_off_invalidates lib daily resources
 horizon-client game::debug_renderer_tests::debug_renderer_same_value_reduced_info_on_invalidates lib daily resources
 horizon-client game::debug_renderer_tests::debug_renderer_second_login_invalidates_first_world_view lib daily resources
+horizon-client game::debug_renderer_tests::hitbox_replacement_keeps_other_gizmos_and_reads_the_client_view lib daily resources
 horizon-client game::debug_renderer_tests::the_renderer_list_refreshes_with_the_selection_and_leaves_nothing_behind lib daily resources
 horizon-client game::dedicated::console_source_tests::the_console_runs_as_the_server_not_the_player_in_place lib daily resources
 horizon-client game::dedicated::management::tests::management_online_skips_fake_players_by_name_and_id lib daily resources

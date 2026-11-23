@@ -59,6 +59,9 @@ impl Hooks for Marker {
         }
     }
     fn debug_renderer_draw(&self, _: &dyn ClientHost, event: &mut DebugRendererDrawEvent<'_>) {
+        if !matches!(event.id, SHOWN | OTHER) {
+            return;
+        }
         ASKED.lock().unwrap().push(event.id.to_owned());
         let marker = WorldLine::new(
             [100.25, 64.0, 99.0],
@@ -400,5 +403,219 @@ fn debug_renderer_second_login_invalidates_first_world_view() {
         assert_eq!(refreshes(), 1, "immediate handleLogin refresh");
         // A logging-in listener can update its state after the immediate refresh.
         push(&[OTHER]);
+    });
+}
+
+#[test]
+#[ignore = "daily"]
+fn hitbox_replacement_keeps_other_gizmos_and_reads_the_client_view() {
+    use horizon_client::{chunk::Chunk, items::ItemStack, motion::PlayerMotion};
+    use horizon_core::geometry::Vec3;
+    use mod_api::{DebugRendererViewEvent, ENTITY_HITBOX_RENDERER, EntityReach, Hand};
+    use std::sync::Arc;
+
+    const PIG: u32 = 40;
+    const PEARL: u32 = 41;
+    const BOAT: u32 = 42;
+    const DRAGON: u32 = 50;
+    const ALPHA: f64 = 0.5;
+    const BLOCK: [i32; 3] = [100, 63, 100];
+
+    struct Replace(Arc<AtomicUsize>);
+    #[mod_api::__subscriptions]
+    impl Hooks for Replace {
+        fn debug_renderer_view(
+            &self,
+            host: &dyn ClientHost,
+            event: &mut DebugRendererViewEvent<'_>,
+        ) {
+            if !matches!(event.id, ENTITY_HITBOX_RENDERER | SHOWN) {
+                return;
+            }
+            assert_eq!(event.view.camera, CAMERA);
+            assert_eq!(event.view.partial_tick, ALPHA as f32);
+            assert!(!event.control.builtin_cancelled());
+            let entry = |id| {
+                event
+                    .entities
+                    .iter()
+                    .find(|entry| entry.entity.is_some_and(|handle| handle.id() == id))
+                    .unwrap()
+            };
+            let pig = entry(PIG);
+            let pig_ref = pig.entity.unwrap();
+            assert_eq!(pig.kind.unwrap().id(host), "minecraft:pig");
+            assert_eq!(pig.position, [105.0, 64.0, 99.0]);
+            assert_eq!(pig_ref.position(host), Some([106.0, 64.0, 99.0]));
+            assert_eq!(pig.bounds[0][0], 105.0 - f64::from(0.9_f32) / 2.0);
+            assert_eq!(pig.eye.unwrap()[1], 64.0 + pig.eye_height);
+            assert_eq!(pig.look, Some([0.0, 0.0, 1.0]));
+            assert_eq!(pig.seat, Some((entry(BOAT).entity.unwrap(), pig.position)));
+            let pearl = entry(PEARL);
+            assert!(pearl.projectile);
+            assert_eq!(pearl.kind.unwrap().id(host), "minecraft:ender_pearl");
+            assert_eq!(
+                pearl.projectile_owner_kind.unwrap().id(host),
+                "minecraft:player"
+            );
+            let dragon = entry(DRAGON).entity.unwrap();
+            for id in DRAGON + 1..=DRAGON + 8 {
+                let part = entry(id);
+                assert_eq!(part.part_of, Some(dragon));
+                assert_eq!(part.entity.unwrap().bounding_box(host), Some(part.bounds));
+            }
+
+            let player = host.local_player().unwrap();
+            assert_eq!(player.entity().id(), 7);
+            assert_eq!(pearl.projectile_owner, Some(player.entity()));
+            let living = host.living(player.entity()).unwrap();
+            let weapon = living.hand_item(host, Hand::Main).unwrap();
+            assert_eq!(weapon.item().id(host), "minecraft:iron_sword");
+            assert_eq!(living.is_blocking(host), Some(true));
+            assert_eq!(
+                player.within_entity_reach(host, pig_ref, EntityReach::AttackUnbuffered),
+                Some(false)
+            );
+            assert_eq!(
+                player.within_entity_reach(host, pig_ref, EntityReach::Attack),
+                Some(true)
+            );
+            assert_eq!(pig_ref.distance_to_sqr(host, CAMERA), Some(37.0));
+            let level = host.level("minecraft:overworld").unwrap();
+            assert_eq!(
+                level.block(host, BLOCK).unwrap().id(host),
+                "minecraft:stone"
+            );
+
+            if event.id == ENTITY_HITBOX_RENDERER && self.0.load(Ordering::Relaxed) != 0 {
+                event.control.cancel_builtin();
+                event
+                    .draw
+                    .lines(&[WorldLine::new(
+                        [100.5, 64.0, 98.0],
+                        [101.0, 64.0, 98.0],
+                        0xFFFF0000,
+                        1.0,
+                        WorldDepth::Tested,
+                    )])
+                    .unwrap();
+            }
+        }
+    }
+
+    struct Later(Arc<AtomicUsize>);
+    #[mod_api::__subscriptions]
+    impl Hooks for Later {
+        fn debug_renderer_view(&self, _: &dyn ClientHost, event: &mut DebugRendererViewEvent<'_>) {
+            if event.id == ENTITY_HITBOX_RENDERER && event.control.builtin_cancelled() {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    if fresh_process("hitbox_replacement_keeps_other_gizmos_and_reads_the_client_view") {
+        return;
+    }
+    with_client_game(|game| {
+        let (pipe, _server) = horizon_protocol::connection::Pipe::pair();
+        game.connect_local(pipe, "DebugHitboxes").unwrap();
+        game.handle_packet(login()).unwrap();
+        game.title = None;
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(100.0, 64.0, 100.0)).unwrap());
+        game.selected = 0;
+        game.inventory[0] = Some(ItemStack::new("minecraft:iron_sword", 1));
+        game.offhand = Some(ItemStack::new("minecraft:shield", 1));
+        game.using = Some((super::shield::OFFHAND_SLOT, 5));
+
+        let mut chunk = Chunk::empty(6, 6);
+        let stone = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:stone")
+            .unwrap();
+        chunk.set(BLOCK[0], BLOCK[1], BLOCK[2], stone.0);
+        game.world.chunks.insert((6, 6), Arc::new(chunk));
+        let registries = game.remote.as_ref().unwrap().builtin.clone();
+        let kinds = registries.get("minecraft:entity_type").unwrap();
+        for (id, kind, position, data) in [
+            (PIG, "minecraft:pig", [104.0, 64.0, 99.0], 0),
+            (PEARL, "minecraft:ender_pearl", [103.0, 65.0, 97.0], 7),
+            (BOAT, "minecraft:oak_boat", [104.0, 63.5, 99.0], 0),
+            (DRAGON, "minecraft:ender_dragon", [110.0, 80.0, 70.0], 0),
+        ] {
+            game.handle_packet(C::AddEntity(play::AddEntity {
+                id: id as i32,
+                uuid: id.into(),
+                kind: kinds.id(kind).unwrap(),
+                position,
+                velocity: [0.0; 3],
+                pitch: 0,
+                yaw: 0,
+                head_yaw: 0,
+                data,
+            }))
+            .unwrap();
+        }
+        game.handle_packet(C::SetPassengers(play::SetPassengers {
+            vehicle: BOAT as i32,
+            passengers: vec![PIG as i32],
+        }))
+        .unwrap();
+        // Two simulation samples, as read by real frame interpolation (not network target).
+        let pig = game.mobs.iter_mut().find(|m| m.id == PIG).unwrap();
+        pig.position.x = 106.0;
+
+        game.debug_entries = DebugEntries::default();
+        game.debug_entries
+            .set_status("chunk_borders", Status::AlwaysOn);
+        let mut draw = WorldGeometry::default();
+        let render = |game: &mut super::Game<'_>, draw: &mut WorldGeometry| {
+            game.fill_world_geometry(false, CAMERA, Mat4::IDENTITY, ALPHA, draw, &mut Vec::new())
+        };
+        let borders = render(game, &mut draw);
+        assert!(!borders.lines.is_empty());
+        game.debug_entries
+            .set_status("entity_hitboxes", Status::AlwaysOn);
+        let baseline = render(game, &mut draw);
+        assert!(baseline.lines.starts_with(&borders.lines));
+        assert!(baseline.lines.len() > borders.lines.len());
+
+        let replacing = Arc::new(AtomicUsize::new(0));
+        let later = Arc::new(AtomicUsize::new(0));
+        mod_platform::__private::install(
+            vec![
+                ModEntry::new("replace", Box::new(Replace(replacing.clone()))),
+                ModEntry::new("later", Box::new(Later(later.clone()))),
+                ModEntry::new("marker", Box::new(Marker)),
+            ]
+            .into(),
+        );
+        push(&[SHOWN]);
+        mods::register_debug_entries(ExecutionRole::Client);
+        game.debug_entries.set_status(SHOWN, Status::AlwaysOn);
+        let unchanged = render(game, &mut draw);
+        assert_eq!(unchanged.lines, baseline.lines);
+        assert_eq!(unchanged.on_top, baseline.on_top);
+        assert_eq!(draw.batch().lines.len(), 1);
+
+        replacing.store(1, Ordering::Relaxed);
+        let cancelled = render(game, &mut draw);
+        assert_eq!(later.load(Ordering::Relaxed), 1);
+        assert!(game.debug_entry("entity_hitboxes"));
+        assert_eq!(cancelled.lines, borders.lines);
+        assert_eq!(cancelled.on_top, borders.on_top);
+        let starts: Vec<_> = draw.batch().lines.iter().map(|line| line[0]).collect();
+        assert_eq!(starts, [0.5, 0.25], "replacement and independent mod lines");
+
+        game.debug_entries
+            .set_status("entity_hitboxes", Status::Never);
+        assert_eq!(render(game, &mut draw).lines, borders.lines);
+        assert_eq!(later.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            draw.batch().lines.len(),
+            1,
+            "the custom id still draws with F3+B off"
+        );
     });
 }

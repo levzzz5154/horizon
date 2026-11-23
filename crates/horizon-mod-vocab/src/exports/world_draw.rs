@@ -1,3 +1,4 @@
 pub use client::world_draw::{
-    DrawError, RenderLevelStage, WorldDepth, WorldDrawUsage, WorldLine, WorldQuad, WorldRenderView,
+    DebugEntityHitbox, DebugRendererControl, DrawError, ENTITY_HITBOX_RENDERER, RenderLevelStage,
+    WorldDepth, WorldDrawUsage, WorldLine, WorldQuad, WorldRenderView,
 };

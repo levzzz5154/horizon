@@ -1020,7 +1020,13 @@ impl Game<'_> {
         self.clipboard.set(text);
     }
     /// The debug renderers' gizmos for a frame (`DebugRenderer.emitGizmos`).
-    pub(super) fn debug_gizmos(&self, alpha: f32, camera: [f64; 3]) -> Gizmos {
+    pub(super) fn debug_gizmos(
+        &self,
+        alpha: f32,
+        camera: [f64; 3],
+        show_entity_hitboxes: bool,
+        projected: Option<&[mod_api::DebugEntityHitbox]>,
+    ) -> Gizmos {
         let mut g = Gizmos::default();
         self.bounding_box_gizmos(camera, &mut g);
         self.debug_renderer_gizmos(&mut g);
@@ -1035,8 +1041,77 @@ impl Game<'_> {
             let min_y = self.world.bottom_y();
             g.chunk_borders(block, min_y, min_y + self.world.layout().height() - 1);
         }
-        if !self.debug_entry("entity_hitboxes") {
-            return g;
+        if show_entity_hitboxes {
+            if let Some(projected) = projected {
+                for hitbox in projected {
+                    if let (Some(eye), Some(look)) = (hitbox.eye, hitbox.look) {
+                        g.entity_box_with_look(
+                            hitbox.bounds,
+                            eye,
+                            hitbox.eye_height,
+                            hitbox.living,
+                            look,
+                        );
+                    } else {
+                        draw_dragon_part(&mut g, hitbox.bounds);
+                    }
+                }
+                return g;
+            }
+            self.for_each_debug_hitbox(alpha, |_, _, part_of, shape| {
+                let [min, max] = shape.bounds;
+                if part_of.is_some() {
+                    draw_dragon_part(&mut g, shape.bounds);
+                } else {
+                    g.entity_box(
+                        min,
+                        max,
+                        shape.position,
+                        shape.eye,
+                        shape.living,
+                        shape.view,
+                    );
+                }
+            });
+        }
+        g
+    }
+
+    /// The entity set and interpolation used by the built-in F3+B draw and replacement renderers.
+    pub(in crate::game) fn for_each_debug_hitbox(
+        &self,
+        alpha: f32,
+        mut emit: impl FnMut(u32, bool, Option<u32>, HitboxShape),
+    ) {
+        macro_rules! entity_box {
+            ($id:expr, $min:expr, $max:expr, $pos:expr, $eye:expr, $living:expr, $view:expr $(,)?) => {
+                emit(
+                    $id,
+                    false,
+                    None,
+                    HitboxShape {
+                        bounds: [$min, $max],
+                        position: $pos,
+                        eye: $eye,
+                        living: $living,
+                        view: $view,
+                        vehicle_attachment: None,
+                    },
+                )
+            };
+        }
+        macro_rules! hitbox {
+            ($id:expr, $pos:expr, $size:expr, $eye:expr, $living:expr, $view:expr $(,)?) => {
+                hitbox!(@emit false, $id, $pos, $size, $eye, $living, $view)
+            };
+            (@emit $projectile:expr, $id:expr, $pos:expr, $size:expr, $eye:expr, $living:expr, $view:expr) => {
+                emit($id, $projectile, None, HitboxShape::sized($pos, $size, $eye, $living, $view))
+            };
+        }
+        macro_rules! projectile_box {
+            ($id:expr, $pos:expr, $size:expr, $eye:expr, $living:expr, $view:expr $(,)?) => {
+                hitbox!(@emit true, $id, $pos, $size, $eye, $living, $view)
+            };
         }
         let lerp = |a: f64, b: f64| a + f64::from(alpha) * (b - a);
         let lerpf = |a: f32, b: f32| a + alpha * (b - a);
@@ -1058,13 +1133,18 @@ impl Game<'_> {
             // that its width and height describe.
             let b = m.bounds_at(Vec3::new(pos[0], pos[1], pos[2]));
             let (min, max) = (b.min_position(), b.max_position());
-            g.entity_box(
-                [min.x, min.y, min.z],
-                [max.x, max.y, max.z],
-                pos,
-                m.eye_height() as f32,
-                true,
-                view,
+            emit(
+                m.id,
+                false,
+                None,
+                HitboxShape {
+                    bounds: [[min.x, min.y, min.z], [max.x, max.y, max.z]],
+                    position: pos,
+                    eye: m.eye_height() as f32,
+                    living: true,
+                    view,
+                    vehicle_attachment: m.extra.seat.map(|(vehicle, offset, _)| (vehicle, offset)),
+                },
             );
         }
         for item in &self.dropped {
@@ -1074,7 +1154,7 @@ impl Game<'_> {
                 lerp(item.previous.z, item.position.z),
             ];
             // EntityType.ITEM: 0.25 by 0.25, eyes at 0.2125.
-            g.hitbox(pos, (0.25, 0.25), 0.2125, false, (0.0, 0.0));
+            hitbox!(item.id, pos, (0.25, 0.25), 0.2125, false, (0.0, 0.0));
         }
         // The other entities (EntityTypes sizes; eyes at 0.85 of the height
         // unless the type sets one). `at` is the interpolated position.
@@ -1088,24 +1168,25 @@ impl Game<'_> {
         for p in &self.paintings {
             let (min, max) = p.bounds();
             let centre = std::array::from_fn(|i| (min[i] + max[i]) / 2.0);
-            g.entity_box(min, max, centre, 0.425, false, step_view(p.step()));
+            entity_box!(p.id, min, max, centre, 0.425, false, step_view(p.step()));
         }
         for f in self.item_frames.iter().filter(|f| !f.invisible) {
             let (min, max) = f.bounds();
             let centre = std::array::from_fn(|i| (min[i] + max[i]) / 2.0);
-            g.entity_box(min, max, centre, 0.0, false, step_view(f.step()));
+            entity_box!(f.id, min, max, centre, 0.0, false, step_view(f.step()));
         }
         for c in &self.cushions {
             let (min, max) = c.bounds();
             let p = c.position;
-            g.entity_box(min, max, [p.x, p.y, p.z], 0.2125, false, (0.0, c.yaw));
+            entity_box!(c.id, min, max, [p.x, p.y, p.z], 0.2125, false, (0.0, c.yaw));
         }
         // Interaction: EntityDimensions.scalable(width, height), so its eyes
         // are at 0.85 of the height. Its rotation is not kept here.
-        for i in self.interactions.values() {
+        for (&id, i) in &self.interactions {
             let b = i.bounds();
             let p = i.position;
-            g.entity_box(
+            entity_box!(
+                id as u32,
                 [b.min(Axis::X), b.min(Axis::Y), b.min(Axis::Z)],
                 [b.max(Axis::X), b.max(Axis::Y), b.max(Axis::Z)],
                 [p.x, p.y, p.z],
@@ -1123,7 +1204,8 @@ impl Game<'_> {
                 (_, true) => 0.9875,
                 _ => 1.7775,
             } * a.scale;
-            g.hitbox(
+            hitbox!(
+                a.id,
                 at(a.previous, a.position),
                 size,
                 eye,
@@ -1133,7 +1215,8 @@ impl Game<'_> {
         }
         for b in &self.boats {
             let h = super::boats::HEIGHT as f32;
-            g.hitbox(
+            hitbox!(
+                b.id,
                 at(b.previous, b.position),
                 (super::boats::WIDTH as f32, h),
                 h,
@@ -1146,7 +1229,8 @@ impl Game<'_> {
                 super::minecarts::WIDTH as f32,
                 super::minecarts::HEIGHT as f32,
             );
-            g.hitbox(
+            hitbox!(
+                c.id,
                 at(c.previous, c.position),
                 (w, h),
                 h * 0.85,
@@ -1155,7 +1239,8 @@ impl Game<'_> {
             );
         }
         for o in &self.orbs {
-            g.hitbox(
+            hitbox!(
+                o.id,
                 at(o.previous, o.position),
                 (0.5, 0.5),
                 0.425,
@@ -1164,7 +1249,8 @@ impl Game<'_> {
             );
         }
         for f in &self.falling {
-            g.hitbox(
+            hitbox!(
+                f.id,
                 at(f.previous, f.position),
                 (0.98, 0.98),
                 0.833,
@@ -1173,7 +1259,8 @@ impl Game<'_> {
             );
         }
         for t in &self.tnts {
-            g.hitbox(
+            hitbox!(
+                t.id,
                 at(t.previous, t.position),
                 (0.98, 0.98),
                 0.15,
@@ -1183,7 +1270,7 @@ impl Game<'_> {
         }
         for c in &self.crystals {
             let p = c.position;
-            g.hitbox([p.x, p.y, p.z], (2.0, 2.0), 1.7, false, (0.0, 0.0));
+            hitbox!(c.id, [p.x, p.y, p.z], (2.0, 2.0), 1.7, false, (0.0, 0.0));
         }
         for p in &self.creatures.projectiles {
             use horizon_client::projectiles::ProjectileKind as K;
@@ -1202,7 +1289,8 @@ impl Game<'_> {
                 K::WindCharge | K::BreezeWindCharge => (0.3125, 0.0),
                 K::LargeFireball { .. } | K::DragonFireball => (1.0, 0.85),
             };
-            g.hitbox(
+            projectile_box!(
+                p.id,
                 at(p.previous, p.position),
                 (size, size),
                 eye,
@@ -1211,7 +1299,8 @@ impl Game<'_> {
             );
         }
         for t in &self.tridents {
-            g.hitbox(
+            projectile_box!(
+                t.id,
                 at(t.previous, t.position),
                 (0.5, 0.5),
                 0.13,
@@ -1220,9 +1309,10 @@ impl Game<'_> {
             );
         }
         // EntityType.EYE_OF_ENDER: 0.25 by 0.25, never turned.
-        for (previous, now) in self.end.eye_motions() {
+        for (id, previous, now) in self.end.eye_motions() {
             let v = |p: glam::DVec3| Vec3::new(p.x, p.y, p.z);
-            g.hitbox(
+            hitbox!(
+                id,
                 at(v(previous), v(now)),
                 (0.25, 0.25),
                 0.2125,
@@ -1235,7 +1325,8 @@ impl Game<'_> {
             let v = r.velocity;
             let yaw = v.x.atan2(v.z).to_degrees() as f32;
             let pitch = v.y.atan2(v.x.hypot(v.z)).to_degrees() as f32;
-            g.hitbox(
+            projectile_box!(
+                r.id,
                 at(r.previous, r.position),
                 (0.25, 0.25),
                 0.2125,
@@ -1246,22 +1337,27 @@ impl Game<'_> {
         for h in self
             .hook
             .iter()
-            .map(|h| (h.previous, h.position))
-            .chain(self.remote_hooks.iter().map(|h| (h.previous, h.position)))
+            .map(|h| (h.id(), h.previous, h.position))
+            .chain(
+                self.remote_hooks
+                    .iter()
+                    .map(|h| (h.id(), h.previous, h.position)),
+            )
         {
-            g.hitbox(at(h.0, h.1), (0.25, 0.25), 0.2125, false, (0.0, 0.0));
+            projectile_box!(h.0, at(h.1, h.2), (0.25, 0.25), 0.2125, false, (0.0, 0.0));
         }
         for b in &self.bolts {
-            g.hitbox(b.at, (0.0, 0.0), 0.0, false, (0.0, 0.0));
+            hitbox!(b.id, b.at, (0.0, 0.0), 0.0, false, (0.0, 0.0));
         }
         // AreaEffectCloud.getDimensions: diameter follows synced radius,
         // height is 0.5; EntityDimensions.scalable gives eyes at 85% height.
         for c in &self.potions.clouds {
-            g.hitbox(c.at, (c.radius * 2.0, 0.5), 0.425, false, (0.0, 0.0));
+            hitbox!(c.id, c.at, (c.radius * 2.0, 0.5), 0.425, false, (0.0, 0.0));
         }
         // The dragon: 16 by 8, a living entity; its parts follow.
         if let Some(d) = self.dragon.as_ref() {
-            g.hitbox(
+            hitbox!(
+                d.id,
                 at(d.previous, d.position),
                 (16.0, 8.0),
                 6.8,
@@ -1269,14 +1365,23 @@ impl Game<'_> {
                 (0.0, d.yaw),
             );
         }
-        // The dragon's parts.
-        for (id, b) in self.special_targets() {
-            if (super::dragon::SPECIAL..super::dragon::SPECIAL + 8).contains(&id) {
-                g.cuboid(
-                    [b.min(Axis::X), b.min(Axis::Y), b.min(Axis::Z)],
-                    [b.max(Axis::X), b.max(Axis::Y), b.max(Axis::Z)],
-                    horizon_client::gizmos::DRAGON_PART,
-                    horizon_client::gizmos::STROKE_WIDTH,
+        // The part geometry is the same current pose as the built-in cuboids.
+        if let Some(d) = self.dragon.as_ref().filter(|d| d.alive()) {
+            for index in 0..8 {
+                let (position, bounds) = d.part_geometry(index);
+                emit(
+                    d.id + index as u32 + 1,
+                    false,
+                    Some(d.id),
+                    HitboxShape {
+                        bounds: [bounds.min_position(), bounds.max_position()]
+                            .map(|p| [p.x, p.y, p.z]),
+                        position: [position.x, position.y, position.z],
+                        eye: 0.0,
+                        living: false,
+                        view: (0.0, 0.0),
+                        vehicle_attachment: None,
+                    },
                 );
             }
         }
@@ -1284,13 +1389,15 @@ impl Game<'_> {
         if !self.camera_type.is_first_person()
             && let Some(p) = &self.player
         {
+            let player_id = self.remote.as_ref().map_or(0, |r| r.entity_id as u32);
             let d = p.dimensions;
             let pos = [
                 lerp(self.previous_position.x, p.position.x),
                 lerp(self.previous_position.y, p.position.y),
                 lerp(self.previous_position.z, p.position.z),
             ];
-            g.hitbox(
+            hitbox!(
+                player_id,
                 pos,
                 (d.width, d.height),
                 d.eye_height,
@@ -1298,7 +1405,49 @@ impl Game<'_> {
                 (self.pitch, self.yaw),
             );
         }
-        g
+    }
+}
+
+fn draw_dragon_part(gizmos: &mut Gizmos, [min, max]: [[f64; 3]; 2]) {
+    gizmos.cuboid(
+        min,
+        max,
+        horizon_client::gizmos::DRAGON_PART,
+        horizon_client::gizmos::STROKE_WIDTH,
+    );
+}
+
+/// Geometry shared by the original debug draw and the native frame projection.
+pub(in crate::game) struct HitboxShape {
+    pub(in crate::game) bounds: [[f64; 3]; 2],
+    pub(in crate::game) position: [f64; 3],
+    pub(in crate::game) eye: f32,
+    pub(in crate::game) living: bool,
+    pub(in crate::game) view: (f32, f32),
+    pub(in crate::game) vehicle_attachment: Option<(u32, f64)>,
+}
+
+impl HitboxShape {
+    fn sized(
+        position: [f64; 3],
+        size: (f32, f32),
+        eye: f32,
+        living: bool,
+        view: (f32, f32),
+    ) -> Self {
+        let [x, y, z] = position;
+        let half = f64::from(size.0) / 2.0;
+        Self {
+            bounds: [
+                [x - half, y, z - half],
+                [x + half, y + f64::from(size.1), z + half],
+            ],
+            position,
+            eye,
+            living,
+            view,
+            vehicle_attachment: None,
+        }
     }
 }
 

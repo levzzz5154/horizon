@@ -318,9 +318,31 @@ impl Gizmos {
         living: bool,
         view: (f32, f32),
     ) {
+        self.entity_box_with_look(
+            [min, max],
+            [
+                position[0],
+                position[1] + f64::from(eye_height),
+                position[2],
+            ],
+            f64::from(eye_height),
+            living,
+            view_vector(view.0, view.1),
+        );
+    }
+
+    /// Draw a box whose eye and unit look vector were already sampled for the view.
+    pub fn entity_box_with_look(
+        &mut self,
+        [min, max]: [[f64; 3]; 2],
+        eye: [f64; 3],
+        eye_height: f64,
+        living: bool,
+        v: [f64; 3],
+    ) {
         self.cuboid(min, max, WHITE, STROKE_WIDTH);
         if living {
-            let eye = min[1] + f64::from(eye_height);
+            let eye = min[1] + eye_height;
             let d = 0.009999999776482582;
             self.cuboid(
                 [min[0], eye - d, min[2]],
@@ -329,12 +351,6 @@ impl Gizmos {
                 STROKE_WIDTH,
             );
         }
-        let eye = [
-            position[0],
-            position[1] + f64::from(eye_height),
-            position[2],
-        ];
-        let v = view_vector(view.0, view.1);
         let end = [
             eye[0] + v[0] * 2.0,
             eye[1] + v[1] * 2.0,

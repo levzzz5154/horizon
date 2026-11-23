@@ -383,6 +383,9 @@ impl Game<'_> {
                 let replace = self.tracks_remote_entity(p.id);
                 self.spawn_entity(p.id, &kind, p.position, rotation);
                 if let Some(r) = self.remote.as_mut() {
+                    if let Some(tracked) = r.entities.get_mut(&p.id) {
+                        tracked.spawn_data = p.data;
+                    }
                     r.cart_lerps.remove(&p.id);
                     r.lerps.remove(&p.id);
                 }

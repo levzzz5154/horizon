@@ -94,6 +94,74 @@ impl Game<'_> {
         remote.tracked_entity(i32::try_from(entity.id()).ok()?)
     }
 
+    /// Project the exact hitbox walk, using this client's entity epoch and packet state.
+    pub(super) fn native_debug_hitboxes(
+        &self,
+        alpha: f32,
+        hitboxes: &mut Vec<mod_api::DebugEntityHitbox>,
+    ) {
+        let remote = self.remote.as_ref().filter(|r| r.has_level());
+        let epoch = self.native_lifecycle.epoch();
+        let kind_name = |id: i32| {
+            let remote = remote?;
+            if id == remote.entity_id {
+                return Some("minecraft:player");
+            }
+            remote.tracked_entity(id).map(|(kind, _)| kind)
+        };
+        let visible_entity = |id: i32| Some((EntityRef::new(epoch?, id as u32), kind_name(id)?));
+        let handle = |id| visible_entity(id).map(|(entity, _)| entity);
+        let type_key = mod_api::__private::resolved_entity_type_key;
+        self.for_each_debug_hitbox(alpha, |id, projectile, parent, shape| {
+            let id = id as i32;
+            let mut hitbox = mod_api::DebugEntityHitbox::from_box(shape.position, shape.bounds);
+            if let Some(parent) = parent {
+                hitbox.part_of = handle(parent as i32);
+                hitbox.entity = hitbox
+                    .part_of
+                    .map(|parent| EntityRef::new(parent.epoch(), id as u32));
+            } else {
+                if let Some((entity, kind)) = visible_entity(id) {
+                    hitbox.entity = Some(entity);
+                    hitbox.kind = type_key(kind);
+                }
+                hitbox.eye_height = f64::from(shape.eye);
+                let [x, y, z] = shape.position;
+                hitbox.eye = Some([x, y + hitbox.eye_height, z]);
+                hitbox.look = Some(horizon_client::gizmos::view_vector(
+                    shape.view.0,
+                    shape.view.1,
+                ));
+                hitbox.living = shape.living;
+                hitbox.seat = remote
+                    .and_then(|r| {
+                        if id == r.entity_id {
+                            self.riding
+                        } else {
+                            r.passenger_vehicles.get(&(id as u32)).copied()
+                        }
+                    })
+                    .and_then(|vehicle| {
+                        let offset = shape
+                            .vehicle_attachment
+                            .filter(|&(seated_in, _)| seated_in == vehicle)
+                            .map_or(0.0, |(_, offset)| offset);
+                        Some((handle(vehicle as i32)?, [x, y + offset, z]))
+                    });
+                hitbox.projectile = projectile;
+                if projectile
+                    && let Some((owner, kind)) = remote
+                        .and_then(|r| r.tracked_projectile_owner(id))
+                        .and_then(visible_entity)
+                {
+                    hitbox.projectile_owner = Some(owner);
+                    hitbox.projectile_owner_kind = type_key(kind);
+                }
+            }
+            hitboxes.push(hitbox);
+        });
+    }
+
     /// The tracked display's position at the current interpolation tick.
     fn native_client_display_position(&self, entity: EntityRef) -> Option<[f64; 3]> {
         let id = i32::try_from(entity.id()).ok()?;

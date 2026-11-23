@@ -133,6 +133,94 @@ impl WorldRenderView {
     }
 }
 
+/// The built-in entity hitbox renderer (the F3+B entry).
+pub const ENTITY_HITBOX_RENDERER: &str = "minecraft:entity_hitboxes";
+
+/// The built-in draw decision for one call to [`crate::Hooks::debug_renderer_view`].
+/// Cancellation is one-way and does not affect the entry's enabled status.
+pub struct DebugRendererControl {
+    built_in: bool,
+    cancelled: std::cell::Cell<bool>,
+}
+
+impl DebugRendererControl {
+    #[doc(hidden)]
+    pub fn new(built_in: bool) -> Self {
+        Self {
+            built_in,
+            cancelled: std::cell::Cell::new(false),
+        }
+    }
+
+    /// Suppress the built-in geometry for this view. Has no effect on mod-owned renderers.
+    pub fn cancel_builtin(&self) {
+        if self.built_in {
+            self.cancelled.set(true);
+        }
+    }
+
+    /// Whether a listener already suppressed the built-in geometry for this view.
+    pub fn builtin_cancelled(&self) -> bool {
+        self.cancelled.get()
+    }
+}
+
+/// The geometry of a client entity as sampled by the hitbox renderer for this view.
+/// World coordinates use blocks, before subtracting the camera. Use `entity` for live
+/// reads such as blocking, equipment and vehicle; those reads are not interpolated.
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+pub struct DebugEntityHitbox {
+    /// The client entity handle, if it is tracked. A transient client effect can lack one.
+    pub entity: Option<crate::EntityRef>,
+    /// The entity's type, if registered. A dragon part has no independent entity type.
+    pub kind: Option<crate::EntityTypeKey>,
+    /// The dragon for a dragon part, otherwise `None`.
+    pub part_of: Option<crate::EntityRef>,
+    /// Interpolated position used to draw the hitbox.
+    pub position: [f64; 3],
+    /// Lower and upper corners of the box drawn in this view.
+    pub bounds: [[f64; 3]; 2],
+    /// Eye height above `position`.
+    pub eye_height: f64,
+    /// Eye position, or `None` for a dragon part (which only draws a box).
+    pub eye: Option<[f64; 3]>,
+    /// Unit look vector, or `None` for a dragon part.
+    pub look: Option<[f64; 3]>,
+    /// Whether the vanilla draw gives this hitbox a living entity's eye slab.
+    pub living: bool,
+    /// Its vehicle and world-space seat position when riding: the rendered feet plus the
+    /// last known rider attachment offset, or the rendered feet before placement is known.
+    pub seat: Option<(crate::EntityRef, [f64; 3])>,
+    /// Whether this hitbox belongs to a projectile.
+    pub projectile: bool,
+    /// The projectile's owner, if known and present in this client level.
+    pub projectile_owner: Option<crate::EntityRef>,
+    /// The type of the projectile's owner, if known in this client level.
+    pub projectile_owner_kind: Option<crate::EntityTypeKey>,
+}
+
+impl DebugEntityHitbox {
+    #[doc(hidden)]
+    pub fn from_box(position: [f64; 3], bounds: [[f64; 3]; 2]) -> Self {
+        Self {
+            entity: None,
+            kind: None,
+            part_of: None,
+            position,
+            bounds,
+            eye_height: 0.0,
+            eye: None,
+            look: None,
+            living: false,
+            seat: None,
+            projectile: false,
+            projectile_owner: None,
+            projectile_owner_kind: None,
+        }
+    }
+}
+
 /// Queued primitive counts and fixed capacities, shared across both depth modes.
 ///
 /// `instances_capacity` is the per-view budget of 16,384 model copies. It is reserved

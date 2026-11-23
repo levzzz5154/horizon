@@ -249,6 +249,8 @@ pub(super) struct Tracked {
     /// this base, so the server's next delta still lands where it means.
     codec_base: [f64; 3],
     silent: bool,
+    /// AddEntity data (for projectiles, the owner's entity id).
+    spawn_data: i32,
     /// `Entity.vehicle`: the entity it rides (`SetPassengers`), whatever either one's type.
     pub(in crate::game) vehicle: Option<u32>,
 }
@@ -2199,6 +2201,12 @@ impl Remote {
         self.entities
             .get(&id)
             .map(|t| (t.kind.as_str(), t.position))
+    }
+    /// Owner id from `Projectile.recreateFromPacket`. Only call for a projectile:
+    /// other entity classes give the packet's data field different meanings.
+    pub(super) fn tracked_projectile_owner(&self, id: i32) -> Option<i32> {
+        let owner = self.entities.get(&id)?.spawn_data;
+        (owner != 0 && owner != id).then_some(owner)
     }
     /// The profile of the player entity `id`: this window's own player, or
     /// another one by the UUID it was added with and its profile name.
