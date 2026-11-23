@@ -1,6 +1,31 @@
 //! The creative inventory screen (`CreativeModeInventoryScreen`): its tabs, pages, tooltips,
 //! trash slot, search box and clicks.
 use super::*;
+use crate::game::api_values::{TryIntoApi, TryIntoEngine, stack_value};
+use horizon_client::creative::CatalogEdit;
+use mod_api::{
+    CreativeModeTabInfo, CreativeModeTabs, CreativeTabEdit, CreativeTabReadError, Identifier,
+    LogicalSide,
+};
+use std::{convert::Infallible, result::Result};
+
+fn api_stacks(items: &[ItemStack]) -> Vec<mod_api::ItemStack> {
+    let mut stacks = Vec::with_capacity(items.len());
+    stacks.extend(items.iter().filter_map(|stack| stack.try_into_api().ok()));
+    stacks
+}
+
+/// Convert the borrowed Search list at the host boundary, without copying the engine stacks.
+pub(in crate::game) struct CreativeSearchItems<'a>(&'a [ItemStack]);
+
+impl TryIntoApi for CreativeSearchItems<'_> {
+    type Api = Vec<mod_api::ItemStack>;
+    type Error = Infallible;
+
+    fn try_into_api(&self) -> Result<Self::Api, Self::Error> {
+        Ok(api_stacks(self.0))
+    }
+}
 
 impl Game<'_> {
     /// `CreativeModeInventoryScreen.hasPermissions` (`canUseGameMasterBlocks`
@@ -8,23 +33,163 @@ impl Game<'_> {
     /// as the screen's constructor and `containerTick` do. When the tabs need
     /// building, each item tab asks the mods for their stacks
     /// (`BuildCreativeModeTabContentsEvent`) before the build takes them.
-    pub(super) fn refresh_creative_tabs(&mut self) {
-        let permissions = self.can_use_game_master_blocks() && self.settings.operator_items_tab;
+    pub(in crate::game) fn refresh_creative_tabs(&mut self) {
+        let permissions = self.creative_catalog_permissions();
         let enchantments = Arc::clone(self.item_enchantments());
         self.creative_screen.set_enchantments(enchantments);
-        let Some(tabs) = self.creative_screen.tabs_to_build(permissions) else {
+        self.update_creative_catalog(permissions, true);
+    }
+
+    fn creative_catalog_permissions(&self) -> bool {
+        !self.is_logical_server()
+            && self.can_use_game_master_blocks()
+            && self.settings.operator_items_tab
+    }
+
+    /// Publish the catalog on its owning game thread, never inside a host read
+    /// (a Wasm guest cannot dispatch to itself recursively).
+    pub(in crate::game) fn refresh_creative_catalog(&mut self) {
+        self.update_creative_catalog(self.creative_catalog_permissions(), false);
+    }
+
+    fn update_creative_catalog(&mut self, permissions: bool, legacy: bool) {
+        if self.res.rest.get().is_none() || !self.creative_screen.available() {
             return;
+        }
+        let features = self
+            .remote
+            .as_ref()
+            .map_or(&self.level.enabled_features, |remote| &remote.features);
+        if !Arc::ptr_eq(&self.creative_features, features) {
+            if self.creative_features.as_ref() != features.as_ref() {
+                self.creative_screen.invalidate_catalog();
+            }
+            self.creative_features = Arc::clone(features);
+        }
+        self.creative_screen
+            .update_catalog_permissions(permissions, &self.pack.names);
+        let needs_edits = self.creative_screen.needs_catalog_build(permissions);
+        let legacy_tabs = if legacy {
+            self.creative_screen.tabs_to_build(permissions)
+        } else {
+            None
         };
-        let added = tabs
-            .into_iter()
-            .map(|tab| {
-                let mut items = Vec::new();
-                self.native_build_creative_mode_tab_contents(&tab, permissions, &mut items);
-                (tab, items)
+        if !needs_edits && legacy_tabs.is_none() {
+            return;
+        }
+        let added = legacy_tabs.map(|tabs| {
+            tabs.into_iter()
+                .filter_map(|tab| {
+                    let mut items = Vec::new();
+                    self.native_build_creative_mode_tab_contents(&tab, permissions, &mut items);
+                    (!items.is_empty()).then_some((tab, items))
+                })
+                .collect()
+        });
+        let edits = needs_edits.then(|| self.collect_creative_edits(permissions));
+        self.creative_screen
+            .build_catalog(permissions, added, edits, &self.pack.names);
+    }
+
+    fn collect_creative_edits(&self, permissions: bool) -> Vec<(String, Vec<CatalogEdit>)> {
+        if !mod_api::__private::listened(mod_api::HookId::EditCreativeModeTabContents) {
+            return Vec::new();
+        }
+        let side = if self.is_logical_server() {
+            LogicalSide::Server
+        } else {
+            LogicalSide::Client
+        };
+        let items = self.items();
+        self.creative_screen
+            .catalog_tab_ids()
+            .filter_map(|id| {
+                if id == "minecraft:op_blocks" && !permissions {
+                    return None;
+                }
+                let tab = Identifier::parse(id).ok()?;
+                let mut supplied = Vec::new();
+                self.native_edit_creative_mode_tab_contents(&tab, side, permissions, &mut supplied);
+                let insert = |stack: &mod_api::ItemStack| {
+                    let stack = stack.try_into_engine(items).ok()?;
+                    (stack.item.as_ref() != "minecraft:air"
+                        && (permissions || !self.creative_screen.operator_only(&stack)))
+                    .then_some(stack)
+                };
+                let edits: Vec<_> = supplied
+                    .iter()
+                    .filter_map(|edit| {
+                        let anchor = |value| stack_value(value).ok();
+                        Some(match edit {
+                            CreativeTabEdit::Append { stack } => {
+                                CatalogEdit::Append(insert(stack)?)
+                            }
+                            CreativeTabEdit::InsertBefore { anchor: at, stack } => {
+                                CatalogEdit::Before(anchor(at)?, insert(stack)?)
+                            }
+                            CreativeTabEdit::InsertAfter { anchor: at, stack } => {
+                                CatalogEdit::After(anchor(at)?, insert(stack)?)
+                            }
+                            CreativeTabEdit::Remove { stack } => {
+                                CatalogEdit::Remove(anchor(stack)?)
+                            }
+                            _ => return None,
+                        })
+                    })
+                    .collect();
+                (!edits.is_empty()).then(|| (id.to_owned(), edits))
+            })
+            .collect()
+    }
+
+    pub(in crate::game) fn creative_search_items(&self) -> CreativeSearchItems<'_> {
+        CreativeSearchItems(self.creative_screen.search_items())
+    }
+
+    pub(in crate::game) fn creative_tabs(&self) -> Result<CreativeModeTabs, CreativeTabReadError> {
+        match self.creative_screen.base_contents() {
+            Some(base) => self.creative_snapshot(&base.tabs, &base.search_items),
+            None => self.built_creative_tabs(),
+        }
+    }
+
+    pub(in crate::game) fn built_creative_tabs(
+        &self,
+    ) -> Result<CreativeModeTabs, CreativeTabReadError> {
+        self.creative_snapshot(
+            &self.creative_screen.tabs,
+            self.creative_screen.search_items(),
+        )
+    }
+
+    fn creative_snapshot(
+        &self,
+        tabs: &[horizon_client::creative::Tab],
+        search: &[ItemStack],
+    ) -> Result<CreativeModeTabs, CreativeTabReadError> {
+        if !self.creative_screen.available() || self.res.rest.get().is_none() {
+            return Err(CreativeTabReadError::Unavailable);
+        }
+        let server = self.is_logical_server();
+        let tabs = tabs
+            .iter()
+            .filter_map(|tab| {
+                let id = Identifier::parse(&tab.id).ok()?;
+                let icon = tab.icon.try_into_api().ok().or_else(|| {
+                    mod_api::__private::item_key("minecraft:stone").map(mod_api::ItemStack::of)
+                })?;
+                let name = if server {
+                    tab.name
+                        .as_ref()
+                        .map_or_else(|| tab.title.clone(), |(name, _, _)| name.clone())
+                } else {
+                    self.creative_tab_title(tab)
+                };
+                let items = if tab.search { search } else { &tab.items };
+                Some(CreativeModeTabInfo::new(id, name, icon, api_stacks(items)))
             })
             .collect();
-        self.creative_screen
-            .build(permissions, added, &self.pack.names);
+        Ok(CreativeModeTabs::new(tabs))
     }
     pub(super) fn creative_inventory_open(&self) -> bool {
         self.screen == Screen::Creative && self.creative_screen.tab().inventory
@@ -162,15 +327,9 @@ impl Game<'_> {
         self.draw_screen_phase(batch, horizon_client::screen_draw::RenderPhase::Background);
         for t in tabs.iter().filter(|t| self.creative_screen.on_page(t)) {
             let (tx, ty) = Creative::tab_position(t);
-            let stack = ItemStack {
-                item: Arc::from(t.icon.as_str()),
-                count: 1,
-                damage: 0,
-                extra: None,
-            };
             self.draw_item(
                 batch,
-                &stack,
+                &t.icon,
                 ox + tx + 5.0,
                 oy + ty + if t.top { 9.0 } else { 7.0 },
             );

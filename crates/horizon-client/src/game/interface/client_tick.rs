@@ -16,6 +16,8 @@ impl Game<'_> {
                 // cursor; no `removed` on a client player.
                 self.set_screen(Screen::Inventory);
             }
+        } else {
+            self.refresh_creative_catalog();
         }
         Ok(())
     }

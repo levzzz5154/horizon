@@ -62,6 +62,20 @@ pub trait ItemsHost {
     /// overflow the parser.
     #[access(WorldOnly)]
     fn item_from_snbt(&self, snbt: &str) -> Option<ItemStack>;
+    /// Side: both.
+    /// The active creative catalog before code hooks, with declared stacks and pack overrides.
+    /// The server uses its own resources and a player-independent, non-operator view.
+    #[access(PublishedResources)]
+    fn creative_tabs(&self) -> Result<CreativeModeTabs, CreativeTabReadError> {
+        Err(CreativeTabReadError::Unavailable)
+    }
+    /// Side: both.
+    /// The last completed catalog with code-hook edits. On the client, the legacy append hook
+    /// contributes after the creative screen has run its normal refresh.
+    #[access(PublishedResources)]
+    fn built_creative_tabs(&self) -> Result<CreativeModeTabs, CreativeTabReadError> {
+        Err(CreativeTabReadError::Unavailable)
+    }
 }
 /// The server host's methods of the `items` area, implemented by the game and reached through [`ServerHost`].
 #[horizon_mod_api_macros::host_area]
@@ -161,6 +175,12 @@ pub trait ItemsClientHost {
     /// Whether enchantment `id` can go on `item` (`Enchantment.isSupportedItem`).
     #[access(ClientSetup)]
     fn enchantment_supports(&self, id: &str, item: ItemKey) -> bool;
+    /// Side: client.
+    /// The unfiltered Search tab stacks, in the same order as the built creative catalog.
+    /// Empty if no creative catalog has been published.
+    #[access(PublishedResources)]
+    #[default_on_unavailable]
+    fn creative_search_items(&self) -> Vec<ItemStack>;
 }
 /// The handles' reads of the `items` area, implemented by the game and reached through [`Backend`].
 // hidden: a handle's backend, reached through `Backend`; mods call the handle, never this trait

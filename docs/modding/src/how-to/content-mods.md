@@ -546,27 +546,83 @@ chorus plant's (10 pixels across) unless it sets `"thickness"`, 2 to 14
 pixels: its outline and collision are then built as `PipeBlock` builds its
 own, a core and an arm to each joined side.
 
-A mod's creative inventory tabs are `data/<id>/horizon/creative_tab/*.json`:
-a title, the item on the tab's button, and its items in order (items the game
-doesn't have are left out):
+Content-only, native, and Wasm mods all declare new creative inventory tabs in
+`data/<id>/horizon/creative_tab/*.json`. A file such as `creative_tab/gems.json`
+defines `<id>:gems`. It supplies a title, the item on the tab's button, and the
+item IDs to display in order. Items the game doesn't have are left out.
 
 ```json
 { "title": "Ruby", "icon": "ruby:ruby", "items": ["ruby:ruby", "ruby:ruby_block"] }
 ```
 
-They come after vanilla's tabs, ten to a page; the
-buttons above the inventory turn the pages. The title is a lang key or English
-text: `"title": "itemGroup.ruby"` uses that key from the mod's lang files, and a
-lang file's `itemGroup.<mod id>.<file name>` (`creative_tab/gems.json` →
+For an icon with item components, use an object instead of an item ID string.
+The icon is a stack of one; `components` is an optional map from namespaced
+component IDs to JSON values. One icon's components do not change the item
+listed in `items` or its defaults elsewhere.
+
+```json
+{
+  "title": "Ruby Gems",
+  "icon": {
+    "id": "ruby:ruby",
+    "components": {
+      "minecraft:enchantment_glint_override": true
+    }
+  },
+  "items": ["ruby:ruby", "ruby:ruby_block"],
+  "after": "ruby:tools",
+  "before": "gem_tools:extras"
+}
+```
+
+Custom tabs appear after vanilla's tabs, ten to a page. The buttons above the
+inventory turn the pages. Use `before` or `after` (or both) to name another
+custom tab by its full ID. Vanilla positions are unchanged. When several tabs
+can be placed next, the game uses mod load order, then file path order within
+each mod. An anchor in your own namespaces must exist; other mods' anchors are
+optional and ignored if the named tab isn't loaded. Cycles are errors.
+
+The title is a lang key or English text: `"title": "itemGroup.ruby"` uses that
+key from the mod's lang files. A lang file's `itemGroup.<mod id>.<file name>`
+(`creative_tab/gems.json` →
 `itemGroup.ruby.gems`) translates any title. A mod's items join the search tab
 under their names.
 
-A file only makes new tabs. To put items into a tab the mod doesn't own, such as
-vanilla's `minecraft:ingredients` or another mod's, a native mod listens to the
-client hook `build_creative_mode_tab_contents` (NeoForge's
-`BuildCreativeModeTabContentsEvent`) and pushes its stacks for that `tab`.
+A declaration only makes a new tab. To edit any tab, including vanilla tabs
+such as `minecraft:ingredients` or a tab declared by another mod, native and
+Wasm code can listen to `edit_creative_mode_tab_contents` on either logical side.
+Push `CreativeTabEdit` values to `edits` to append a stack, insert it before or
+after an anchor stack, or remove a stack. Matching uses the item and components,
+not stack count. Search, Hotbar, and Inventory can be edited too; this changes
+their catalog contents, not a player's inventory or saved toolbars.
+Insertions with no matching anchor or with a stack already in the tab do
+nothing. Category inserts also reach Search near the same anchor if it is
+there. A category removal drops the matching stack from Search only when no
+other category still shows it. Search-specific edits run after the category
+edits and can change Search without changing those tabs. Hotbar edits also
+apply to the saved toolbar grid while it is open; they do not change the
+saved toolbar file. Inventory catalog entries do not modify the survival
+inventory grid.
 
-Unknown component types fail content loading unless a code mod registers them.
+`build_creative_mode_tab_contents` (NeoForge's `BuildCreativeModeTabContentsEvent`)
+still works for both native and Wasm mods. It only appends to item tabs on the
+client; it does not run on the server or for Search, Hotbar, or Inventory.
+Its appends participate in the built catalog once the client has refreshed the
+creative screen. The newer hook runs when the catalog is published, whether or
+not the player opens the screen. Both lanes use the client's creative mode,
+game-master permissions and Operator Items Tab setting for its operator view.
+
+On either side, `ItemsHost::creative_tabs()` reads the active catalog before
+code edits; `ItemsHost::built_creative_tabs()` reads the last completed catalog
+with those edits. The server's snapshots do not require an inventory screen and
+use non-operator permissions. Each method returns a `CreativeModeTabs` snapshot
+or `CreativeTabReadError::Unavailable` if that catalog isn't available.
+Use `tab(&id)` for a specific tab or `tabs_showing(&stack)` to find tabs
+displaying an item and its components. Tab entries expose `display_name`,
+`display_items`, and the full `icon` stack. `ItemsClientHost::creative_search_items()`
+reads the client's unfiltered Search stacks in order.
+
+Unknown component types in block and item declarations fail content loading unless a code mod registers them.
 Item-id-specific behaviour does not follow a template: a copy of the trident does not throw.
 
 A mod effect is declared in `data/<id>/horizon/mob_effect/<name>.json` with what vanilla's `MobEffect` takes: its

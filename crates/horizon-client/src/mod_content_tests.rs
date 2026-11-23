@@ -747,6 +747,7 @@ fn creative_tabs_keep_vanilla_items_missing_from_search() {
         id: "test:restricted".into(),
         title: "Restricted".into(),
         icon: "minecraft:barrier".into(),
+        icon_components: None,
         items: [
             "minecraft:barrier",
             "minecraft:command_block",
@@ -755,6 +756,8 @@ fn creative_tabs_keep_vanilla_items_missing_from_search() {
         ]
         .map(str::to_owned)
         .into(),
+        before: None,
+        after: None,
     };
     let plan = Plan {
         blocks: Vec::new(),
@@ -789,6 +792,125 @@ fn creative_tabs_keep_vanilla_items_missing_from_search() {
             "{count:1,id:\"minecraft:knowledge_book\"}",
         ])
     );
+}
+
+#[test]
+fn creative_tab_ordering_and_rich_icons_merge_across_packages() {
+    let scratch = std::env::temp_dir().join(format!("horizon-tab-order-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let base = scratch.join("base");
+    fs::create_dir_all(&base).unwrap();
+    fs::write(
+        base.join("facts.json"),
+        r#"{"states":[["minecraft:stone"]],"defaults":{"minecraft:stone":0}}"#,
+    )
+    .unwrap();
+    fs::write(
+        base.join("gameplay-facts.json"),
+        r#"{"states":[{"item":"minecraft:stone"}]}"#,
+    )
+    .unwrap();
+
+    let zeta = folder_mod(
+        &scratch.join("zeta"),
+        &[
+            ("horizon-mod.toml", &manifest("zeta", "")),
+            (
+                "data/zeta/horizon/creative_tab/a.json",
+                r#"{"title":"A","items":[],"after":"alpha:other",
+                    "icon":{"id":"minecraft:stick","components":{
+                        "minecraft:custom_name":{"text":"An \"icon\""},
+                        "minecraft:enchantment_glint_override":true
+                    }}}"#,
+            ),
+            (
+                "data/zeta/horizon/creative_tab/b.json",
+                r#"{"title":"B","items":[],"icon":"minecraft:stone"}"#,
+            ),
+            (
+                "data/zeta/horizon/creative_tab/c.json",
+                r#"{"title":"C","items":[],"icon":"minecraft:stone","after":"zeta:b"}"#,
+            ),
+            (
+                "data/zeta/horizon/creative_tab/d.json",
+                r#"{"title":"D","items":[],"icon":"minecraft:stone","after":"optional:missing"}"#,
+            ),
+        ],
+    );
+    let middle = folder_mod(
+        &scratch.join("middle"),
+        &[
+            ("horizon-mod.toml", &manifest("middle", "")),
+            (
+                "data/middle/horizon/creative_tab/m.json",
+                r#"{"title":"M","items":[],"icon":"minecraft:stone","before":"zeta:a"}"#,
+            ),
+        ],
+    );
+    let alpha = folder_mod(
+        &scratch.join("alpha"),
+        &[
+            ("horizon-mod.toml", &manifest("alpha", "")),
+            (
+                "data/alpha/horizon/creative_tab/other.json",
+                r#"{"title":"Other","items":[],"icon":"minecraft:stone"}"#,
+            ),
+        ],
+    );
+    let mut mods = [zeta, middle, alpha];
+
+    let vanilla = serde_json::json!([
+        {"id":"minecraft:ingredients","type":"CATEGORY","page":0,"row":"BOTTOM","column":4},
+        {"id":"minecraft:search","type":"SEARCH","page":0,"row":"TOP","column":6,"items":[]},
+    ]);
+    let mut doc: J = serde_json::from_value(serde_json::json!({ "tabs": vanilla })).unwrap();
+    Plan::new(&base, &mods)
+        .unwrap()
+        .json("creative-inventory.json", &mut doc)
+        .unwrap();
+    let doc = serde_json::to_value(doc).unwrap();
+    let tabs = doc["tabs"].as_array().unwrap();
+    assert_eq!(&tabs[..2], vanilla.as_array().unwrap());
+    assert_eq!(
+        tabs[2..]
+            .iter()
+            .map(|tab| tab["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "zeta:b",
+            "zeta:c",
+            "zeta:d",
+            "middle:m",
+            "alpha:other",
+            "zeta:a",
+        ]
+    );
+    assert_eq!(tabs[2]["icon"], r#"{count:1,id:"minecraft:stone"}"#);
+    assert_eq!(tabs[7]["page"], 1);
+    assert_eq!(tabs[7]["row"], "BOTTOM");
+    assert_eq!(tabs[7]["column"], 0);
+    let icon = tabs[7]["icon"].as_str().unwrap();
+    let (tag, consumed) = nbt::parse_snbt(icon).unwrap();
+    assert_eq!(consumed, icon.len());
+    assert_eq!(tag.get("id"), Some(&Tag::String("minecraft:stick".into())));
+    assert_eq!(tag.get("count"), Some(&Tag::Int(1)));
+    let components = tag.get("components").unwrap();
+    assert_eq!(
+        components
+            .get("minecraft:custom_name")
+            .and_then(|name| name.get("text")),
+        Some(&Tag::String("An \"icon\"".into()))
+    );
+    assert_eq!(
+        components.get("minecraft:enchantment_glint_override"),
+        Some(&Tag::Byte(1))
+    );
+
+    mods[2].content.creative_tabs[0].after = Some("zeta:a".into());
+    let error = Plan::new(&base, &mods).err().unwrap().to_string();
+    assert!(error.contains("ordering cycle"), "{error}");
+    assert!(error.contains("alpha:other") && error.contains("zeta:a"));
+    fs::remove_dir_all(&scratch).unwrap();
 }
 
 /// A block item's patch goes over its template block's item, and a type no

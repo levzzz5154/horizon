@@ -63,7 +63,7 @@ fn append_unique_stacks<'a>(
 pub struct Tab {
     pub id: String,
     pub title: String,
-    pub icon: String,
+    pub icon: ItemStack,
     pub items: Vec<ItemStack>,
     pub top: bool,
     pub column: u32,
@@ -106,6 +106,52 @@ struct Exported {
     category: bool,
     operator: Vec<bool>,
 }
+
+/// An edit whose stacks have crossed the mod API boundary.
+pub enum CatalogEdit {
+    Append(ItemStack),
+    Before(ItemStack, ItemStack),
+    After(ItemStack, ItemStack),
+    Remove(ItemStack),
+}
+
+impl CatalogEdit {
+    fn insertion(
+        &self,
+        items: &[ItemStack],
+        allow_missing_anchor: bool,
+    ) -> Option<(usize, &ItemStack)> {
+        let find = |target: &ItemStack| items.iter().position(|item| same_components(item, target));
+        let missing = || allow_missing_anchor.then_some(items.len());
+        let (at, stack) = match self {
+            Self::Append(stack) => (items.len(), stack),
+            Self::Before(anchor, stack) => (find(anchor).or_else(missing)?, stack),
+            Self::After(anchor, stack) => (find(anchor).map(|i| i + 1).or_else(missing)?, stack),
+            Self::Remove(_) => return None,
+        };
+        find(stack).is_none().then_some((at, stack))
+    }
+
+    fn apply(&self, items: &mut Vec<ItemStack>) -> bool {
+        if let Self::Remove(target) = self {
+            let len = items.len();
+            items.retain(|item| !same_components(item, target));
+            len != items.len()
+        } else if let Some((at, stack)) = self.insertion(items, false) {
+            items.insert(at, stack.clone());
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// The tab and Search materialization, without any screen state.
+pub struct CatalogContents {
+    pub tabs: Vec<Tab>,
+    pub search_items: Vec<ItemStack>,
+    search_index: Vec<SearchEntry>,
+}
 /// What the client's creative search trees (SessionSearchTrees) index for one
 /// stack of the search tab: its creative tooltip lines and its item tags.
 #[derive(Clone, Debug, Default)]
@@ -117,6 +163,42 @@ struct SearchEntry {
     lines: Vec<String>,
     /// Item tags as (namespace, path), lower-cased.
     tags: Vec<(String, String)>,
+}
+
+impl SearchEntry {
+    fn for_stack(stack: &ItemStack) -> Self {
+        let (namespace, path) = split_id(&java_lower(&stack.item));
+        Self {
+            namespace,
+            path,
+            ..Self::default()
+        }
+    }
+}
+
+fn edit_search(
+    items: &mut Vec<ItemStack>,
+    index: &mut Vec<SearchEntry>,
+    edit: &CatalogEdit,
+    category: bool,
+) {
+    if let CatalogEdit::Remove(target) = edit {
+        let mut kept = 0;
+        for read in 0..items.len() {
+            if !same_components(&items[read], target) {
+                if read != kept {
+                    items.swap(kept, read);
+                    index.swap(kept, read);
+                }
+                kept += 1;
+            }
+        }
+        items.truncate(kept);
+        index.truncate(kept);
+    } else if let Some((at, stack)) = edit.insertion(items, category) {
+        items.insert(at, stack.clone());
+        index.insert(at, SearchEntry::for_stack(stack));
+    }
 }
 pub struct Creative {
     /// The tabs shown (`CreativeModeTabs.tabs()`), with the stacks the current
@@ -146,9 +228,18 @@ pub struct Creative {
     /// Whether the game built the tabs since they loaded (`build`), which
     /// asks the mods for their stacks: until then only the exported ones.
     built: bool,
+    /// Whether both-side edits have been collected for this catalog.
+    catalog_built: bool,
+    available: bool,
+    base: OnceLock<CatalogContents>,
     /// The stacks mods added to item tabs in the last build
     /// (`BuildCreativeModeTabContentsEvent`), by tab id, in the order asked.
     added: Vec<(String, Vec<ItemStack>)>,
+    /// Edits collected for the current resource/permission generation.
+    edits: Vec<(String, Vec<CatalogEdit>)>,
+    /// Runtime layer over the Hotbar catalog, not part of the public catalog.
+    saved_hotbars: Option<Vec<ItemStack>>,
+    edited_hotbars: Option<Vec<ItemStack>>,
     /// ItemPickerMenu.items: what the grid shows, filled when the tab or the
     /// search changes (selectTab, refreshSearchResults), not on every frame.
     shown: Mutex<Option<Shown>>,
@@ -335,11 +426,17 @@ impl Creative {
     pub fn load(root: &Path) -> Result<Self> {
         let path = root.join("creative-inventory.json");
         if path.exists() {
-            Self::from_json(&serde_json::from_slice(&fs::read(path)?)?)
+            let json: Value = serde_json::from_slice(&fs::read(path)?)?;
+            if !json["tabs"].is_array() {
+                return Err("creative-inventory.json: missing tabs array".into());
+            }
+            Self::from_json(&json)
         } else {
-            Self::from_legacy(&serde_json::from_slice(&fs::read(
-                root.join("creative-tabs.json"),
-            )?)?)
+            let json: Value = serde_json::from_slice(&fs::read(root.join("creative-tabs.json"))?)?;
+            if !json.is_array() {
+                return Err("creative-tabs.json: expected an array".into());
+            }
+            Self::from_legacy(&json)
         }
     }
     pub fn from_json(raw: &Value) -> Result<Self> {
@@ -389,7 +486,7 @@ impl Creative {
                 tab: Tab {
                     id: t["id"].as_str().unwrap_or("").to_owned(),
                     title: t["title"].as_str().unwrap_or("").to_owned(),
-                    icon: icon.map_or_else(|| "minecraft:stone".to_owned(), |s| s.item.to_string()),
+                    icon: icon.unwrap_or_else(|| ItemStack::new("minecraft:stone", 1)),
                     items,
                     top: t["row"] == "TOP",
                     column: t["column"].as_u64().unwrap_or(0) as u32,
@@ -430,7 +527,7 @@ impl Creative {
                 tab: Tab {
                     id: t["id"].as_str().unwrap_or("").to_owned(),
                     title: t["title"].as_str().unwrap_or("").to_owned(),
-                    icon: t["icon"].as_str().unwrap_or("minecraft:stone").to_owned(),
+                    icon: ItemStack::new(t["icon"].as_str().unwrap_or("minecraft:stone"), 1),
                     items,
                     top: t["row"] == "TOP",
                     column: t["column"].as_u64().unwrap_or(0) as u32,
@@ -478,7 +575,13 @@ impl Creative {
             exported_search,
             permissions: false,
             built: false,
+            catalog_built: false,
+            available: true,
+            base: OnceLock::new(),
             added: Vec::new(),
+            edits: Vec::new(),
+            saved_hotbars: None,
+            edited_hotbars: None,
             shown: Mutex::new(None),
             lines_cache: Mutex::new(None),
             pack: Vec::new(),
@@ -494,17 +597,87 @@ impl Creative {
     /// tab; a stack already listed there (same item and components) and an
     /// empty one are left out.
     fn rebuild(&mut self) {
-        let permissions = self.permissions;
-        let keep = |operator: bool| permissions || !operator;
+        let CatalogContents {
+            tabs,
+            search_items,
+            search_index,
+        } = self.collect_contents(&self.added, &self.edits);
+        self.tabs = tabs;
+        self.search_items = search_items;
+        self.search_index = search_index;
+        self.base.take();
+        self.rebuild_hotbar_grid();
+        *self.lines_cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        self.forget_items();
+    }
+
+    /// Resource data without code hooks, under the same permissions as the current build.
+    pub fn base_contents(&self) -> Option<&CatalogContents> {
+        (!self.added.is_empty() || !self.edits.is_empty())
+            .then(|| self.base.get_or_init(|| self.collect_contents(&[], &[])))
+    }
+    /// A headless game can run without the client catalog export.
+    pub fn unavailable() -> Self {
+        let mut catalog = Self::new(Vec::new(), Vec::new());
+        catalog.available = false;
+        catalog
+    }
+
+    pub fn available(&self) -> bool {
+        self.available
+    }
+
+    /// Publish a permission-safe baseline before invoking listeners for a different view.
+    pub fn update_catalog_permissions(&mut self, permissions: bool, names: &Names) {
+        if self.permissions != permissions {
+            self.build_catalog(permissions, None, Some(Vec::new()), names);
+            self.invalidate_catalog();
+        }
+    }
+
+    pub fn needs_catalog_build(&self, permissions: bool) -> bool {
+        self.available && (!self.catalog_built || permissions != self.permissions)
+    }
+
+    pub fn invalidate_catalog(&mut self) {
+        self.catalog_built = false;
+    }
+
+    /// Publish the new export without replacing the selection, page, search box or saved toolbars.
+    pub fn replace_catalog(&mut self, export: Self, names: &Names) {
+        self.available = export.available;
+        self.exported = export.exported;
+        self.exported_search = export.exported_search;
+        self.pack = export.pack;
+        self.invalidate_build();
+        self.build_catalog(self.permissions, None, Some(Vec::new()), names);
+        self.invalidate_catalog();
+    }
+
+    fn collect_contents(
+        &self,
+        added: &[(String, Vec<ItemStack>)],
+        edits: &[(String, Vec<CatalogEdit>)],
+    ) -> CatalogContents {
+        let keep = |operator: bool| self.permissions || !operator;
         let usable = |s: &&ItemStack| s.count > 0 && s.item.as_ref() != "minecraft:air";
-        let added = &self.added;
-        self.tabs = self
+        let edits_for = |id: &str| {
+            edits
+                .iter()
+                .find(|(tab, _)| tab == id)
+                .map_or(&[][..], |(_, edits)| edits.as_slice())
+        };
+        let mut tabs: Vec<_> = self
             .exported
             .iter()
-            .filter_map(|e| {
-                let mut items: Vec<ItemStack> = (e.tab.items.iter().zip(&e.operator))
-                    .filter(|(_, o)| keep(**o))
-                    .map(|(s, _)| s.clone())
+            .map(|e| {
+                let mut items = e
+                    .tab
+                    .items
+                    .iter()
+                    .zip(&e.operator)
+                    .filter(|(_, operator)| keep(**operator))
+                    .map(|(stack, _)| stack.clone())
                     .collect();
                 let stacks = added
                     .iter()
@@ -517,31 +690,66 @@ impl Creative {
                     ..e.tab.header()
                 };
                 self.apply_pack(&mut tab);
-                (!e.category || !tab.items.is_empty()).then_some(tab)
+                tab
             })
             .collect();
-        *self.lines_cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        (self.search_items, self.search_index) = self
+        let (mut search_items, mut search_index): (Vec<_>, Vec<_>) = self
             .exported_search
             .iter()
-            .filter(|(_, _, o)| keep(*o))
-            .map(|(s, e, _)| (s.clone(), e.clone()))
+            .filter(|(_, _, operator)| keep(*operator))
+            .map(|(stack, entry, _)| (stack.clone(), entry.clone()))
             .unzip();
         let stacks = added.iter().flat_map(|(_, stacks)| stacks).filter(usable);
-        append_unique_stacks(&mut self.search_items, stacks, |stack| {
-            // No exported tooltip lines or tags: searched by its name.
-            let (namespace, path) = split_id(&java_lower(&stack.item));
-            self.search_index.push(SearchEntry {
-                namespace,
-                path,
-                ..Default::default()
-            });
+        append_unique_stacks(&mut search_items, stacks, |stack| {
+            search_index.push(SearchEntry::for_stack(stack));
         });
-        self.forget_items();
+        if !edits.is_empty() {
+            let mut search_edits = &[][..];
+            for i in 0..tabs.len() {
+                let tab = &tabs[i];
+                let tab_edits = edits_for(&tab.id);
+                if tab.search {
+                    search_edits = tab_edits;
+                    continue;
+                }
+                let category = !tab.hotbar && !tab.inventory;
+                for edit in tab_edits {
+                    if !edit.apply(&mut tabs[i].items) || !category {
+                        continue;
+                    }
+                    // The same variant can appear in several category tabs. Removing a
+                    // display entry removes it from Search only after the last such entry.
+                    if let CatalogEdit::Remove(target) = edit
+                        && tabs.iter().any(|tab| {
+                            !tab.search
+                                && !tab.hotbar
+                                && !tab.inventory
+                                && tab.items.iter().any(|s| same_components(s, target))
+                        })
+                    {
+                        continue;
+                    }
+                    edit_search(&mut search_items, &mut search_index, edit, true);
+                }
+            }
+            for edit in search_edits {
+                edit_search(&mut search_items, &mut search_index, edit, false);
+            }
+        }
+        let mut exported = self.exported.iter();
+        tabs.retain(|tab| !exported.next().unwrap().category || !tab.items.is_empty());
+        CatalogContents {
+            tabs,
+            search_items,
+            search_index,
+        }
     }
     /// The packs' Polytone creative tab modifiers (wiki "Creative Tab Modifiers"): the tabs are
     /// built again with them.
     pub fn set_pack_modifiers(&mut self, pack: Vec<crate::polytone_creative_tabs::TabModifier>) {
+        if pack.is_empty() && self.pack.is_empty() {
+            return;
+        }
         self.pack = pack;
         self.rebuild();
         self.selected = self.selected.min(self.tabs.len().saturating_sub(1));
@@ -570,7 +778,7 @@ impl Creative {
                 })
                 .collect();
             if let Some(icon) = &m.icon {
-                tab.icon = icon.clone();
+                tab.icon = ItemStack::new(icon, 1);
             }
             if let Some(name) = &m.name {
                 tab.name = Some(component_text(name));
@@ -596,10 +804,41 @@ impl Creative {
                 .collect(),
         )
     }
+    /// Every tab in build order, including the three special tabs.
+    pub fn catalog_tab_ids(&self) -> impl Iterator<Item = &str> {
+        self.exported.iter().map(|export| export.tab.id.as_str())
+    }
+
+    /// Operator-only items cannot be reintroduced through the new edit lane.
+    /// `CreativeModeTabs.bootstrap` (OP_BLOCKS): match the fixed utility items
+    /// by ID even with a different patch, and match permission-only variants
+    /// (such as preset paintings) by exact stack. Older exports contain no OP
+    /// contents, so their `permissions_only` metadata cannot answer the first case.
+    pub fn operator_only(&self, stack: &ItemStack) -> bool {
+        matches!(
+            stack.item.as_ref(),
+            "minecraft:command_block"
+                | "minecraft:chain_command_block"
+                | "minecraft:repeating_command_block"
+                | "minecraft:command_block_minecart"
+                | "minecraft:jigsaw"
+                | "minecraft:structure_block"
+                | "minecraft:structure_void"
+                | "minecraft:barrier"
+                | "minecraft:debug_stick"
+                | "minecraft:test_instance_block"
+                | "minecraft:test_block"
+                | "minecraft:light"
+        ) || self
+            .exported_search
+            .iter()
+            .any(|(item, _, op)| *op && same_components(item, stack))
+    }
     /// Invalidate collected contents after client resources are published, even
     /// when permissions have not changed. The next refresh recollects mod stacks.
     pub fn invalidate_build(&mut self) {
         self.built = false;
+        self.invalidate_catalog();
         self.forget_items();
     }
     /// `CreativeModeTabs.buildAllTabContents` with `permissions` and the
@@ -613,21 +852,53 @@ impl Creative {
         added: Vec<(String, Vec<ItemStack>)>,
         names: &Names,
     ) {
+        self.build_catalog(permissions, Some(added), Some(Vec::new()), names);
+    }
+
+    /// Assemble the shared catalog, retaining the legacy contributions when
+    /// the client refreshes only the new, both-side edit lane.
+    pub fn build_catalog(
+        &mut self,
+        permissions: bool,
+        added: Option<Vec<(String, Vec<ItemStack>)>>,
+        edits: Option<Vec<(String, Vec<CatalogEdit>)>>,
+        names: &Names,
+    ) {
         let selected = self.tab().id.clone();
-        let row = self.first_row(names);
+        let row = if self.scroll == 0.0 {
+            0
+        } else {
+            self.first_row(names)
+        };
+        if let Some(added) = added {
+            self.built = true;
+            self.added = added;
+        } else if !self.built || self.permissions != permissions {
+            self.built = false;
+            self.added.clear();
+        }
         self.permissions = permissions;
-        self.built = true;
-        self.added = added;
+        if let Some(edits) = edits {
+            self.edits = edits;
+            self.catalog_built = true;
+        }
         self.rebuild();
         match self.tabs.iter().position(|t| t.id == selected) {
             Some(tab) => {
                 self.selected = tab;
+                if !Self::on_every_page(&self.tabs[tab]) {
+                    self.page = self.tabs[tab].page;
+                }
                 // ItemPickerMenu.getScrollForRowIndex.
-                let hidden = self.hidden_rows(names);
-                self.scroll = if hidden > 0 {
-                    (row as f32 / hidden as f32).clamp(0.0, 1.0)
-                } else {
+                self.scroll = if row == 0 {
                     0.0
+                } else {
+                    let hidden = self.hidden_rows(names);
+                    if hidden > 0 {
+                        (row as f32 / hidden as f32).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    }
                 };
             }
             None => {
@@ -639,6 +910,7 @@ impl Creative {
                 self.select(default.unwrap_or(0));
             }
         }
+        self.page = self.page.min(self.pages() - 1);
     }
     /// Where a stack comes in the creative tabs (the search tab lists them
     /// all, in tab order): the same stack's place, else its item's first.
@@ -664,7 +936,7 @@ impl Creative {
             return EMPTY_TAB.get_or_init(|| Tab {
                 id: String::new(),
                 title: String::new(),
-                icon: "minecraft:stone".to_owned(),
+                icon: ItemStack::new("minecraft:stone", 1),
                 items: Vec::new(),
                 top: true,
                 column: 0,
@@ -893,7 +1165,7 @@ impl Creative {
                 .map(|i| self.search_items[i].clone())
                 .collect()
         } else {
-            self.tab().items.as_slice().into()
+            self.grid_items(self.tab()).into()
         };
         *shown = Some(Shown {
             tab,
@@ -915,10 +1187,32 @@ impl Creative {
     /// saved rows of `HotbarManager` as the tab's items, an empty stack (count
     /// 0) for an empty slot.
     pub fn set_saved_hotbars(&mut self, items: Vec<ItemStack>) {
-        if let Some(tab) = self.tabs.iter_mut().find(|t| t.hotbar) {
-            tab.items = items;
-        }
+        self.saved_hotbars = Some(items);
+        self.rebuild_hotbar_grid();
         self.forget_items();
+    }
+
+    fn rebuild_hotbar_grid(&mut self) {
+        self.edited_hotbars = self.saved_hotbars.as_ref().and_then(|saved| {
+            let tab = self.tabs.iter().find(|tab| tab.hotbar)?;
+            let (_, edits) = self.edits.iter().find(|(id, _)| *id == tab.id)?;
+            let mut items = saved.clone();
+            for edit in edits {
+                edit.apply(&mut items);
+            }
+            Some(items)
+        });
+    }
+
+    fn grid_items<'a>(&'a self, tab: &'a Tab) -> &'a [ItemStack] {
+        if tab.hotbar {
+            self.edited_hotbars
+                .as_deref()
+                .or(self.saved_hotbars.as_deref())
+                .unwrap_or(&tab.items)
+        } else {
+            &tab.items
+        }
     }
     /// Drop the shown items, so the next `items` works them out again: a
     /// reload can rename items without changing the Search label.
@@ -1014,7 +1308,10 @@ impl Creative {
         let category = |t: &Tab| !t.search && !t.inventory;
         let tabs_where = |shows: &dyn Fn(&ItemStack) -> bool| -> Vec<usize> {
             (0..self.tabs.len())
-                .filter(|&i| category(&self.tabs[i]) && self.tabs[i].items.iter().any(shows))
+                .filter(|&i| {
+                    let tab = &self.tabs[i];
+                    category(tab) && self.grid_items(tab).iter().any(shows)
+                })
                 .collect()
         };
         let found = tabs_where(&|s| same_components(s, stack));
@@ -2192,7 +2489,7 @@ mod tests {
         let tab = |top, column| Tab {
             id: String::new(),
             title: String::new(),
-            icon: String::new(),
+            icon: ItemStack::new("minecraft:stone", 1),
             items: Vec::new(),
             top,
             column,

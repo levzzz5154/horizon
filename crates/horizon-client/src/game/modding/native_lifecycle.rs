@@ -228,11 +228,13 @@ impl Game<'_> {
         }
         self.attachment_indexes.clear();
         self.passages.retire_world();
+        self.creative_screen.invalidate_catalog();
         self.native_lifecycle
             .begin_open(self.native_lifecycle_authority());
     }
 
     pub(super) fn native_lifecycle_world_ready(&mut self) {
+        self.refresh_creative_catalog();
         if let Some(context) = self.native_lifecycle.world_open_ready() {
             self.native_server_started(context.authority == Authority::DedicatedServer);
         }

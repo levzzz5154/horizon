@@ -315,6 +315,9 @@ pub fn host_area(_attribute: TokenStream, input: TokenStream) -> TokenStream {
                 && !attr.path().is_ident("raw_text")
                 && !attr.path().is_ident("default_on_unavailable")
         });
+        if method.default.is_some() {
+            continue;
+        }
         let operation = method.sig.ident.to_string();
         let label = format!("{union}::{operation}");
         method.default = Some(if default_on_unavailable {

@@ -590,8 +590,25 @@ pub struct Block {
 #[serde(deny_unknown_fields)]
 struct CreativeTabFile {
     title: String,
-    icon: String,
+    icon: CreativeTabIconFile,
     items: Vec<String>,
+    before: Option<String>,
+    after: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum CreativeTabIconFile {
+    Item(String),
+    Stack(CreativeTabIconStack),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreativeTabIconStack {
+    id: String,
+    #[serde(default)]
+    components: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize, PartialEq, horizon_mod_api_macros::Wire)]
@@ -720,7 +737,63 @@ pub struct CreativeTab {
     pub id: String,
     pub title: String,
     pub icon: String,
+    /// The icon stack's components compound, absent for an item-id-only icon.
+    pub icon_components: Option<horizon_core::nbt::Tag>,
     pub items: Vec<String>,
+    /// An optional custom tab this one precedes.
+    pub before: Option<String>,
+    /// An optional custom tab this one follows.
+    pub after: Option<String>,
+}
+
+/// Orders custom tabs by their declared constraints. Unavailable anchors in
+/// other packages add no edges. Prefer the original order whenever multiple
+/// tabs are ready to be placed; tab IDs and vanilla positions never change.
+pub fn sort_creative_tabs(tabs: &mut [&CreativeTab]) -> Result<(), String> {
+    if !tabs.iter().any(|t| t.before.is_some() || t.after.is_some()) {
+        return Ok(());
+    }
+    let indices: BTreeMap<_, _> = tabs
+        .iter()
+        .enumerate()
+        .map(|(i, tab)| (tab.id.as_str(), i))
+        .collect();
+    let mut successors = vec![Vec::new(); tabs.len()];
+    let mut incoming = vec![0; tabs.len()];
+    let mut edge = |before: usize, after: usize| {
+        successors[before].push(after);
+        incoming[after] += 1;
+    };
+    for (i, tab) in tabs.iter().enumerate() {
+        if let Some(&j) = tab.before.as_deref().and_then(|id| indices.get(id)) {
+            edge(i, j);
+        }
+        if let Some(&j) = tab.after.as_deref().and_then(|id| indices.get(id)) {
+            edge(j, i);
+        }
+    }
+    let mut ready: BTreeSet<_> = (0..tabs.len()).filter(|&i| incoming[i] == 0).collect();
+    let mut ordered = Vec::with_capacity(tabs.len());
+    while let Some(i) = ready.pop_first() {
+        ordered.push(tabs[i]);
+        for &j in &successors[i] {
+            incoming[j] -= 1;
+            if incoming[j] == 0 {
+                ready.insert(j);
+            }
+        }
+    }
+    if ordered.len() != tabs.len() {
+        let blocked = tabs
+            .iter()
+            .zip(incoming)
+            .filter_map(|(tab, n)| (n > 0).then_some(tab.id.as_str()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!("creative tab ordering cycle blocks: {blocked}"));
+    }
+    tabs.copy_from_slice(&ordered);
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
@@ -1414,21 +1487,88 @@ impl Content {
         for (tab, name) in tabs {
             let file: CreativeTabFile =
                 serde_json::from_slice(&reader.read(&name)?).map_err(|e| format!("{name}: {e}"))?;
+            if !namespaced_id(&tab) {
+                return Err(format!(
+                    "{name}: expected a valid creative tab id (namespace:path)"
+                ));
+            }
             let id_like = |s: &str| {
                 s.split_once(':')
                     .is_some_and(|(n, p)| !n.is_empty() && !p.is_empty())
             };
-            if !id_like(&file.icon) || !file.items.iter().all(|i| id_like(i)) {
-                return Err(format!(
-                    "{name}: icon and items are item ids (namespace:path)"
-                ));
+            let (icon, icon_components) = match file.icon {
+                CreativeTabIconFile::Item(id) if id_like(&id) => (id, None),
+                CreativeTabIconFile::Item(_) => {
+                    return Err(format!(
+                        "{name}: icon and items are item ids (namespace:path)"
+                    ));
+                }
+                CreativeTabIconFile::Stack(stack) => {
+                    if !namespaced_id(&stack.id) {
+                        return Err(format!(
+                            "{name}: icon.id must be a valid item id (namespace:path)"
+                        ));
+                    }
+                    check_components(&stack.components, &[])
+                        .map_err(|e| format!("{name}: icon: {e}"))?;
+                    let components = if stack.components.is_empty() {
+                        None
+                    } else {
+                        let fields = stack
+                            .components
+                            .iter()
+                            .map(|(key, value)| (key.as_str(), value));
+                        let map = horizon_core::json_nbt::json_fields_to_compound(fields, 1)
+                            .map_err(|e| format!("{name}: icon.components: {e}"))?;
+                        Some(horizon_core::nbt::Tag::Compound(map))
+                    };
+                    (stack.id, components)
+                }
+            };
+            if !file.items.iter().all(|i| id_like(i)) {
+                return Err(format!("{name}: items are item ids (namespace:path)"));
+            }
+            for (field, anchor) in [("before", &file.before), ("after", &file.after)] {
+                if let Some(anchor) = anchor
+                    && (!namespaced_id(anchor) || anchor.starts_with("minecraft:"))
+                {
+                    return Err(format!(
+                        "{name}: {field} must name a custom tab (namespace:path)"
+                    ));
+                }
             }
             self.creative_tabs.push(CreativeTab {
                 id: tab,
                 title: file.title,
-                icon: file.icon,
+                icon,
+                icon_components,
                 items: file.items,
+                before: file.before,
+                after: file.after,
             });
+        }
+        if self
+            .creative_tabs
+            .iter()
+            .any(|t| t.before.is_some() || t.after.is_some())
+        {
+            let mut tabs: Vec<_> = self.creative_tabs.iter().collect();
+            let ids: BTreeSet<_> = tabs.iter().map(|t| t.id.as_str()).collect();
+            for tab in &tabs {
+                for (field, anchor) in [("before", &tab.before), ("after", &tab.after)] {
+                    if let Some(anchor) = anchor
+                        && let Some((namespace, _)) = anchor.split_once(':')
+                        && manifest.owned_namespaces().any(|owned| owned == namespace)
+                        && !ids.contains(anchor.as_str())
+                    {
+                        return Err(format!(
+                            "{}: {field} names undeclared creative tab {anchor:?}",
+                            tab.id
+                        ));
+                    }
+                }
+            }
+            sort_creative_tabs(&mut tabs)?;
         }
         let mut fluid_names = BTreeSet::new();
         let mut block_ids: BTreeSet<String> = self.blocks.iter().map(|b| b.id.clone()).collect();
@@ -3416,7 +3556,6 @@ capabilities = ["registries"]
         assert_eq!(content.blocks.len(), 2);
     }
 
-    /// A creative tab: a title, an icon and its items, all item ids.
     #[test]
     fn world_fluid_generated_names_cannot_collide() {
         let files: &[(&str, &[u8])] = &[
@@ -3576,11 +3715,77 @@ capabilities = ["registries"]
                 id: "ruby:gems".into(),
                 title: "Ruby Gems".into(),
                 icon: "ruby:ruby".into(),
+                icon_components: None,
                 items: vec!["ruby:ruby".into(), "minecraft:diamond".into()],
+                before: None,
+                after: None,
             }]
         );
         let e = tab(r#"{"title": "Gems", "icon": "ruby", "items": []}"#).unwrap_err();
         assert!(e.contains("item ids"), "{e}");
+    }
+
+    #[test]
+    fn creative_tab_icon_stacks_and_ordering_use_namespaced_keys() {
+        let tab = |fields: &str| {
+            let json = format!(r#"{{"title":"Gems","items":[],{fields}}}"#);
+            hmod(
+                "tab-icon",
+                MANIFEST_TEXT,
+                &[("data/ruby/horizon/creative_tab/gems.json", json.as_bytes())],
+            )
+        };
+        let content = tab(
+            r#""icon":{"id":"ruby:ruby","components":{"minecraft:custom_name":{"text":"Gems"}}},"before":"other:first","after":"other:last""#,
+        )
+        .unwrap();
+        let tab_info = &content.creative_tabs[0];
+        assert_eq!(tab_info.icon, "ruby:ruby");
+        assert_eq!(
+            tab_info
+                .icon_components
+                .as_ref()
+                .and_then(|components| components.get("minecraft:custom_name")),
+            Some(&horizon_core::nbt::Tag::Compound(BTreeMap::from([(
+                "text".into(),
+                horizon_core::nbt::Tag::String("Gems".into()),
+            )])))
+        );
+        assert_eq!(tab_info.before.as_deref(), Some("other:first"));
+        assert_eq!(tab_info.after.as_deref(), Some("other:last"));
+
+        for (fields, error) in [
+            (r#""icon":{"id":"not namespaced"}"#, "icon.id"),
+            (
+                r#""icon":{"id":"ruby:ruby","components":{"custom_name":"Gems"}}"#,
+                "component \"custom_name\"",
+            ),
+            (r#""icon":"ruby:ruby","before":"Bad:tab""#, "before"),
+            (r#""icon":"ruby:ruby","after":"minecraft:search""#, "after"),
+            (r#""icon":"ruby:ruby","after":"ruby:missing""#, "undeclared"),
+        ] {
+            assert!(tab(fields).unwrap_err().contains(error), "{fields}");
+        }
+    }
+
+    #[test]
+    fn creative_tab_ordering_rejects_a_cycle_within_a_package() {
+        let files: &[(&str, &[u8])] = &[
+            (
+                "data/ruby/horizon/creative_tab/a.json",
+                br#"{"title":"A","icon":"ruby:ruby","items":[],"before":"ruby:b"}"#,
+            ),
+            (
+                "data/ruby/horizon/creative_tab/b.json",
+                br#"{"title":"B","icon":"ruby:ruby","items":[],"before":"ruby:a"}"#,
+            ),
+        ];
+        let error = hmod("tab-cycle", MANIFEST_TEXT, files).unwrap_err();
+        assert!(error.contains("ordering cycle"), "{error}");
+        assert!(
+            error.contains("ruby:a") && error.contains("ruby:b"),
+            "{error}"
+        );
     }
 
     /// An archive entry is checked under the name every reader sees: one with `\`, a leading

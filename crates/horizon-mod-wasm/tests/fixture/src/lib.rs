@@ -12,6 +12,38 @@ pub struct Mod;
 
 #[mod_api::horizon_mod]
 impl Hooks for Mod {
+    fn edit_creative_mode_tab_contents(
+        &self,
+        host: &dyn mod_api::Host,
+        event: &mut mod_api::EditCreativeModeTabContentsEvent<'_>,
+    ) {
+        creative_catalog::edit(host, event);
+    }
+
+    fn build_creative_mode_tab_contents(
+        &self,
+        host: &mut dyn mod_api::ClientHost,
+        event: &mut mod_api::BuildCreativeModeTabContentsEvent<'_>,
+    ) {
+        creative_catalog::legacy(host, event);
+    }
+
+    fn client_tick_pre(
+        &self,
+        host: &mut dyn mod_api::ClientHost,
+        _: &mut mod_api::ClientTickPreEvent,
+    ) {
+        creative_catalog::client_tick(host);
+    }
+
+    fn broadcast_message(
+        &self,
+        host: &dyn mod_api::Host,
+        event: &mut mod_api::BroadcastMessageEvent<'_>,
+    ) -> mod_api::Flow {
+        creative_catalog::acknowledge(host, event)
+    }
+
     fn entity_interact(
         &self,
         host: mod_api::HostSide<'_>,
@@ -258,6 +290,7 @@ impl Hooks for Mod {
     ) {
         runtime_environment::started(host);
         capability_registration::started(host);
+        creative_catalog::server_started(host);
         if host.is_loaded("datapack_fixture") {
             datapack::read(host);
         }

@@ -355,6 +355,7 @@ horizon-client game::core_tests::wind_charge_burst_tests::a_nether_charge_bursts
 horizon-client game::core_tests::wind_charge_burst_tests::a_wind_charge_kill_of_a_mob_deals_the_wind_charge_damage_type lib daily resources
 horizon-client game::creaking::nested_spawn_tests::lifted_heart_callback_keeps_nested_spawns_until_the_next_pass lib daily resources
 horizon-client game::create_fluid_source_tests::a_mod_keeps_one_source_from_counting lib daily resources
+horizon-client game::creative_catalog_tests::native_creative_catalog_game_dispatch lib daily resources
 horizon-client game::creator_mod_id_tests::a_part_names_the_mod_that_made_the_stack lib daily resources
 horizon-client game::creatures::armor_destroy_tests::a_break_effect_follows_only_an_applied_break lib daily resources
 horizon-client game::creatures::armor_destroy_tests::an_enderman_does_not_take_a_changed_block lib daily resources

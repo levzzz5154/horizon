@@ -23,6 +23,7 @@ use horizon_core::{
 use horizon_mod_package::content::{
     Block, BlockEntityType, BlockShapes, Content, CreativeTab, EntityType, FluidLook, MenuType,
     MobEffect, Rarity, StateProperty, StateValues, VanillaBlockShapes, VanillaShape,
+    sort_creative_tabs,
 };
 use horizon_mod_package::manifest::{
     JarInputsError, JarRef, collect_jar_requirements, missing_jars,
@@ -1008,7 +1009,7 @@ struct Plan<'a> {
     defaults: BTreeMap<String, u32>,
     /// The gameplay rows' sound objects, by block, for `sounds` overrides.
     sounds: BTreeMap<String, J>,
-    /// The mods' creative tabs, in mod order.
+    /// The mods' creative tabs, in display order.
     tabs: Vec<&'a CreativeTab>,
     /// The mods' English names of their items and blocks (`item.<ns>.<path>`,
     /// `block.<ns>.<path>`), for the search tab.
@@ -1732,10 +1733,10 @@ impl<'a> Plan<'a> {
         // Block items and standalone items share the same registry. Sort
         // them together by mod ID and entry name before assigning IDs.
         items.sort_by(|a, b| a.rename.to.cmp(&b.rename.to));
-        let mut tabs = Vec::new();
+        let mut tabs: Vec<_> = mods.iter().flat_map(|m| &m.content.creative_tabs).collect();
+        sort_creative_tabs(&mut tabs)?;
         let mut lang = BTreeMap::new();
         for m in &sorted {
-            tabs.extend(m.content.creative_tabs.iter());
             for ns in &m.content.namespaces {
                 let Ok(bytes) = m.content.file(&format!("assets/{ns}/lang/en_us.json")) else {
                     continue;
@@ -2416,7 +2417,17 @@ impl<'a> Plan<'a> {
             row.set("column", J::Num((slot % 5).into()));
             row.set("page", J::Num((1 + i / 10).into()));
             row.set("title", J::Str(tab.title.clone()));
-            row.set("icon", stack(&tab.icon));
+            let icon = tab.icon_components.as_ref().map_or_else(
+                || stack(&tab.icon),
+                |components| {
+                    J::Str(format!(
+                        "{{count:1,id:\"{}\",components:{}}}",
+                        tab.icon,
+                        horizon_world::snbt_text::to_snbt(components)
+                    ))
+                },
+            );
+            row.set("icon", icon);
             row.set("visible", J::Bool(true));
             let items = tab
                 .items

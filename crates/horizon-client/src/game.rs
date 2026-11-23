@@ -1638,6 +1638,7 @@ struct Game<'a> {
     /// The `[[native.loop]]` slots' state, per published loop (`published_loops.rs`).
     loop_states: published_loops::LoopStates,
     creative_screen: Creative,
+    creative_features: Arc<[String]>,
     /// `CreativeModeInventoryScreen.ignoreTextInput`: the chat key opened the
     /// search tab, so the letter it carries is not typed into the box.
     creative_ignore_text: bool,
@@ -10621,13 +10622,14 @@ impl<'a> Game<'a> {
             horizon_client::save::LevelShape::OVERWORLD,
         ));
         let prepared = prepared.map(Ok).unwrap_or_else(|| {
-            GameCpuResources::load(
+            GameCpuResources::load_for_side(
                 &horizon_assets::resource_source::ResourceRoot::new(
                     root.clone(),
                     packs::cache_dir(),
                     pack.source.clone(),
                 ),
                 None,
+                options.execution_role.is_logical_server(),
             )
         })?;
         let world = Game::world_for_mods(res.facts().air, 0);
@@ -11069,6 +11071,7 @@ impl<'a> Game<'a> {
             trial_spawner_tick_positions: Vec::new(),
             loop_states: Default::default(),
             creative_screen: prepared.creative_screen,
+            creative_features: Arc::default(),
             creative_ignore_text: false,
             control: None,
             agent_control_on: false,

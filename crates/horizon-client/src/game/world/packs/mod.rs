@@ -1,10 +1,11 @@
 //! Resource pack selection bound to the game: the pack screen lists, and a
 //! full resource reload after a change, while playing.
 use super::{
-    Game, PackResources, Resources, UiResources, build_renderer, prepare_renderer_textures,
+    Game, PackResources, Resources, Screen, UiResources, build_renderer, prepare_renderer_textures,
 };
 use horizon_client::{
     assets::Assets,
+    creative::Creative,
     datapack::DataPack,
     gfx::PreparedTextures,
     hud::HudAtlas,
@@ -470,6 +471,7 @@ impl Game<'_> {
         let StagedPack {
             root,
             client_applies,
+            creative,
             gui,
             pack,
             textures,
@@ -483,9 +485,6 @@ impl Game<'_> {
             language,
         } = staged;
         let loop_context = self.prepare_loop_context(&root)?;
-        // Refresh modifiers from the newly staged packs, including removals.
-        let tab_modifiers = horizon_client::polytone_creative_tabs::TabModifier::read_all(&root);
-        self.creative_screen.set_pack_modifiers(tab_modifiers);
         let standalone_geometry =
             super::native_block_entity_draw::StandaloneGeometry::new(&pack, &gui);
         // Keep the working GPU resources, and hand its window surface over.
@@ -657,10 +656,16 @@ impl Game<'_> {
             &mut self.native_shaders.picked,
         ));
         self.ui.chat.rescale(&self.gui.atlas);
-        // The screen survives reload, but names and mod-collected contents may change.
-        self.creative_screen.invalidate_build();
+        // Publish the catalog only after the rest of the new resources won the swap.
+        self.creative_screen
+            .replace_catalog(creative, &self.pack.names);
         super::client_reload::apply_client_reload(&self.mod_phase, client_applies);
         self.install_loop_context(loop_context);
+        if self.screen == Screen::Creative {
+            self.refresh_creative_tabs();
+        } else {
+            self.refresh_creative_catalog();
+        }
         self.resolve_entity_renderers();
         super::native_special_renderers::reload();
         self.texture_atlases_stitched();
@@ -762,10 +767,14 @@ pub(super) fn stage_pack(
     let waypoint_styles = horizon_client::locator_bar::WaypointStyles::load(&source);
     let armor_stand_assets = super::armor_stands::ArmorStandAssets::load(&source, None);
     let frame_models = super::frames::bake_frames(&source);
+    let mut creative = Creative::load(&root)?;
+    creative
+        .set_pack_modifiers(horizon_client::polytone_creative_tabs::TabModifier::read_all(&root));
     progress.set(3);
     Ok(StagedPack {
         root,
         client_applies,
+        creative,
         gui,
         pack,
         textures,
@@ -790,6 +799,7 @@ pub(super) struct StagedPack {
     /// The mod reload listeners' prepared applies, run when the rest of the
     /// staged pack is published.
     pub client_applies: Vec<super::client_reload::PreparedClientReload>,
+    pub creative: Creative,
     pub gui: UiResources,
     pub pack: PackResources,
     pub textures: PreparedTextures,

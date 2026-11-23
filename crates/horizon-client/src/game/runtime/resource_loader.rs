@@ -65,6 +65,14 @@ impl GameCpuResources {
         resources: &horizon_assets::resource_source::ResourceRoot,
         document: Option<&horizon_client::mobs::EntityModelDocument>,
     ) -> Result<Self> {
+        Self::load_for_side(resources, document, false)
+    }
+
+    pub(super) fn load_for_side(
+        resources: &horizon_assets::resource_source::ResourceRoot,
+        document: Option<&horizon_client::mobs::EntityModelDocument>,
+        server: bool,
+    ) -> Result<Self> {
         let root = resources.prepared();
         let owned_document;
         let document = match document {
@@ -106,10 +114,19 @@ impl GameCpuResources {
                 minecarts::CartModels::load(document)
             });
             let creative_screen = named_scope(scope, "game_cpu.creative", move || {
-                let mut creative = Creative::load(root).map_err(|error| error.to_string())?;
-                let tab_modifiers =
-                    horizon_client::polytone_creative_tabs::TabModifier::read_all(root);
-                creative.set_pack_modifiers(tab_modifiers);
+                let mut creative = match Creative::load(root) {
+                    Ok(creative) => creative,
+                    Err(error) if server => {
+                        log::warn!("Horizon: creative catalog unavailable: {error}");
+                        Creative::unavailable()
+                    }
+                    Err(error) => return Err(error.to_string()),
+                };
+                if !server {
+                    let modifiers =
+                        horizon_client::polytone_creative_tabs::TabModifier::read_all(root);
+                    creative.set_pack_modifiers(modifiers);
+                }
                 Ok::<_, String>(creative)
             });
             (

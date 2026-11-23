@@ -308,13 +308,14 @@ pub(super) fn start_game<'a>(
     // here, from the same entity-model document the rest worker read.
     let prepared = match prepared {
         Some(prepared) => Some(prepared),
-        None => Some(GameCpuResources::load(
+        None => Some(GameCpuResources::load_for_side(
             &horizon_assets::resource_source::ResourceRoot::new(
                 options.resources.clone(),
                 packs::cache_dir(),
                 pack.source.clone(),
             ),
             entity_models.as_deref(),
+            options.execution_role.is_logical_server(),
         )?),
     };
     let mut game = Game::new(res, pack, gui, options, settings, audio, prepared)?;
@@ -410,6 +411,7 @@ pub(super) fn start_game<'a>(
     game.publish_initial_client_models()?;
     // Finish Setup -> Config -> World before any screen, connection, input or tick hooks.
     game.native_configs_client_start();
+    game.refresh_creative_catalog();
     // After the World phase: the Host bridge refuses add_particle during Setup, as for a mod.
     if let Some(directory) = std::env::var_os("HORIZON_NATIVE_CLIENT_PARTICLES_FIXTURE") {
         game.run_native_client_particles_fixture(std::path::Path::new(&directory))?;

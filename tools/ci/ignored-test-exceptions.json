@@ -50,6 +50,14 @@
   {
     "package": "horizon-client",
     "target": "lib",
+    "test": "game::creative_catalog_tests::compiled_wasm_creative_catalog_game_dispatch",
+    "path": "crates/horizon-client/src/game/modding/creative_catalog_tests.rs",
+    "reason": "requires prepared resources and compiled HORIZON_WASM_FIXTURE/HORIZON_WASM_STD",
+    "rationale": "The wasm-fixture runner requires separately supplied HORIZON_WASM_FIXTURE and HORIZON_WASM_STD from this tree. The native case uses only prepared resources and runs in the daily shard."
+  },
+  {
+    "package": "horizon-client",
+    "target": "lib",
     "test": "game::creatures::mob_islands::tests::a_fast_mob_joins_only_the_herds_its_bound_reaches",
     "path": "crates/horizon-client/src/game/creatures/mob_islands.rs",
     "reason": "needs the upstream-parallel-mobs feature and prepared resources",

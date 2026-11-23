@@ -13,6 +13,7 @@ use super::{
 };
 use horizon_client::{
     command::{Arg, Context},
+    creative::Creative,
     datapack::{self, DataPack, DataStore, Function},
     save,
     scoreboard::bracketed,
@@ -318,6 +319,14 @@ impl Game<'_> {
             None
         };
         if let Some(root) = next_root {
+            if self.is_logical_server() {
+                let catalog = Creative::load(&resources).unwrap_or_else(|error| {
+                    log::warn!("Horizon: creative catalog unavailable: {error}");
+                    Creative::unavailable()
+                });
+                self.creative_screen
+                    .replace_catalog(catalog, &self.pack.names);
+            }
             self.options.resources = root.prepared().to_owned();
             self.pack.data_source = root.data().clone();
             self.pack.data_changes = root.data_changes().clone();
@@ -340,6 +349,10 @@ impl Game<'_> {
         self.fns.load_pending = true;
         if let Some(world) = world {
             self.install_world_tables(world);
+            if self.is_logical_server() {
+                self.creative_screen.invalidate_catalog();
+                self.refresh_creative_catalog();
+            }
         }
         self.build_native_commands(enabled_features);
         self.apply_server_reload(prepared, &stack);

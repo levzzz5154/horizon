@@ -1,0 +1,3 @@
+ids = ["hook:edit_creative_mode_tab_contents", "method:prelude::ItemsHost::creative_tabs", "method:prelude::ItemsHost::built_creative_tabs", "method:prelude::ItemsClientHost::creative_search_items", "type:CreativeModeTabs", "type:CreativeModeTabInfo", "type:CreativeTabEdit", "type:CreativeTabReadError"]
+why = "Exposes the active creative catalog on both logical sides and adds ordered, component-aware edits to native and Wasm hooks, without changing the client-only append hook."
+migrate = "Additive. Keep existing append listeners or opt into edit_creative_mode_tab_contents for before/after insertion, removal, and special tabs."
