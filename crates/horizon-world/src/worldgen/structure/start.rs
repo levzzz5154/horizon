@@ -31,6 +31,7 @@ use {
             lay_out_children, place_start,
         },
         legacy::{LegacyPiece, PieceContext},
+        mod_candidates::{Candidate, LevelSelectors, StructureCell},
         mod_types::{ModStructureType, ModStructureTypes},
     },
     horizon_core::bounding_box::BoundingBox,
@@ -354,6 +355,7 @@ pub struct StructureRegistry {
     /// with no noise spawn target) is chunk 0 0, until the generator gives
     /// its structure state the origin it has.
     origin: ChunkPos,
+    candidate_selectors: Option<Box<LevelSelectors>>,
 }
 impl StructureRegistry {
     pub fn new(
@@ -571,7 +573,16 @@ impl StructureRegistry {
             sets: out,
             pools: Pools::new(pools),
             origin: ChunkPos::new(0, 0),
+            candidate_selectors: None,
         })
+    }
+    pub(in crate::worldgen) fn bind_candidate_selectors(
+        &mut self,
+        level: &str,
+        generator: &Value,
+    ) -> Result<(), DecodeError> {
+        self.candidate_selectors = LevelSelectors::bind(level, generator, &self.sets)?;
+        Ok(())
     }
     /// `ChunkGenerator.getOrigin`: the dimension origin chunk.
     pub fn dimension_origin(&self) -> ChunkPos {
@@ -632,10 +643,15 @@ impl StructureRegistry {
             _ => &NONE,
         }
     }
-    /// RandomSpreadStructurePlacement.getPotentialStructureChunk et al.
-    /// RandomSpreadStructurePlacement.getPotentialStructureChunk for the
-    /// sector holding chunk (`x`, `z`); `None` for other placements.
-    pub fn potential_chunk(set: &StructureSet, seed: i64, x: i32, z: i32) -> Option<ChunkPos> {
+    /// `RandomSpreadStructurePlacement.getPotentialStructureChunk`: the candidate for the
+    /// cell containing (`x`, `z`), before any frequency, exclusion or other start checks.
+    pub fn potential_chunk(
+        &self,
+        set: &StructureSet,
+        seed: i64,
+        x: i32,
+        z: i32,
+    ) -> Option<ChunkPos> {
         let Placement::RandomSpread {
             spacing,
             separation,
@@ -645,9 +661,35 @@ impl StructureRegistry {
             return None;
         };
         let (gx, gz) = (x.div_euclid(spacing), z.div_euclid(spacing));
+        let limit = spacing - separation;
+        if let Some(level) = &self.candidate_selectors
+            && let Some(select) = level.sets.get(&set.name)
+        {
+            match select(&StructureCell {
+                level: &level.level,
+                generator: &level.generator,
+                structure_set: &set.name,
+                seed,
+                cell: [gx, gz],
+                spacing,
+                separation,
+                triangular,
+                salt: set.salt,
+            }) {
+                Candidate::Chunk(chunk)
+                    if chunk.x.div_euclid(spacing) == gx
+                        && chunk.z.div_euclid(spacing) == gz
+                        && chunk.x.rem_euclid(spacing) < limit
+                        && chunk.z.rem_euclid(spacing) < limit =>
+                {
+                    return Some(chunk);
+                }
+                Candidate::Skip => return None,
+                Candidate::Vanilla | Candidate::Chunk(_) => {}
+            }
+        }
         let mut random = WorldgenRandom::new(LegacyRandom::new(0));
         random.set_large_feature_with_salt(seed, gx, gz, set.salt);
-        let limit = spacing - separation;
         let spread = |r: &mut WorldgenRandom<LegacyRandom>| {
             if triangular {
                 (r.next_int_bound(limit).unwrap_or(0) + r.next_int_bound(limit).unwrap_or(0)) / 2
@@ -657,7 +699,10 @@ impl StructureRegistry {
         };
         let sx = spread(&mut random);
         let sz = spread(&mut random);
-        Some(ChunkPos::new(gx * spacing + sx, gz * spacing + sz))
+        Some(ChunkPos::new(
+            gx.wrapping_mul(spacing).wrapping_add(sx),
+            gz.wrapping_mul(spacing).wrapping_add(sz),
+        ))
     }
     pub fn is_structure_chunk(
         &self,
@@ -688,36 +733,29 @@ impl StructureRegistry {
         }
         let placed = match set.placement {
             Placement::DimensionOrigin => unreachable!("handled above"),
-            Placement::RandomSpread {
-                spacing,
-                separation,
-                triangular,
-            } => {
-                let (gx, gz) = (x.div_euclid(spacing), z.div_euclid(spacing));
-                let mut random = WorldgenRandom::new(LegacyRandom::new(0));
-                random.set_large_feature_with_salt(seed, gx, gz, set.salt);
-                let limit = spacing - separation;
-                let spread = |r: &mut WorldgenRandom<LegacyRandom>| {
-                    if triangular {
-                        (r.next_int_bound(limit).unwrap_or(0)
-                            + r.next_int_bound(limit).unwrap_or(0))
-                            / 2
-                    } else {
-                        r.next_int_bound(limit).unwrap_or(0)
-                    }
-                };
-                let sx = spread(&mut random);
-                let sz = spread(&mut random);
-                gx * spacing + sx == x && gz * spacing + sz == z
+            // `RandomSpreadStructurePlacement.isPlacementChunk` uses the
+            // same cell candidate as locate, including for recursive exclusions.
+            Placement::RandomSpread { .. } => {
+                self.potential_chunk(set, seed, x, z) == Some(ChunkPos::new(x, z))
             }
             Placement::ConcentricRings { .. } => rings
                 .get(&set.name)
                 .is_some_and(|r| r.contains(&ChunkPos::new(x, z))),
             Placement::Unsupported => false,
         };
-        if !placed {
-            return false;
-        }
+        placed && self.candidate_allows_start(set, seed, x, z, rings, zones)
+    }
+    /// The checks after a candidate is known. Locate has already resolved the cell
+    /// and need not resolve it a second time just to test these restrictions.
+    pub(in crate::worldgen) fn candidate_allows_start(
+        &self,
+        set: &StructureSet,
+        seed: i64,
+        x: i32,
+        z: i32,
+        rings: &Rings,
+        zones: bool,
+    ) -> bool {
         if set.rings.as_ref().is_some_and(|r| !r.allows(x, z)) {
             return false;
         }
@@ -1946,6 +1984,34 @@ mod tests {
         assert!(try_registry(set(json!(-0.25))).is_err());
         assert!(try_registry(set(json!(1.0))).is_ok());
         assert!(try_registry(set(json!(0.0))).is_ok());
+    }
+
+    #[test]
+    fn selecting_a_candidate_does_not_bypass_frequency_or_distance() {
+        let chosen = ChunkPos::new(1, 2);
+        for limits in [
+            json!({"frequency": 0.0}),
+            json!({"horizon:min_distance_from_world_origin": 80}),
+        ] {
+            let mut placement =
+                json!({"type": "minecraft:random_spread", "spacing": 12, "separation": 2});
+            placement
+                .as_object_mut()
+                .unwrap()
+                .extend(limits.as_object().unwrap().clone());
+            let mut registry = try_registry(placement).unwrap();
+            registry.candidate_selectors = Some(Box::new(LevelSelectors {
+                level: "t:level".into(),
+                generator: "minecraft:noise".into(),
+                sets: BTreeMap::from([(
+                    "t:set".into(),
+                    Arc::new(move |_: &StructureCell<'_>| Candidate::Chunk(chosen)) as _,
+                )]),
+            }));
+            let set = &registry.sets[0];
+            assert_eq!(registry.potential_chunk(set, 42, 0, 0), Some(chosen));
+            assert!(!registry.is_structure_chunk(set, 42, chosen.x, chosen.z, &Rings::new()));
+        }
     }
 
     #[test]

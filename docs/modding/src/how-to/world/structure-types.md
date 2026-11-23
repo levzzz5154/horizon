@@ -100,3 +100,46 @@ metadata snapshot that worker contexts borrow.
 Mod pieces participate in start caching, cross-chunk placement, terrain blending through the
 beardifier, and `/locate structure`. A data pack structure whose `"type"` has no registered
 implementation places nothing.
+
+## Picking a random-spread candidate
+
+Use a `StructureCandidateSelector` when you want to move or omit a placement candidate,
+without defining a new structure type. Register it once at startup with
+`r.register_structure_candidate_selector("painted", PaintedSelector)`. Registration is native-only,
+and does not affect any level until its generator names the selector. A data pack's level stem
+opts in by mapping each **structure set** id to a selector id in its `generator`:
+
+```json
+{
+  "type": "minecraft:overworld",
+  "generator": {
+    "type": "minecraft:noise",
+    "settings": "minecraft:overworld",
+    "biome_source": {"type": "minecraft:fixed", "biome": "minecraft:plains"},
+    "horizon:structure_candidates": {"minecraft:villages": "mymod:painted"}
+  }
+}
+```
+
+The same field works with a registered generator running the vanilla structure stage. A saved
+superflat overworld can set it on its generator too. Unlisted sets retain vanilla placement, as
+do levels that omit the field. Unknown ids and non-random-spread sets are configuration errors.
+
+Implement `candidate(&self, cell: &StructureCell<'_>) -> StructureCandidate`. The input includes
+the logical side (`Server`), level and generator ids, the resolved set id, world seed, signed
+`[cell_x, cell_z]` indices, spacing, separation, spread type and salt. Return:
+
+- `StructureCandidate::Vanilla` to keep the vanilla draw;
+- `StructureCandidate::Chunk(pos)` to try an **absolute chunk** instead. On each axis the offset
+  from `cell * spacing` must be in `0..spacing - separation`; positions in another cell or in
+  the separation margin fall back to the vanilla draw. Cell indices use floor division, not
+  truncation toward zero;
+- `StructureCandidate::Skip` to leave the cell empty, including for other sets' exclusion checks.
+
+A selected chunk still has to pass the existing frequency, distance, exclusion and biome rules,
+and the chosen structure still has to produce a valid start. Saved starts are not rewritten.
+The selector has no `Host`. Generation workers, locate, and exclusion checks may ask about a cell
+independently and concurrently. Return the same answer for the same inputs; use immutable map
+data rather than the current player, UI, or a mutable global registry.
+The binding is part of the level's generation snapshot. As with other generator settings,
+reopen the world to apply changes to its level stem; `/reload` does not rebuild open generators.

@@ -1105,7 +1105,7 @@ pub(super) fn make_streaming(
         .is_some_and(|s| s.features || s.lakes);
     // A generator that cannot be built (a layer block the registry lacks, a level shorter
     // than the noise) leaves the world on its flat ground, as it was before.
-    let flat_vanilla = flat_settings.and_then(|settings| {
+    let flat_vanilla = if let Some(settings) = flat_settings {
         let overrides = world_worldgen_overrides(
             world_root,
             &options.resources,
@@ -1124,12 +1124,17 @@ pub(super) fn make_streaming(
                 terrain.add_mod_signs(res.facts());
                 Some(Arc::new(terrain))
             }
+            Err(e) if automatic_structures && settings.structure_candidates.is_some() => {
+                return Err(e.into());
+            }
             Err(e) => {
                 log::warn!("Horizon: the superflat structures and features are unavailable: {e}");
                 None
             }
         }
-    });
+    } else {
+        None
+    };
     // The sea level the level's rules and the mods read is the one its generator builds with
     // (`ChunkGenerator.getSeaLevel`), so a pack's noise settings or a superflat world are seen:
     // the superflat generators' is -63 (`FlatLevelSource.getSeaLevel`).

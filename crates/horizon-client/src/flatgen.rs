@@ -248,6 +248,9 @@ impl FlatTerrain {
             layers,
             biome,
             structure_overrides,
+            structure_candidates: generator
+                .get(horizon_world::worldgen::structure::mod_candidates::FIELD)
+                .map(crate::scoreboard::tag_to_json),
             features: flag("features"),
             lakes: flag("lakes"),
         })

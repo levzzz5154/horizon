@@ -69,6 +69,7 @@ impl PartRegistrar {
             controllers,
             arm_poses,
             structure_types,
+            structure_candidates,
             dimensions,
             chunk_generators,
             biome_sources,

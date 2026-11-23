@@ -294,6 +294,7 @@ fn a_superflat_world_runs_its_structure_sets_on_flat_ground() {
         item_data: &item_data,
     };
     let flat = horizon_world::worldgen::generator::FlatSettings {
+        structure_candidates: None,
         layers: vec![
             ("minecraft:bedrock".into(), 1),
             ("minecraft:dirt".into(), 2),
@@ -373,6 +374,7 @@ fn a_decorated_superflat_world_without_structures_grows_its_features() {
     // chunk at 4, 4 once its 3×3 region is decorated.
     let above_ground = |features| {
         let flat = horizon_world::worldgen::generator::FlatSettings {
+            structure_candidates: None,
             layers: vec![
                 ("minecraft:bedrock".into(), 1),
                 ("minecraft:stone".into(), 59),
@@ -450,6 +452,7 @@ fn a_superflat_world_keeps_its_strongholds_on_every_seed_and_leaves_null_layers_
         item_data: &item_data,
     };
     let flat = horizon_world::worldgen::generator::FlatSettings {
+        structure_candidates: None,
         layers: vec![
             ("minecraft:bedrock".into(), 1),
             ("minecraft:dirt".into(), 2),
@@ -534,6 +537,7 @@ fn a_superflat_structure_override_naming_no_set_lets_every_set_generate() {
         item_data: &item_data,
     };
     let flat = horizon_world::worldgen::generator::FlatSettings {
+        structure_candidates: None,
         layers: vec![
             ("minecraft:bedrock".into(), 1),
             ("minecraft:dirt".into(), 2),

@@ -415,3 +415,41 @@ pub(in crate::game) fn installed_structure_types()
         })
         .collect()
 }
+
+/// Publish native selectors once. Only a level stem naming one binds it to a set.
+pub(in crate::game) fn install_candidate_selectors() {
+    use horizon_world::worldgen::structure::mod_candidates::{self, Candidate, StructureCell};
+    use mod_api::{StructureCandidate, StructureSpreadType};
+
+    let selectors = mod_api::__private::structure_candidate_declarations()
+        .into_iter()
+        .map(|(id, selector)| {
+            let callback = move |cell: &StructureCell<'_>| {
+                let request = mod_api::StructureCell::new(
+                    cell.level,
+                    cell.generator,
+                    cell.structure_set,
+                    cell.seed,
+                    cell.cell,
+                    cell.spacing,
+                    cell.separation,
+                    if cell.triangular {
+                        StructureSpreadType::Triangular
+                    } else {
+                        StructureSpreadType::Linear
+                    },
+                    cell.salt,
+                );
+                match selector.candidate(&request) {
+                    StructureCandidate::Chunk(chunk) => Candidate::Chunk(chunk),
+                    StructureCandidate::Skip => Candidate::Skip,
+                    _ => Candidate::Vanilla,
+                }
+            };
+            (id, Arc::new(callback) as _)
+        })
+        .collect();
+    if mod_candidates::install(selectors).is_err() {
+        log::warn!("Mod structure candidate selectors already installed; keeping the first table");
+    }
+}

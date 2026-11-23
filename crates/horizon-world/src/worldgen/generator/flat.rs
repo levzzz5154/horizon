@@ -1,6 +1,7 @@
 //! A superflat world (`FlatLevelSource`): its layers where the noise terrain would be, moved out
 //! of `generator.rs` unchanged.
 use super::*;
+use crate::worldgen::structure::mod_candidates;
 
 /// `FlatLevelGeneratorSettings.getLayers` as `FlatLevelSource` reads them: the states from the
 /// level's minimum Y up, with the layers `adjustGenerationSettings` replaced by `null`
@@ -21,6 +22,8 @@ pub struct FlatSettings {
     pub biome: String,
     /// `structure_overrides`: the structure sets that may generate (all of them when `None`).
     pub structure_overrides: Option<Vec<String>>,
+    /// Optional `horizon:structure_candidates` from the level stem's generator.
+    pub structure_candidates: Option<Value>,
     /// `features`: the biome's own placed features decorate the world.
     pub features: bool,
     /// `lakes`: the lava lakes (`createLakesList`) take the biome's lakes step.
@@ -55,12 +58,15 @@ impl OverworldGenerator {
         } else {
             "minecraft:plains"
         };
-        let generator = serde_json::json!({
-            "type": "minecraft:noise",
+        let mut generator = serde_json::json!({
+            "type": "minecraft:flat",
             "settings": "minecraft:overworld",
             "biome_source": { "type": "minecraft:fixed", "biome": biome },
             "structure_overrides": flat.structure_overrides,
         });
+        if let Some(selectors) = &flat.structure_candidates {
+            generator[mod_candidates::FIELD] = selectors.clone();
+        }
         let mut pipeline = Pipeline::new(
             data.clone(),
             seed,
@@ -70,7 +76,8 @@ impl OverworldGenerator {
             structures,
             Some((level_min_y, level_height)),
             None,
-        )?;
+        )?
+        .with_structure_candidates("minecraft:overworld", &generator)?;
         let mut states = Vec::new();
         let mut null = Vec::new();
         for (block, height) in &flat.layers {

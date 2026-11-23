@@ -80,6 +80,7 @@ fn flat_preset(resources: &Path, id: &str) -> Result<FlatSettings, Error> {
         _ => None,
     };
     Ok(FlatSettings {
+        structure_candidates: None,
         layers,
         biome: s["biome"].as_str().unwrap_or("minecraft:plains").to_owned(),
         structure_overrides,

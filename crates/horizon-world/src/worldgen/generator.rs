@@ -607,6 +607,16 @@ where
         }
         Ok(pipeline)
     }
+    fn with_structure_candidates(
+        mut self,
+        level: &str,
+        generator: &Value,
+    ) -> Result<Self, GeneratorError> {
+        if let Some(state) = &mut self.structures {
+            state.registry.bind_candidate_selectors(level, generator)?;
+        }
+        Ok(self)
+    }
     /// `NoiseBasedChunkGenerator.getOrigin`'s spawn column: the
     /// NoiseSpawnFinder position, or 0 0 when the noise settings have no
     /// spawn target (`ChunkGenerator.getOrigin`). Cached.
@@ -2816,13 +2826,14 @@ impl OverworldGenerator {
         if stem["generator"]["type"].as_str() != Some("minecraft:noise") {
             return Err(resource(format!("{dimension} is not a noise generator")));
         }
-        Self::from_stem(data, seed, &stem, with_structures, regions, None)
+        Self::from_stem(data, seed, dimension, &stem, with_structures, regions, None)
     }
     /// The pipeline of level `stem` over its noise settings, with a mod's `terrain` in place of
     /// the noise when it has one.
     fn from_stem(
         data: Arc<GeneratorData>,
         seed: i64,
+        dimension: &str,
         stem: &Value,
         with_structures: bool,
         regions: Option<Arc<RegionLayout>>,
@@ -2874,6 +2885,7 @@ impl OverworldGenerator {
                     level,
                     regions.as_deref(),
                 )?
+                .with_structure_candidates(dimension, generator)?
                 .with_mod_terrain(terrain)?,
             )
         } else {
@@ -2888,6 +2900,7 @@ impl OverworldGenerator {
                     level,
                     regions.as_deref(),
                 )?
+                .with_structure_candidates(dimension, generator)?
                 .with_mod_terrain(terrain)?,
             )
         };

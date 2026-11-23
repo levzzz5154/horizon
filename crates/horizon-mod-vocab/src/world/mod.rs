@@ -48,6 +48,7 @@ pub(crate) mod server_console;
 pub(crate) mod server_reload;
 pub mod snapshots;
 pub(crate) mod startup_progress;
+pub(crate) mod structure_candidate;
 pub(crate) mod structure_template;
 pub(crate) mod structure_type;
 // hidden: a module of game-side types; mods use their re-exports

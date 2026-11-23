@@ -12,8 +12,9 @@ use mod_api::__private::native::BuiltMod;
 use mod_api::Side;
 use mod_api::{
     BlockKey, ChunkAccess, ChunkGenerator, CommandArgumentValue, CommandSource, DimensionSettings,
-    Flow, Hooks, ModEntry, RegisterCommandsEvent, Registrar, RegistrationContext,
-    RunModCommandEvent, ServerHost, ServerTickEvent, ServerTickPhase, Text,
+    Flow, Hooks, LoopSide, ModEntry, RegisterCommandsEvent, Registrar, RegistrationContext,
+    RunModCommandEvent, ServerHost, ServerTickEvent, ServerTickPhase, StructureCandidate,
+    StructureCandidateSelector, StructureCell, StructureSpreadType, Text, VanillaStages,
 };
 use std::sync::Mutex;
 
@@ -28,6 +29,7 @@ const BUILT: &[BuiltMod] = &[BuiltMod {
 struct Slab {
     stone: BlockKey,
     gold: BlockKey,
+    structures: bool,
 }
 
 impl ChunkGenerator for Slab {
@@ -42,6 +44,39 @@ impl ChunkGenerator for Slab {
         }
         let marker = 1 + chunk.seed().rem_euclid(16) as i32;
         chunk.set_block([x, marker, z], gold);
+    }
+
+    fn vanilla_stages(&self) -> VanillaStages {
+        VanillaStages {
+            structures: self.structures,
+            ..Default::default()
+        }
+    }
+}
+
+struct PaintedCandidates;
+
+impl StructureCandidateSelector for PaintedCandidates {
+    fn candidate(&self, cell: &StructureCell<'_>) -> StructureCandidate {
+        use mod_api::ChunkPos;
+        if cell.side != LoopSide::Server
+            || cell.level != "test:painted"
+            || cell.generator != "dimprobe:painted"
+            || cell.structure_set != "test:primary_set"
+            || cell.seed != 42
+            || (cell.spacing, cell.separation, cell.spread, cell.salt)
+                != (12, 2, StructureSpreadType::Triangular, 103)
+        {
+            return StructureCandidate::Skip;
+        }
+        match cell.cell {
+            [0, 0] => StructureCandidate::Chunk(ChunkPos::new(1, 2)),
+            [1, 0] => StructureCandidate::Skip,
+            // One is outside the negative cell; the other is in the separation margin.
+            [-1, 0] => StructureCandidate::Chunk(ChunkPos::new(0, 6)),
+            [-2, 0] => StructureCandidate::Chunk(ChunkPos::new(-13, 4)),
+            _ => StructureCandidate::Vanilla,
+        }
     }
 }
 
@@ -61,7 +96,23 @@ impl Hooks for DimProbe {
     fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
         let stone = r.block_key("minecraft:stone");
         let gold = r.block_key("minecraft:gold_block");
-        r.register_chunk_generator("slab", Slab { stone, gold });
+        r.register_chunk_generator(
+            "slab",
+            Slab {
+                stone,
+                gold,
+                structures: false,
+            },
+        );
+        r.register_chunk_generator(
+            "painted",
+            Slab {
+                stone,
+                gold,
+                structures: true,
+            },
+        );
+        r.register_structure_candidate_selector("painted", PaintedCandidates);
         r.register_dimension(
             "pocket",
             DimensionSettings {

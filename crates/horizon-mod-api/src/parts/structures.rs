@@ -88,4 +88,33 @@ impl StructuresRegistrar for PartRegistrar {
         self.structure_types
             .push(StructureTypeInfo { id: id.into(), ty });
     }
+
+    fn add_structure_candidate_selector(
+        &mut self,
+        name: &str,
+        selector: Arc<dyn crate::StructureCandidateSelector>,
+    ) {
+        let id = match self.owned_declaration_id(name) {
+            Ok(id) => id,
+            Err(reason) => {
+                self.refused.push(reason);
+                return;
+            }
+        };
+        if self
+            .structure_candidates
+            .iter()
+            .any(|entry| *entry.id == *id)
+        {
+            self.refused.push(format!(
+                "{} registered structure candidate selector {id} twice",
+                self.mod_id
+            ));
+            return;
+        }
+        self.structure_candidates.push(StructureCandidateInfo {
+            id: id.into(),
+            selector,
+        });
+    }
 }

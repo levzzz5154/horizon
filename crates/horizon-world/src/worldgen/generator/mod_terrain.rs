@@ -182,7 +182,15 @@ impl OverworldGenerator {
             generator,
             stages,
         };
-        Self::from_stem(data, seed, stem, stages.structures, None, Some(terrain))
+        Self::from_stem(
+            data,
+            seed,
+            level,
+            stem,
+            stages.structures,
+            None,
+            Some(terrain),
+        )
     }
 }
 

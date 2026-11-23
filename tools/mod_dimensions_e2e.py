@@ -14,6 +14,8 @@ client of that server, so a block is read from both sides.
   level from inside a mod's command, then into a `register_chunk_generator` level from a server tick.
   Both save and come back.
 - replace: a data pack puts the mod's level on other terrain.
+- candidates: a native random-spread selector changes one level's generation and `/locate structure`;
+  skipped cells cannot exclude neighboring starts, and a level without opt-in stays vanilla.
 - dedicated: a headless client on a dedicated server is sent to a pack's level from the console, and to
   the level with no generator. Then that player's own level loses its generator: they join in the
   Overworld and the server stays up.
@@ -28,6 +30,7 @@ folders, a scratch game directory and no audio; only the logs in --out outlive t
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -38,6 +41,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import lab  # noqa: E402
+import world_compare  # noqa: E402
 from integration_env import run_game  # noqa: E402
 from test_dedicated_server_parity import Server  # noqa: E402
 
@@ -76,12 +80,15 @@ class Session:
         self.root = Path(tempfile.mkdtemp(prefix='mod-dims-'))
         self.game_dir = self.root / 'game'
         self.game_dir.mkdir()
+        runtime = self.root / 'runtime'
+        runtime.mkdir(mode=0o700)
         self.bins, self.out, self.name = bins, out, name
         self.binary = lab.binary(bins, 'horizon-client')
         self.socket = self.root / 'ctl.sock'
         self.env = lab.game_env({k: v for k, v in os.environ.items()
                                  if k not in ('HORIZON_HOME', 'HORIZON_LAUNCHER_HOME',
-                                              'XDG_DATA_HOME', 'XDG_CONFIG_HOME')})
+                                              'XDG_DATA_HOME', 'XDG_CONFIG_HOME')},
+                                XDG_RUNTIME_DIR=runtime, XDG_CACHE_HOME=self.root / 'cache')
         self.failures = []
 
     def run(self, *words, timeout=30):
@@ -306,6 +313,74 @@ def replace_scenario(s):
     block_on_both_sides(s, "the mod's dimension type", 8, -128, 8, STONE)
 
 
+def candidates_scenario(s):
+    primary, neighbor = 'test:primary', 'test:neighbor'
+    s.use_mod_game()
+    s.launch()
+    world = s.world()
+    s.quit()
+    generator = dict(NOISE, type='dimprobe:painted')
+    write_pack(world, 'candidates', {
+        'test/dimension/painted.json': {'type': 'minecraft:overworld', 'generator': {
+            **generator, 'horizon:structure_candidates': {'test:primary_set': 'dimprobe:painted'},
+        }},
+        'test/dimension/stock.json': {'type': 'minecraft:overworld', 'generator': generator},
+        **{f'test/worldgen/structure/{name}.json': {
+            'type': 'minecraft:swamp_hut', 'biomes': 'minecraft:plains',
+            'step': 'surface_structures', 'spawn_overrides': {},
+        } for name in ('primary', 'neighbor')},
+        'test/worldgen/structure_set/primary_set.json': {
+            'structures': [{'structure': primary, 'weight': 1}],
+            'placement': {'type': 'minecraft:random_spread', 'spacing': 12, 'separation': 2,
+                          'spread_type': 'triangular', 'salt': 103},
+        },
+        'test/worldgen/structure_set/neighbor_set.json': {
+            'structures': [{'structure': neighbor, 'weight': 1}],
+            'placement': {'type': 'minecraft:random_spread', 'spacing': 7, 'separation': 2,
+                          'salt': 4, 'exclusion_zone': {'other_set': 'test:primary_set', 'chunk_count': 5}},
+        },
+    })
+    s.launch()
+    # Pinned vanilla draws for seed 42: triangular at (3, 5), (16, 2), (-10, 6),
+    # and (-22, 4). The linear set draws (11, 1): outside the skipped cell, but
+    # within five chunks of its vanilla candidate.
+    selected, stock, skipped, near = (1, 2), (3, 5), (16, 2), (11, 1)
+    negative, margin = (-10, 6), (-22, 4)
+    rules = {
+        'painted': [(primary, selected, True), (primary, stock, False), (primary, skipped, False),
+                    (neighbor, near, True), (primary, negative, True), (primary, margin, True)],
+        'stock': [(primary, selected, False), (primary, stock, True), (primary, skipped, True),
+                  (neighbor, near, False)],
+    }
+    queries = {
+        'painted': [(primary, (0, 0), selected), (neighbor, near, near),
+                    (primary, negative, negative), (primary, margin, margin),
+                    (primary, skipped, (2, -11))],
+        'stock': [(primary, (0, 0), stock), (primary, skipped, skipped)],
+    }
+    for level, checks in rules.items():
+        for _, (x, z), _ in checks:
+            bx, bz = x * 16 + 8, z * 16 + 8
+            s.chat(f'execute in test:{level} run tp @s {bx} 80 {bz}')
+            if not s.arrived(f'test:{level}', bx, bz) or not s.wait(
+                    lambda: s.client_block(bx, 0, bz) is not None):
+                raise Failed(f'test:{level} did not generate chunk {(x, z)}: {s.where()}')
+        for structure, (x, z), expected in queries[level]:
+            line = f'execute positioned {x * 16} 80 {z * 16} run locate structure {structure}'
+            answer = s.chat(line)
+            coords = re.search(r'\[(-?\d+), ~, (-?\d+)\]', answer)
+            s.check(f'{level}: {line} -> {answer}',
+                    coords is not None and tuple(map(int, coords.groups())) == tuple(v * 16 for v in expected))
+    s.quit()
+    for level, checks in rules.items():
+        chunks = world_compare.read_chunks(world / f'dimensions/test/{level}/region')
+        for structure, (x, z), expected in checks:
+            chunk = chunks.get((x, z))
+            starts = world_compare.structure_starts(chunk) if chunk is not None else set()
+            s.check(f'{level}: saved chunk {(x, z)} {"has" if expected else "has no"} {structure} start',
+                    chunk is not None and ((structure, x, z) in starts) == expected, starts)
+
+
 def dedicated_scenario(s):
     directory = s.root / 'server'
     directory.mkdir()
@@ -389,16 +464,21 @@ def dedicated_scenario(s):
         shutil.copy2(s.root / f'{name}.log', s.out / f'dedicated-{name}.log')
 
 
-SCENARIOS = {'pack': pack_scenario, 'mod': mod_scenario, 'replace': replace_scenario, 'dedicated': dedicated_scenario}
+SCENARIOS = {
+    'pack': pack_scenario, 'mod': mod_scenario, 'replace': replace_scenario,
+    'candidates': candidates_scenario, 'dedicated': dedicated_scenario,
+}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--bin-dir', help='a build with horizon-client, horizon-ctl and '
                                           'horizon-mod-dimension-game (default: build them, fast profile)')
+    parser.add_argument('--resources', type=Path, default=lab.RESOURCES, help='prepared resource directory')
     parser.add_argument('--scenario', choices=list(SCENARIOS), action='append')
     parser.add_argument('--out', default=str(ROOT / '.local/mod-dimensions-e2e'), help='logs go here')
     args = parser.parse_args()
+    lab.RESOURCES = args.resources.resolve()
     shutil.rmtree(args.out, ignore_errors=True)
     (Path(args.out)).mkdir(parents=True)
     if args.bin_dir:

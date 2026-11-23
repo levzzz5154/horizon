@@ -11423,6 +11423,7 @@ pub(crate) fn run_with(
     {
         log::warn!("Mod structure types already installed; keeping the first table");
     }
+    native_structure_types::install_candidate_selectors();
     // The levels they registered, below the data packs of every world opened.
     if horizon_world::worldgen::overrides::install_mod_dimensions(
         native_dimensions::installed_dimensions(),

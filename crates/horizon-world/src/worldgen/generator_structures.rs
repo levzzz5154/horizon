@@ -449,7 +449,6 @@ impl StructureState {
         for &si in &self.possible_sets {
             let set = &self.registry.sets[si];
             if set.spacing().is_none()
-                || StructureRegistry::potential_chunk(set, seed, chunk.x, chunk.z) != Some(chunk)
                 || !(self.registry).is_structure_chunk(set, seed, chunk.x, chunk.z, &rings)
             {
                 continue;
@@ -955,13 +954,12 @@ impl StructureState {
                                 continue;
                             }
                             let (sx, sz) = (cx + spacing * dx, cz + spacing * dz);
-                            let Some(c) = StructureRegistry::potential_chunk(set, seed, sx, sz)
-                            else {
+                            let Some(c) = self.registry.potential_chunk(set, seed, sx, sz) else {
                                 continue;
                             };
                             if !self
                                 .registry
-                                .is_structure_chunk(set, seed, c.x, c.z, &rings)
+                                .candidate_allows_start(set, seed, c.x, c.z, &rings, true)
                             {
                                 continue;
                             }
