@@ -5052,7 +5052,12 @@ impl Game<'_> {
                 self.native_health_hud(&inputs, wi, hi, &mut native_health_hud);
                 let draws = match native_health_hud {
                     Some(draws) => draws,
-                    None => self.health_hud.layout(&inputs, wi, hi),
+                    None => {
+                        let mut blink = self.health_hud.heart_blink(inputs.tick);
+                        self.native_heart_blink(&mut blink);
+                        self.health_hud
+                            .layout_with_heart_blink(&inputs, wi, hi, blink)
+                    }
                 };
                 self.keep_status_rows(&draws, wi, hi);
                 // The rows draw in one pass here, so a mod's `player_health`
