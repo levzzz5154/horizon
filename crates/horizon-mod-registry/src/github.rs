@@ -1,6 +1,7 @@
 //! What the service asks of GitHub: the sign-in (OAuth, no scope: only the
 //! public profile), and with the bot's token on the registry repository
 //! alone, an entry, the `staging` release, a branch, a file, a pull request.
+//! New native builds also compare their base with main in the Horizon game repository.
 //! Blocking (ureq): called from tokio's blocking pool.
 use base64::{Engine, engine::general_purpose::STANDARD};
 use horizon_platform::mod_package::index::{Revoked, registry::Entry};
@@ -177,11 +178,15 @@ impl GitHub {
     }
 
     fn call(&self, method: &str, path: &str) -> ureq::Request {
+        self.api_request(
+            method,
+            &format!("{}/repos/{}{path}", self.at.api, self.repo),
+        )
+    }
+
+    fn api_request(&self, method: &str, url: &str) -> ureq::Request {
         self.agent
-            .request(
-                method,
-                &format!("{}/repos/{}{path}", self.at.api, self.repo),
-            )
+            .request(method, url)
             .timeout(self.call_timeout)
             .set("Authorization", &format!("Bearer {}", self.bot_token))
             .set("Accept", "application/vnd.github+json")
@@ -410,6 +415,39 @@ impl GitHub {
         Ok(release["assets"]
             .as_array()
             .is_some_and(|a| a.iter().any(|x| x["name"] == name)))
+    }
+
+    /// Whether the exact, format-checked `base` commit is reachable from Horizon's main.
+    pub(super) fn native_base_on_main(&self, base: &str) -> Result<bool> {
+        // Making the requested commit the head keeps a trusted base's commit and file lists
+        // empty, even if main has advanced a long way since that release.
+        let compare = self
+            .api_request(
+                "GET",
+                &format!(
+                    "{}/repos/{}/compare/main...{base}",
+                    self.at.api,
+                    horizon_addresses::HORIZON_GITHUB_REPO,
+                ),
+            )
+            .query("per_page", "1")
+            .call()
+            .map_err(failure)
+            .and_then(read)?;
+        let status = compare["status"].as_str();
+        let merge_base = compare["merge_base_commit"]["sha"].as_str();
+        match (status, merge_base) {
+            (Some("behind" | "identical" | "ahead" | "diverged"), Some(sha))
+                if super::is_hex_str(sha, 40) =>
+            {
+                Ok(matches!(status, Some("behind" | "identical")) && sha == base)
+            }
+            _ => Err(Failure {
+                status: 0,
+                message: "GitHub returned an incomplete or invalid native build comparison".into(),
+                timed_out: false,
+            }),
+        }
     }
 
     /// Dispatches the `native-build.yml` workflow on `ref_name` with inputs for target, base, and mods.

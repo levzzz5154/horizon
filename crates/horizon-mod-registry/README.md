@@ -81,6 +81,10 @@ REGISTRY_PUBLIC_URL=http://localhost:4173 REGISTRY_SESSION_KEY=... GITHUB_CLIENT
 
 | `HOST` | Default `0.0.0.0` |
 
+Native build dispatches also need to read commit comparisons in `horizon-rust/horizon` with the
+same bot token. This requires no write access to the game repository. If the comparison cannot
+be read, the registry does not dispatch the build.
+
 Production runs on Ludovic's home server **ludothinkpad** (NixOS) since 2026-11-22, next to the website, declared in
 `nixos/ludothinkpad/horizon.nix` of ludovic111/LifeOS: the system service `horizon-registry` (user `horizon`, a
 low-priority slice with capped CPU and memory) on `127.0.0.1:8183`, no public domain; the website sends `/api/mods/*`
