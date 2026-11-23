@@ -36,13 +36,11 @@ pub(crate) fn disc_triangles() -> Vec<[f32; 3]> {
         .collect()
 }
 
-/// One of the sky's pack pipelines with its vertices and uniforms.
+/// One of the sky's pack pipelines and its uniforms.
 struct Part {
     pipeline: wgpu::RenderPipeline,
     group: wgpu::BindGroup,
     uniform: wgpu::Buffer,
-    vertices: wgpu::Buffer,
-    count: u32,
 }
 
 impl Part {
@@ -52,7 +50,6 @@ impl Part {
         program: &CoreProgram,
         name: &str,
         blend: Option<wgpu::BlendState>,
-        triangles: &[[f32; 3]],
     ) -> Option<Self> {
         // A pack's shader is untrusted: the backend failing to compile it is an internal error.
         let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
@@ -149,31 +146,30 @@ impl Part {
             log::warn!("the resource pack's {name} shader is not used: {e}");
             return None;
         }
-        let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some(name),
-            contents: bytemuck::cast_slice(triangles),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
         Some(Self {
             pipeline,
             group,
             uniform,
-            vertices,
-            count: triangles.len() as u32,
         })
     }
 
-    fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
+    fn draw(&self, pass: &mut wgpu::RenderPass<'_>, vertices: &wgpu::Buffer, count: u32) {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.group, &[]);
-        pass.set_vertex_buffer(0, self.vertices.slice(..));
-        pass.draw(0..self.count, 0..1);
+        pass.set_vertex_buffer(0, vertices.slice(..));
+        pass.draw(0..count, 0..1);
     }
+}
+
+struct Disc {
+    shader: Part,
+    vertices: wgpu::Buffer,
+    count: u32,
 }
 
 /// The packs' sky disc and stars pipelines, each present when a pack replaces that shader.
 pub(super) struct CoreSky {
-    disc: Option<Part>,
+    disc: Option<Disc>,
     stars: Option<Part>,
 }
 
@@ -187,7 +183,18 @@ impl CoreSky {
     ) -> Option<Self> {
         let disc = disc.and_then(|program| {
             // RenderPipelines.SKY: ColorTargetState.DEFAULT, no blending.
-            Part::new(device, format, program, "sky", None, &disc_triangles())
+            let shader = Part::new(device, format, program, "sky", None)?;
+            let triangles = disc_triangles();
+            let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("sky"),
+                contents: bytemuck::cast_slice(&triangles),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+            Some(Disc {
+                shader,
+                vertices,
+                count: triangles.len() as u32,
+            })
         });
         let stars = stars.and_then(|program| {
             // RenderPipelines.STARS: BlendFunction.OVERLAY (src alpha and one; alpha one, zero).
@@ -203,8 +210,7 @@ impl CoreSky {
                     operation: wgpu::BlendOperation::Add,
                 },
             };
-            let triangles = super::stars::star_triangles();
-            Part::new(device, format, program, "stars", Some(overlay), &triangles)
+            Part::new(device, format, program, "stars", Some(overlay))
         });
         (disc.is_some() || stars.is_some()).then_some(Self { disc, stars })
     }
@@ -226,7 +232,7 @@ impl CoreSky {
         stars: Option<&[u8]>,
     ) {
         if let Some(disc) = &self.disc {
-            uploads.buffer(encoder, &disc.uniform, 0, sky);
+            uploads.buffer(encoder, &disc.shader.uniform, 0, sky);
         }
         if let (Some(part), Some(data)) = (&self.stars, stars) {
             uploads.buffer(encoder, &part.uniform, 0, data);
@@ -236,14 +242,19 @@ impl CoreSky {
     /// The disc, in place of the native sky colour. The caller sets its own group 0 again after.
     pub(super) fn draw_disc(&self, pass: &mut wgpu::RenderPass<'_>) {
         if let Some(disc) = &self.disc {
-            disc.draw(pass);
+            disc.shader.draw(pass, &disc.vertices, disc.count);
         }
     }
 
     /// The stars, in place of the native ones. The caller sets its own group 0 again after.
-    pub(super) fn draw_stars(&self, pass: &mut wgpu::RenderPass<'_>) {
+    pub(super) fn draw_stars(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        vertices: &wgpu::Buffer,
+        count: u32,
+    ) {
         if let Some(stars) = &self.stars {
-            stars.draw(pass);
+            stars.draw(pass, vertices, count);
         }
     }
 }
@@ -351,7 +362,7 @@ mod tests {
             [0.0; 4],
             [1e6; 6],
         );
-        queue.write_buffer(&sky.disc.as_ref().unwrap().uniform, 0, &data);
+        queue.write_buffer(&sky.disc.as_ref().unwrap().shader.uniform, 0, &data);
         let target = |format, usage| {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: None,

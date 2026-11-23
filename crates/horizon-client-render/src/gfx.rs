@@ -608,7 +608,8 @@ mod rt;
 mod screenshot;
 pub use screenshot::{PendingScreenshot, ScreenshotSave};
 mod screenshot_readback;
-mod stars;
+#[doc(hidden)]
+pub mod stars;
 mod surface_setup;
 use surface_setup::{AdapterChoice, AdapterFailure, open_adapter, pick_adapter, set_up_surface};
 mod off_page;
@@ -10730,16 +10731,29 @@ impl Renderer {
                 }
                 let own_stars = self.executor.is_some_and(|c| c.hides_stars);
                 if !frame.title
-                    && frame.stars.is_some()
+                    && let Some((rotation, brightness)) = frame.stars
+                    && brightness > 0.0
                     && !pack_draws_sky
                     && !own_stars
                     && pack_sky_visibility.stars
                 {
-                    match self.core_sky.as_ref().filter(|c| c.draws_stars()) {
-                        Some(core) => core.draw_stars(&mut pass),
-                        None => self.stars.draw(&mut pass),
+                    let core = self.core_sky.as_ref().filter(|c| c.draws_stars());
+                    if self.stars.draw_stage(
+                        &self.device,
+                        &mut pass,
+                        core,
+                        || {
+                            if core.is_some() {
+                                rotation
+                            } else {
+                                native_pack::sky_turn(pack_tilt, frame.end_sky) * rotation
+                            }
+                        },
+                        frame.sky.star_angle,
+                        brightness,
+                    ) {
+                        pass.set_bind_group(0, &self.group, &[]);
                     }
-                    pass.set_bind_group(0, &self.group, &[]);
                 }
                 if !frame.title && frame.dark_disc && !pack_draws_sky {
                     self.draw_visible_void(&mut pass, pack_sky_visibility);

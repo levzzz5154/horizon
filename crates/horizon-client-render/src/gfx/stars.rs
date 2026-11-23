@@ -4,12 +4,13 @@
 //! and uploaded every frame.
 use glam::{Mat4, Vec3};
 use horizon_core::random::RandomSource;
+use mod_api::{__private::listened, HookId, StarMeshEdit};
 use wgpu::util::DeviceExt;
 
 /// `SkyRenderer.buildStars` with its fixed seed: up to 1500 quads on a
 /// sphere of radius 100, each turned to face the centre and spun about its
 /// own axis, as triangles (two per quad).
-pub fn star_triangles() -> Vec<[f32; 3]> {
+pub(super) fn star_triangles() -> Vec<[f32; 3]> {
     let mut random = horizon_core::random::LegacyRandom::new(10842);
     let mut out = Vec::with_capacity(1500 * 6);
     for _ in 0..1500 {
@@ -41,6 +42,50 @@ pub fn star_triangles() -> Vec<[f32; 3]> {
     out
 }
 
+/// Native build hook, after the stock geometry and before its one upload.
+#[inline(never)]
+pub fn native_build_stars(mesh: &mut StarMeshEdit<'_>) {
+    mod_api::dispatch_build_stars(mesh);
+}
+
+/// Native bridge for the renderer's visible star draw, shared with `core/stars`.
+#[inline(never)]
+pub fn native_render_stars(
+    angle_degrees: f32,
+    brightness: f32,
+    sky_from_stars: [[f32; 4]; 4],
+    cancel: &mut bool,
+) {
+    mod_api::dispatch_render_stars(angle_degrees, brightness, sky_from_stars, cancel);
+}
+
+enum Mesh {
+    Pending,
+    Empty,
+    Ready { vertices: wgpu::Buffer, count: u32 },
+}
+
+impl Mesh {
+    fn build(device: &wgpu::Device) -> Self {
+        let mut triangles = star_triangles();
+        if listened(HookId::BuildStars) {
+            native_build_stars(&mut StarMeshEdit::new(&mut triangles));
+        }
+        if triangles.is_empty() {
+            return Self::Empty;
+        }
+        let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Stars vertex buffer"),
+            contents: bytemuck::cast_slice(&triangles),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        Self::Ready {
+            vertices,
+            count: triangles.len() as u32,
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Uniform {
@@ -54,8 +99,7 @@ pub(super) struct Stars {
     pipeline: wgpu::RenderPipeline,
     group: wgpu::BindGroup,
     uniform: wgpu::Buffer,
-    vertices: wgpu::Buffer,
-    count: u32,
+    mesh: Mesh,
 }
 
 impl Stars {
@@ -64,12 +108,6 @@ impl Stars {
         device: &wgpu::Device,
         (format, linear): (wgpu::TextureFormat, bool),
     ) -> Self {
-        let triangles = star_triangles();
-        let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Stars vertex buffer"),
-            contents: bytemuck::cast_slice(&triangles),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Stars rotation and brightness"),
             size: std::mem::size_of::<Uniform>() as u64,
@@ -163,8 +201,7 @@ impl Stars {
             pipeline,
             group,
             uniform,
-            vertices,
-            count: triangles.len() as u32,
+            mesh: Mesh::Pending,
         }
     }
 
@@ -188,12 +225,51 @@ impl Stars {
         uploads.buffer(encoder, &self.uniform, 0, bytemuck::bytes_of(&uniform));
     }
 
+    /// Once the renderer really reaches the star stage, run the build with client setup
+    /// complete. Loading renderers never need star geometry. Both pipelines use this same mesh.
+    pub(super) fn draw_stage(
+        &mut self,
+        device: &wgpu::Device,
+        pass: &mut wgpu::RenderPass<'_>,
+        core: Option<&super::core_sky::CoreSky>,
+        sky_from_stars: impl FnOnce() -> Mat4,
+        angle_degrees: f32,
+        brightness: f32,
+    ) -> bool {
+        if matches!(self.mesh, Mesh::Pending) {
+            self.mesh = Mesh::build(device);
+        }
+        let Mesh::Ready { vertices, count } = &self.mesh else {
+            return false;
+        };
+        if listened(HookId::RenderStars) {
+            let mut cancel = false;
+            native_render_stars(
+                angle_degrees,
+                brightness.clamp(0.0, 1.0),
+                sky_from_stars().to_cols_array_2d(),
+                &mut cancel,
+            );
+            if cancel {
+                return false;
+            }
+        }
+        match core {
+            Some(core) => core.draw_stars(pass, vertices, *count),
+            None => self.draw(pass),
+        }
+        true
+    }
+
     #[horizon_mod_api_macros::replaceable]
     pub(super) fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
+        let Mesh::Ready { vertices, count } = &self.mesh else {
+            return;
+        };
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.group, &[]);
-        pass.set_vertex_buffer(0, self.vertices.slice(..));
-        pass.draw(0..self.count, 0..1);
+        pass.set_vertex_buffer(0, vertices.slice(..));
+        pass.draw(0..*count, 0..1);
     }
 }
 
