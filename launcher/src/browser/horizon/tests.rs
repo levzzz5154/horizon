@@ -624,10 +624,10 @@ fn native_registry_install_and_update_follow_the_target_instances_build() {
     );
     assert!(!unmatched.home.join("mod-browser/downloads").exists());
     let previous_on_c = pin("Previous", "native-test-c");
-    assert_eq!(
-        installed::update_for(&source, &updated, Some(&previous_on_c)).unwrap_err(),
-        no_fit
-    );
+    assert!(matches!(
+        installed::update_for(&source, &updated, Some(&previous_on_c)),
+        Err(UpdateError::IncompatibleBuild(why)) if why == no_fit
+    ));
     assert_eq!(install(&previous_on_c, true).unwrap_err(), no_fit);
     assert_eq!(
         installed::Installed::load(&previous.home).entries,

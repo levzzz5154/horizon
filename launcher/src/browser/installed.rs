@@ -541,12 +541,34 @@ pub fn forget_missing(home: &Path, entry: &Entry) -> Result<bool, String> {
     Ok(true)
 }
 
+/// Why an installed project could not be checked for an update.
+#[derive(Debug)]
+pub enum UpdateError {
+    /// Published native releases exist, but none fits the instance build.
+    IncompatibleBuild(String),
+    Other(String),
+}
+
+impl From<String> for UpdateError {
+    fn from(message: String) -> Self {
+        Self::Other(message)
+    }
+}
+
+impl From<UpdateError> for String {
+    fn from(error: UpdateError) -> Self {
+        match error {
+            UpdateError::IncompatibleBuild(message) | UpdateError::Other(message) => message,
+        }
+    }
+}
+
 /// The newer version `entry` can be updated to, if any.
 pub fn update_for(
     source: &dyn Source,
     entry: &Entry,
     instance: Option<&Instance>,
-) -> Result<Option<Version>, String> {
+) -> Result<Option<Version>, UpdateError> {
     if entry.source == SourceId::Horizon {
         return super::horizon::update_for(entry, instance);
     }

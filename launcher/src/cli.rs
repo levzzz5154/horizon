@@ -2622,6 +2622,7 @@ fn mods(action: ModsCmd, as_json: bool) -> Result<(), String> {
                     None => "Nothing installed from the browser yet.".into(),
                 });
             }
+            let mut incompatible = 0;
             for e in chosen {
                 let Some(source) = horizon_launcher::browser::source(e.source) else {
                     println!("{}: {} isn't available here.", e.title, e.source.label());
@@ -2629,7 +2630,16 @@ fn mods(action: ModsCmd, as_json: bool) -> Result<(), String> {
                 };
                 let newer = match &java {
                     Some(target) => java_instance::update_for(&*source, target, e)?,
-                    None => installed::update_for(&*source, e, instance.as_ref())?,
+                    None => match installed::update_for(&*source, e, instance.as_ref()) {
+                        Err(installed::UpdateError::IncompatibleBuild(why))
+                            if project.is_none() =>
+                        {
+                            eprintln!("{why}");
+                            incompatible += 1;
+                            continue;
+                        }
+                        result => result?,
+                    },
                 };
                 match newer {
                     None => println!("{} {}: up to date.", e.title, e.number),
@@ -2657,6 +2667,12 @@ fn mods(action: ModsCmd, as_json: bool) -> Result<(), String> {
                         }
                     }
                 }
+            }
+            if incompatible != 0 {
+                return Err(trf(
+                    "Native mods skipped for compatibility: {count}.",
+                    &[("count", &incompatible.to_string())],
+                ));
             }
         }
         ModsCmd::AddGithub {

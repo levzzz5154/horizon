@@ -1013,10 +1013,14 @@ impl Launcher {
                     continue;
                 };
                 let newer = match &java {
-                    Some(target) => java_instance::update_for(&*source, target, &e),
-                    None => installed::update_for(&*source, &e, instance.as_ref()),
+                    Some(target) => java_instance::update_for(&*source, target, &e)
+                        .ok()
+                        .flatten(),
+                    None => installed::update_for(&*source, &e, instance.as_ref())
+                        .ok()
+                        .flatten(),
                 };
-                if let Ok(Some(v)) = newer {
+                if let Some(v) = newer {
                     found.insert(
                         (e.source, e.project),
                         UpdateOffer {

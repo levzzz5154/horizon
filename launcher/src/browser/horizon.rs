@@ -5,7 +5,9 @@
 //! manifest), and files the index says were taken down are refused and turned off.
 use super::{
     details::{Details, GitHub, Link},
-    download, installed, java, FileRef, Kind, Project, Query, Source, SourceId, Version, GAME,
+    download,
+    installed::{self, UpdateError},
+    java, FileRef, Kind, Project, Query, Source, SourceId, Version, GAME,
 };
 use crate::i18n::{tr, trf};
 use crate::instances::Instance;
@@ -392,7 +394,7 @@ pub fn trust_and_capabilities(id: &str, instance: Option<&Instance>) -> Vec<Stri
 fn native_fit_line(index: &Index, p: &index::Project, plays: Option<&Plays>) -> String {
     match newest_native(index, p, plays) {
         Ok(_) => native_fit::describe(&native_fit::Fit::Fits, plays.expect("matching build")),
-        Err(why) => why,
+        Err(why) => why.into(),
     }
 }
 
@@ -900,7 +902,7 @@ fn install_from(
 pub(super) fn update_for(
     entry: &installed::Entry,
     instance: Option<&Instance>,
-) -> Result<Option<Version>, String> {
+) -> Result<Option<Version>, UpdateError> {
     let index = index()?;
     let p = index
         .project(&entry.project)
@@ -988,7 +990,7 @@ fn newest_native<'a>(
     index: &Index,
     p: &'a index::Project,
     plays: Option<&Plays>,
-) -> Result<&'a index::Version, String> {
+) -> Result<&'a index::Version, UpdateError> {
     let (mut taken_down, mut unsupported, mut other_pin) = (None, None, None);
     for v in p.versions.iter().filter(|v| v.game == GAME) {
         if let Some(r) = index.revoked(&p.id, &v.file.sha256) {
@@ -1005,9 +1007,13 @@ fn newest_native<'a>(
             other_pin.get_or_insert((pin, plays));
         }
     }
-    Err(if let Some((pin, plays)) = other_pin {
-        native_fit::no_published_fit(&p.name, pin, plays)
-    } else if let Some(why) = unsupported.and_then(|v| unsupported_capabilities(&v.capabilities)) {
+    if let Some((pin, plays)) = other_pin {
+        return Err(UpdateError::IncompatibleBuild(
+            native_fit::no_published_fit(&p.name, pin, plays),
+        ));
+    }
+    let why = if let Some(why) = unsupported.and_then(|v| unsupported_capabilities(&v.capabilities))
+    {
         why
     } else if let Some(r) = taken_down {
         trf(
@@ -1019,7 +1025,8 @@ fn newest_native<'a>(
             "{mod} has no version for {game} to install.",
             &[("mod", &p.name), ("game", GAME)],
         )
-    })
+    };
+    Err(why.into())
 }
 
 fn native_update<'a>(
@@ -1027,7 +1034,7 @@ fn native_update<'a>(
     p: &'a index::Project,
     installed: &str,
     plays: Option<&Plays>,
-) -> Result<Option<&'a index::Version>, String> {
+) -> Result<Option<&'a index::Version>, UpdateError> {
     let target = newest_native(index, p, plays)?;
     // The index lists newest first. If the installed version is unlisted, its age is unknown.
     let newer = p

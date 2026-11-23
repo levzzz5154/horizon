@@ -163,6 +163,8 @@ same name the player put there is never overwritten.
   the game's Shader Packs page.
 - **Update** installs the newer version and removes the old file.
 - **Update all** does the same for each pack with a newer version (`horizon-launcher mods update` with no pack name).
+  In the CLI, bulk `update` and `update --check` report each native mod with no compatible release, continue
+  with the other entries, and exit nonzero after reporting how many were skipped.
 - **Remove** deletes the file and its entry. Packs installed as dependencies stay.
 - **A modpack** is downloaded (checked the same way) into `ports/downloads/`, imported, and ported straight away
   for the selected version when it is prepared (`modpacks::import_and_port`): the jars of the mods Horizon can carry
