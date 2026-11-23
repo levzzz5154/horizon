@@ -50,7 +50,8 @@ This API bakes quads only, not a mod-defined baked result type.
 ## Wrapping already baked geometry
 
 Native client mods can implement `modify_baking_result` to inspect or reshape the block and
-standalone models of the candidate resource load. This runs after rotation and UV lock, before
+standalone models of the candidate resource load, including native-loader faces. The hook runs on
+the resource loader after rotation and UV lock, before connected textures are derived and before
 the renderer receives the catalog. It runs at startup and on every rebake; a later stage can
 still fail. For a handle into a successfully published catalog, use `model_baking_completed`.
 
