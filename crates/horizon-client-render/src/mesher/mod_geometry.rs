@@ -4,59 +4,40 @@
 //! with it.
 use super::{Mesher, SectionMesh, TerrainSource, TerrainVertex, Tints, mod_tint::Region};
 use crate::connected::TileLayer;
-use mod_api::{BlockAndTintGetter, SectionGeometry, SectionGeometryContext, SectionQuad};
+use mod_api::{
+    __private::render_registrations::{self as render, SectionRenderer},
+    BlockAndTintGetter, SectionGeometry, SectionGeometryContext, SectionQuad,
+};
 use std::{
     cell::RefCell,
     collections::BTreeMap,
     sync::{
-        Arc, OnceLock,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc,
+        atomic::{AtomicUsize, Ordering},
     },
 };
 
 /// One mod renderer, and whether it has panicked (then it is asked no more) or had its quads
 /// refused (logged once).
-pub(super) struct Renderer {
-    renderer: Arc<dyn SectionGeometry>,
-    failed: AtomicBool,
-    refused: AtomicBool,
-}
-
-impl Renderer {
-    pub(super) fn new(renderer: Arc<dyn SectionGeometry>) -> Self {
-        Self {
-            renderer,
-            failed: AtomicBool::new(false),
-            refused: AtomicBool::new(false),
-        }
-    }
-    /// Whether it panicked, so that it is asked no more.
-    #[cfg(test)]
-    pub(super) fn failed(&self) -> bool {
-        self.failed.load(Ordering::Relaxed)
-    }
-}
-
-/// The renderers, in registration order: set once at start, read by every table build.
-static REGISTERED: OnceLock<Arc<[Renderer]>> = OnceLock::new();
+pub(super) type Renderer = SectionRenderer;
 
 /// Sets the native mods' section geometry renderers, once, before the resources first load; each
 /// later [`super::MeshTables::new`] hands them to the meshing workers. False when already set.
 pub fn register_section_geometry(renderers: Vec<Arc<dyn SectionGeometry>>) -> bool {
-    REGISTERED
-        .set(renderers.into_iter().map(Renderer::new).collect())
-        .is_ok()
+    render::register_section_geometry(renderers)
 }
 
 /// Whether any mod renderer is registered, so the game prepares the block values its `level`
 /// reads.
 pub fn has_section_geometry() -> bool {
-    REGISTERED.get().is_some_and(|r| !r.is_empty())
+    render::section_geometry().is_some_and(|r| !r.is_empty())
 }
 
 /// What [`register_section_geometry`] set; none before.
 pub(super) fn registered() -> Arc<[Renderer]> {
-    REGISTERED.get().cloned().unwrap_or_else(|| Arc::new([]))
+    render::section_geometry()
+        .cloned()
+        .unwrap_or_else(|| Arc::new([]))
 }
 
 /// The most quads one section's mesh may hold, its own blocks' and every renderer's together
@@ -279,7 +260,7 @@ pub(super) fn add(mesher: &Mesher<'_>, tints: &mut Tints<'_>, out: &mut SectionM
             batch: Batch::new(&mesher.render.sprite_layers, &mut budget, &IN_FLIGHT),
         };
         let asked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            renderer.renderer.add(origin, &mut context)
+            renderer.callback.add(origin, &mut context)
         }));
         let mut batch = context.batch;
         if asked.is_err() {

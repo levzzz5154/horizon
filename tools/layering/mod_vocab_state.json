@@ -4,6 +4,21 @@
     "category": "dispatch table",
     "reason": "Temporary points exception pending #2697: open injection-listener routing and seal state remain in the unchanged points module."
   },
+  "__private/render_registrations.rs::BLOCK_TINT_SOURCES": {
+    "type": "OnceLock<BTreeMap<String,Arc<[TintLayer]>>>",
+    "category": "installed render lookup",
+    "reason": "Frozen block tint registrations shared between the native patch and the renderer host; no live authoring requests."
+  },
+  "__private/render_registrations.rs::COLOR_RESOLVERS": {
+    "type": "OnceLock<Box<[ColorResolver]>>",
+    "category": "installed render lookup",
+    "reason": "Frozen biome color resolvers and their per-callback panic gates share one native process owner across resource reloads."
+  },
+  "__private/render_registrations.rs::SECTION_GEOMETRY": {
+    "type": "OnceLock<Arc<[SectionRenderer]>>",
+    "category": "installed render lookup",
+    "reason": "Frozen section renderers and their per-callback guards share one native process owner across resource reloads."
+  },
   "block/part_state.rs::EDITING": {
     "type": "RefCell<Vec<(AttachmentHolder,&'staticstr,&'staticstr)>>",
     "category": "reentrancy guard",

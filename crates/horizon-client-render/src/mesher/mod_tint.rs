@@ -8,51 +8,31 @@ use horizon_assets::model::Direction as D;
 use horizon_core::geometry::Direction;
 use horizon_world::{fluid::FluidState, registry::BlockRegistry};
 use mod_api::{
-    BiomeColorResolver, BiomeColors, BlockAndTintGetter, BlockTintSource, ColorResolver,
-    LightLayer, ResolverBiome, TintLayer, VanillaTint,
+    __private::render_registrations as render, BiomeColorResolver, BiomeColors, BlockAndTintGetter,
+    BlockTintSource, ColorResolver, LightLayer, ResolverBiome, TintLayer, VanillaTint,
 };
-use std::{cell::RefCell, collections::BTreeMap, sync::Arc, sync::OnceLock};
-
-/// The registrations, by block id: set once at start, read by every table build.
-static REGISTERED: OnceLock<BTreeMap<String, Arc<[TintLayer]>>> = OnceLock::new();
+use std::{cell::RefCell, collections::BTreeMap, sync::Arc};
 
 /// Sets the native mods' block tint sources, once, before the resources first load; each later
 /// [`MeshTables::new`] applies them. False when already set.
 pub fn register_block_tint_sources(layers: BTreeMap<String, Arc<[TintLayer]>>) -> bool {
-    REGISTERED.set(layers).is_ok()
+    render::register_block_tint_sources(layers)
 }
-
-/// The mods' colour resolvers, by registration index: set once at start, read by every mesh.
-struct RegisteredResolver {
-    callback: Arc<dyn BiomeColorResolver>,
-    warned: std::sync::atomic::AtomicBool,
-}
-static RESOLVERS: OnceLock<Box<[RegisteredResolver]>> = OnceLock::new();
 
 /// Sets the native mods' colour resolvers (`register_color_resolvers`), once, before the block
 /// tint sources that read them. False when already set.
 pub fn register_color_resolvers(resolvers: Arc<[Arc<dyn BiomeColorResolver>]>) -> bool {
-    RESOLVERS
-        .set(
-            resolvers
-                .iter()
-                .map(|callback| RegisteredResolver {
-                    callback: callback.clone(),
-                    warned: std::sync::atomic::AtomicBool::new(false),
-                })
-                .collect(),
-        )
-        .is_ok()
+    render::register_color_resolvers(resolvers)
 }
 
 pub(super) fn resolver_exists(index: u32) -> bool {
-    RESOLVERS.get().is_some_and(|r| (index as usize) < r.len())
+    render::color_resolvers().is_some_and(|r| (index as usize) < r.len())
 }
 
 /// Mod resolver `index`'s colour of `biome` at block column `(x, z)`, 0xRRGGBB: vanilla's
 /// `ColorResolver.getColor`. White for an index no resolver has.
 pub(super) fn resolve(index: u32, biome: &BiomeInfo, x: f64, z: f64) -> u32 {
-    let Some(resolver) = RESOLVERS.get().and_then(|r| r.get(index as usize)) else {
+    let Some(resolver) = render::color_resolvers().and_then(|r| r.get(index as usize)) else {
         return 0xFF_FFFF;
     };
     // A failed resolver stays disabled, avoiding repeated panic-hook output as
@@ -88,12 +68,12 @@ pub(super) fn resolve(index: u32, biome: &BiomeInfo, x: f64, z: f64) -> u32 {
 
 /// What [`register_block_tint_sources`] set; none before.
 pub(super) fn registered() -> Option<&'static BTreeMap<String, Arc<[TintLayer]>>> {
-    REGISTERED.get()
+    render::block_tint_sources()
 }
 
 /// Whether game-prepared values are needed for a mod's own tint callback.
 pub fn has_custom_block_tint_sources() -> bool {
-    REGISTERED.get().is_some_and(has_custom_sources)
+    render::block_tint_sources().is_some_and(has_custom_sources)
 }
 
 fn has_custom_sources(blocks: &BTreeMap<String, Arc<[TintLayer]>>) -> bool {

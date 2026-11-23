@@ -649,4 +649,8 @@ pub fn fluid_state(
 #[path = "__private/ingredient_parser.rs"]
 pub mod ingredient_parser;
 
+#[doc(hidden)]
+#[path = "__private/render_registrations.rs"]
+pub mod render_registrations;
+
 include!(concat!(env!("OUT_DIR"), "/mod_api_exports_private.rs"));

@@ -351,7 +351,7 @@ fn a_refused_contribution_adds_nothing_and_the_built_in_cube_keeps_six_faces() {
         );
     }
     assert!(
-        tables.section_geometry[0].failed(),
+        tables.section_geometry[0].failed.load(Ordering::Relaxed),
         "the panicking one is disabled"
     );
     // No listeners: the mesh is the built-in one.
