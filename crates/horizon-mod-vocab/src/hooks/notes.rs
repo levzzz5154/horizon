@@ -1422,7 +1422,11 @@ clicks already.
 `dyn LoopContext` is the read-only view for a hook fired inside a menu, recipe or
 player-list loop, where no game is at hand (a catalog entry names it with
 `"context": "loop"`; `item_stacked_on_other`, `player_name_format`,
-`player_tab_list_name_format`, `living_jump_power`, `living_speed`, `living_flying_speed`, `living_heal`, `living_breathe`, `living_drown`, `living_fall`, `farmland_trample`, `living_jump`, `ender_entity_teleport`, `fluid_flow`, `player_stays_on_ground_surface`, `block_jump_factor`, `block_speed_factor`, `friction`, `ingredient_test` and the sound hooks below take it). `side()` is `LoopSide::Server` or
+`player_tab_list_name_format`, `living_jump_power`, `living_speed`, `living_flying_speed`,
+`can_swim_in_fluid`, `living_fluid_travel`, `living_heal`, `living_breathe`, `living_drown`,
+`living_fall`, `farmland_trample`, `living_jump`, `ender_entity_teleport`, `fluid_flow`,
+`player_stays_on_ground_surface`, `block_jump_factor`, `block_speed_factor`, `friction`,
+`ingredient_test` and the sound hooks below take it). `side()` is `LoopSide::Server` or
 `LoopSide::Client`, `registry(name)` borrows names in registry ID order,
 `setting(mod_id, key)` returns a loaded mod's setting captured when the context was
 built, and `mods()` is the `LoadedMods` view of registration. It has no game Host,
