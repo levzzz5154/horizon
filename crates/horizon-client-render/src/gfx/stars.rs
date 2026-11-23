@@ -59,33 +59,6 @@ pub fn native_render_stars(
     mod_api::dispatch_render_stars(angle_degrees, brightness, sky_from_stars, cancel);
 }
 
-enum Mesh {
-    Pending,
-    Empty,
-    Ready { vertices: wgpu::Buffer, count: u32 },
-}
-
-impl Mesh {
-    fn build(device: &wgpu::Device) -> Self {
-        let mut triangles = star_triangles();
-        if listened(HookId::BuildStars) {
-            native_build_stars(&mut StarMeshEdit::new(&mut triangles));
-        }
-        if triangles.is_empty() {
-            return Self::Empty;
-        }
-        let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Stars vertex buffer"),
-            contents: bytemuck::cast_slice(&triangles),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        Self::Ready {
-            vertices,
-            count: triangles.len() as u32,
-        }
-    }
-}
-
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Uniform {
@@ -99,7 +72,9 @@ pub(super) struct Stars {
     pipeline: wgpu::RenderPipeline,
     group: wgpu::BindGroup,
     uniform: wgpu::Buffer,
-    mesh: Mesh,
+    vertices: Option<wgpu::Buffer>,
+    count: u32,
+    needs_mesh: bool,
 }
 
 impl Stars {
@@ -201,8 +176,26 @@ impl Stars {
             pipeline,
             group,
             uniform,
-            mesh: Mesh::Pending,
+            vertices: None,
+            count: 0,
+            needs_mesh: true,
         }
+    }
+
+    fn build_mesh(&mut self, device: &wgpu::Device) {
+        let mut triangles = star_triangles();
+        if listened(HookId::BuildStars) {
+            native_build_stars(&mut StarMeshEdit::new(&mut triangles));
+        }
+        if !triangles.is_empty() {
+            self.vertices = Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Stars vertex buffer"),
+                contents: bytemuck::cast_slice(&triangles),
+                usage: wgpu::BufferUsages::VERTEX,
+            }));
+        }
+        self.count = triangles.len() as u32;
+        self.needs_mesh = false;
     }
 
     /// This frame's sky rotation (camera-relative world from star space,
@@ -236,10 +229,10 @@ impl Stars {
         angle_degrees: f32,
         brightness: f32,
     ) -> bool {
-        if matches!(self.mesh, Mesh::Pending) {
-            self.mesh = Mesh::build(device);
+        if self.needs_mesh {
+            self.build_mesh(device);
         }
-        let Mesh::Ready { vertices, count } = &self.mesh else {
+        let Some(vertices) = &self.vertices else {
             return false;
         };
         if listened(HookId::RenderStars) {
@@ -255,7 +248,7 @@ impl Stars {
             }
         }
         match core {
-            Some(core) => core.draw_stars(pass, vertices, *count),
+            Some(core) => core.draw_stars(pass, vertices, self.count),
             None => self.draw(pass),
         }
         true
@@ -263,13 +256,13 @@ impl Stars {
 
     #[horizon_mod_api_macros::replaceable]
     pub(super) fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
-        let Mesh::Ready { vertices, count } = &self.mesh else {
+        let Some(vertices) = &self.vertices else {
             return;
         };
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.group, &[]);
         pass.set_vertex_buffer(0, vertices.slice(..));
-        pass.draw(0..*count, 0..1);
+        pass.draw(0..self.count, 0..1);
     }
 }
 
