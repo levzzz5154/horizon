@@ -11,10 +11,11 @@ and answer the offer the way vanilla's client can:
   and loaded after 20 seconds (the server keeps the connection alive while the player reads the prompt);
 - optional: declined (joins).
 
-Compared exactly, per player: the configuration packets in order (runs counted), the offer (id, URL, hash,
-required, the prompt as a component), whether a keep-alive came while the offer was open, and how the connection
-ended. The server logs' "due to resource pack ... rejection" lines are compared too. No pack is downloaded: the
-servers only offer it.
+Compared exactly, per player: the configuration packets in order (runs counted, custom payloads identified by
+channel), the offer (id, URL, hash, required, the prompt as a component), whether a keep-alive came while the offer
+was open, and how the connection ended. The only projection is Horizon's build announcement and payload
+negotiation query between enabled features and known packs; the raw wire transcript keeps both. The server logs'
+"due to resource pack ... rejection" lines are compared too. No pack is downloaded: the servers only offer it.
 """
 import os
 from pathlib import Path
@@ -121,6 +122,27 @@ def run_side(label, kind, server_command, client_command, build, world):
     return out.read_text(encoding='utf-8').splitlines() + [f'log rejected {r}' for r in rejections]
 
 
+def vanilla_config_view(lines):
+    """Project Horizon's pre-known-packs handshake out of its raw transcript only."""
+    # login_and_configure sends these in this order before knowing the client's brand.
+    # Vanilla 26.3's CONFIG_STREAM_CODEC preserves their IDs as DiscardedPayload, and
+    # ClientCommonPacketListenerImpl.handleCustomPayload does not act on either.
+    result = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        result.append(line)
+        player, _, packet = line.partition(' ')
+        if packet == 'config update_enabled_features' and lines[i + 1:i + 4] == [
+            f'{player} config custom_payload horizon:build',
+            f'{player} config custom_payload horizon:payloads',
+            f'{player} config select_known_packs',
+        ]:
+            i += 2
+        i += 1
+    return result
+
+
 def main():
     lock, jars, libraries = base.verify_artifacts()
     build = lab.LOCAL / NAME
@@ -146,7 +168,7 @@ def main():
     differ = []
     for kind in SERVERS:
         vanilla = run_side('vanilla', kind, vanilla_server, client, build, world)
-        horizon = run_side('horizon', kind, horizon_server, client, build, world)
+        horizon = vanilla_config_view(run_side('horizon', kind, horizon_server, client, build, world))
         if not any('offer ' in l for l in vanilla) or any(' error ' in f' {l} ' for l in vanilla):
             raise AssertionError(f'{kind}: vanilla offered no pack or the client failed: {vanilla}')
         if vanilla != horizon:
@@ -162,7 +184,8 @@ def main():
         scope='A dedicated server\'s resource pack as vanilla-codec players see it: the offer during configuration '
               '(id, URL, hash, required, prompt), its place among the configuration packets, the keep-alives while '
               'the player decides, and each answer\'s outcome (declined, loaded, failed download, declined in '
-              'play) for a required and an optional pack, with the server\'s rejection log lines.'))
+              'play) for a required and an optional pack, with the server\'s rejection log lines. Only Horizon\'s '
+              'horizon:build and horizon:payloads configuration handshake before known packs is projected out.'))
     print(f'server resource pack: {len(PLAYERS)} players identical')
 
 

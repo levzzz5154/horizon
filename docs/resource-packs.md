@@ -24,6 +24,11 @@ assets, paletted textures, entity and block entity renderers, particles, the gam
 renderer, clouds, GPU warn list, regional compliance, splashes and waypoint styles. Every row below comes from one
 of them.
 
+The server-offer parity audit records configuration payload channels in its raw traces. It ignores only
+Horizon's `horizon:build` and `horizon:payloads` pair directly before known-pack selection; vanilla
+clients ignore those extensions. The pack offer, its place in configuration, and the client's response
+are compared with vanilla.
+
 ## The table
 
 **Works**: Horizon reads it from the pack and draws or plays it like vanilla. **Partly**: some of it.

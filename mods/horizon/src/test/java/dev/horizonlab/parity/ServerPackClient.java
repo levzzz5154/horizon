@@ -29,6 +29,7 @@ import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.ComponentSerialization;
 import net.minecraft.network.protocol.Packet;
+import net.minecraft.network.protocol.common.ClientboundCustomPayloadPacket;
 import net.minecraft.network.protocol.common.ClientboundDisconnectPacket;
 import net.minecraft.network.protocol.common.ClientboundKeepAlivePacket;
 import net.minecraft.network.protocol.common.ClientboundPingPacket;
@@ -145,6 +146,9 @@ public final class ServerPackClient {
         /** A configuration packet: consecutive ones of the same type are one line with their count. */
         private void config(Packet<?> p) {
             String type = p.type().id().getPath();
+            if (p instanceof ClientboundCustomPayloadPacket custom) {
+                type += " " + custom.payload().type().id();
+            }
             if (type.equals(lastConfig)) {
                 run++;
                 return;
