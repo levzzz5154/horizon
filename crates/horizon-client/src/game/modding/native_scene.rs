@@ -6,9 +6,13 @@
 use super::Game;
 use super::native_block_entity_draw::{BlockEntityDraw, place_turning};
 use glam::{Mat4, Vec3};
-use horizon_client::{block_entity_render::diffuse_lights, hud::HudBatch, mesher::Vertex};
+use horizon_client::{
+    block_entity_render::diffuse_lights,
+    hud::{HudBatch, OverlayDepth},
+    mesher::Vertex,
+};
 use horizon_world::level::data::state_flags;
-use mod_api::SceneView;
+use mod_api::{SCENE_MAX_OVERLAYS, SceneDepth, SceneOverlay, SceneOverlayError, SceneView};
 /// Prepared scene data. Entity fields remain borrowed for the duration of the draw.
 pub(super) struct SceneBlock<'a> {
     pub pos: [i32; 3],
@@ -51,6 +55,74 @@ pub(super) fn scene_matrix(rect: [f32; 4], view: SceneView) -> Mat4 {
         * Mat4::from_translation(-Vec3::from_array(view.center))
 }
 
+pub(super) struct ProjectedOverlay {
+    corners: [[f32; 3]; 4],
+    color: u32,
+    depth: OverlayDepth,
+}
+
+/// Project the entire list before a living scene advances or any geometry is emitted.
+pub(super) fn project_overlays(
+    m: Mat4,
+    overlays: &[SceneOverlay],
+) -> Result<Vec<ProjectedOverlay>, SceneOverlayError> {
+    if overlays.len() > SCENE_MAX_OVERLAYS {
+        return Err(SceneOverlayError::TooManyOverlays);
+    }
+    let mut projected = Vec::with_capacity(overlays.len());
+    let point = |p| m.transform_point3(Vec3::from_array(p));
+    for (index, overlay) in (0u32..).zip(overlays) {
+        let bad = SceneOverlayError::BadOverlay { index };
+        let (corners, argb, depth) = match *overlay {
+            SceneOverlay::Line {
+                from,
+                to,
+                width,
+                argb,
+                depth,
+            } => {
+                let (from, to) = (point(from), point(to));
+                if !from.is_finite() || !to.is_finite() || !width.is_finite() || width <= 0.0 {
+                    return Err(bad);
+                }
+                // The screen-space perpendicular expands each endpoint without changing
+                // its depth. Use f64 for the direction so large finite deltas don't overflow.
+                let delta = (to.as_dvec3() - from.as_dvec3()).truncate();
+                let length = delta.length();
+                if length == 0.0 {
+                    continue;
+                }
+                let offset = (delta.perp() * (f64::from(width) * 0.5 / length))
+                    .as_vec2()
+                    .extend(0.0);
+                (
+                    [from + offset, from - offset, to - offset, to + offset],
+                    argb,
+                    depth,
+                )
+            }
+            SceneOverlay::Quad {
+                corners,
+                argb,
+                depth,
+            } => (corners.map(point), argb, depth),
+            _ => return Err(bad),
+        };
+        if !corners.iter().all(|p| p.is_finite()) {
+            return Err(bad);
+        }
+        projected.push(ProjectedOverlay {
+            corners: corners.map(|p| p.to_array()),
+            color: horizon_client::hud_layout::abgr(argb),
+            depth: match depth {
+                SceneDepth::Tested => OverlayDepth::Tested,
+                SceneDepth::ThroughWalls => OverlayDepth::ThroughWalls,
+            },
+        });
+    }
+    Ok(projected)
+}
+
 /// The step a model face's direction points: the model's `Direction` lists
 /// its sides in the order the game's does.
 fn step(direction: horizon_assets::model::Direction) -> [i32; 3] {
@@ -72,33 +144,16 @@ pub(super) fn shaded(color: u32, shade: f32) -> u32 {
 }
 
 impl Game<'_> {
-    /// Draws `blocks`, a scene of block states at positions of its own (not
-    /// the world's), into the box `rect` (x0, y0, x1, y1, GUI pixels) of a
-    /// screen's `batch`, seen as `view` says: Create's Ponder scenes. Each
-    /// block is drawn with its model, full bright and shaded by face, a face
-    /// against a solid neighbour in the scene left out; a block with an
-    /// `entity` (a mod's) is drawn by `native_block_entity_submit` as in the
-    /// world too, its `spin` parts turning with the game time. What lies
-    /// outside the box is cut off, and the scene has a depth of its own, so
-    /// it never covers the screen's other drawing or is covered by it but in
-    /// the order drawn. `extra` adds quads in the scene's coordinates before
-    /// the scene is seen and sorted (a living scene's entities and particles,
-    /// `native_scene_live`); a scene of blocks alone passes none. Nothing is
-    /// drawn when a quad seen through the view isn't finite. API 422.
+    /// Emits the projected base geometry. `extra` adds living entities and particles
+    /// before projection and sorting. The caller submits the shared depth and clip
+    /// after appending any overlays.
     pub(super) fn draw_scene_quads(
         &self,
         batch: &mut HudBatch,
-        rect: [f32; 4],
+        m: Mat4,
         blocks: &[SceneBlock<'_>],
-        view: SceneView,
         extra: impl FnOnce(&mut Vec<SceneQuad>),
     ) -> Result<(), mod_api::SceneError> {
-        if !self.native_window() {
-            return Err(mod_api::SceneError::Unavailable);
-        }
-        if !view.scale.is_finite() || view.scale <= 0.0 {
-            return Err(mod_api::SceneError::BadView);
-        }
         // The Game boundary prepared every state before any drawing began.
         let occupied: std::collections::HashMap<[i32; 3], _> =
             blocks.iter().map(|b| (b.pos, b.state)).collect();
@@ -210,7 +265,6 @@ impl Game<'_> {
             }
         }
         extra(&mut quads);
-        let m = scene_matrix(rect, view);
         let mut seen: Vec<ProjectedQuad> = quads
             .into_iter()
             .filter(|q| !q.cull || m.transform_vector3(q.normal).z > 0.0)
@@ -234,12 +288,35 @@ impl Game<'_> {
         }
         // Far to near, for the faces that let others show through.
         seen.sort_by(|a, b| a.depth.total_cmp(&b.depth));
-        let start = batch.vertices.len();
         for face in seen {
             batch.quad_3d(face.corners, face.uv, face.color);
         }
-        batch.depth_since(start, rect);
         Ok(())
+    }
+
+    pub(super) fn finish_scene(
+        &self,
+        batch: &mut HudBatch,
+        start: usize,
+        rect: [f32; 4],
+        overlays: &[ProjectedOverlay],
+    ) {
+        if overlays.is_empty() {
+            batch.depth_since(start, rect);
+            return;
+        }
+        let overlay_start = batch.vertices.len();
+        let uv = horizon_client::gfx::lightning::white_uv(&self.gui.atlas.font.white());
+        for overlay in overlays {
+            batch.quad_3d(overlay.corners, [uv; 4], overlay.color);
+        }
+        let runs = overlays
+            .chunk_by(|a, b| a.depth == b.depth)
+            .scan(overlay_start, |end, run| {
+                *end += run.len() * 6;
+                Some((*end, run[0].depth))
+            });
+        batch.depth_overlays_since(start, overlay_start, rect, runs);
     }
 }
 

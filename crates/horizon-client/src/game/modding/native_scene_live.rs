@@ -9,9 +9,11 @@
 use super::api_values::TryIntoEngine as _;
 use super::{
     Game,
-    native_scene::{SceneBlock, SceneQuad, face_shade, shaded},
+    native_scene::{
+        ProjectedOverlay, SceneBlock, SceneQuad, face_shade, project_overlays, scene_matrix, shaded,
+    },
 };
-use glam::{DVec3, Quat, Vec3};
+use glam::{DVec3, Mat4, Quat, Vec3};
 use horizon_client::{
     animate_tick::{AnimateContext, animate_scene},
     chunk::Chunk,
@@ -24,7 +26,8 @@ use horizon_client::{
 use horizon_core::geometry::Vec3 as Position;
 use mod_api::{
     GuiEntity, GuiEntityError, SCENE_ANIMATE_PICKS, SCENE_CATCH_UP, SCENE_MAX_ANIMATING,
-    SCENE_MAX_ENTITIES, SCENE_MAX_PARTICLES, Scene, SceneClock, SceneError, SceneView,
+    SCENE_MAX_ENTITIES, SCENE_MAX_PARTICLES, Scene, SceneClock, SceneError, SceneOverlay,
+    SceneOverlayError, SceneView,
 };
 use std::{
     cell::Cell,
@@ -216,12 +219,65 @@ impl Game<'_> {
         scene: &Scene,
         view: SceneView,
     ) -> Result<(), SceneError> {
+        let m = self.scene_draw_matrix(rect, view)?;
+        self.draw_prepared_scene(batch, rect, blocks, scene, (view, m), &[])
+    }
+
+    pub(super) fn native_draw_scene_with_overlays(
+        &self,
+        batch: &mut HudBatch,
+        rect: [f32; 4],
+        blocks: &[SceneBlock<'_>],
+        scene: &Scene,
+        view: SceneView,
+        overlays: &[SceneOverlay],
+    ) -> Result<(), SceneOverlayError> {
+        let m = self.scene_draw_matrix(rect, view)?;
+        let overlays = project_overlays(m, overlays)?;
+        self.draw_prepared_scene(batch, rect, blocks, scene, (view, m), &overlays)?;
+        Ok(())
+    }
+
+    fn scene_draw_matrix(&self, rect: [f32; 4], view: SceneView) -> Result<Mat4, SceneError> {
         if !self.native_window() {
             return Err(SceneError::Unavailable);
         }
-        if !lives(scene) {
-            return self.draw_scene_quads(batch, rect, blocks, view, |_| {});
+        if !view.scale.is_finite() || view.scale <= 0.0 {
+            return Err(SceneError::BadView);
         }
+        Ok(scene_matrix(rect, view))
+    }
+
+    fn draw_prepared_scene(
+        &self,
+        batch: &mut HudBatch,
+        rect: [f32; 4],
+        blocks: &[SceneBlock<'_>],
+        scene: &Scene,
+        (view, m): (SceneView, Mat4),
+        overlays: &[ProjectedOverlay],
+    ) -> Result<(), SceneError> {
+        let start = batch.vertices.len();
+        let result = if lives(scene) {
+            self.native_draw_live_scene(batch, rect, blocks, scene, view, m)
+        } else {
+            self.draw_scene_quads(batch, m, blocks, |_| {})
+        };
+        if matches!(result, Ok(()) | Err(SceneError::TooManyScenes)) {
+            self.finish_scene(batch, start, rect, overlays);
+        }
+        result
+    }
+
+    fn native_draw_live_scene(
+        &self,
+        batch: &mut HudBatch,
+        rect: [f32; 4],
+        blocks: &[SceneBlock<'_>],
+        scene: &Scene,
+        view: SceneView,
+        m: Mat4,
+    ) -> Result<(), SceneError> {
         let clock = check(rect, scene, view)?;
         // Checked whole before anything is kept; an empty list allocates nothing.
         let added = scene
@@ -271,9 +327,9 @@ impl Game<'_> {
                 Some(i) => {
                     let l = &mut scenes.live[i];
                     l.frame = frame;
-                    self.draw_live(batch, rect, blocks, view, l, clock.partial)?;
+                    self.draw_live(batch, m, blocks, facing_viewer(view), l, clock.partial)?;
                 }
-                None => self.draw_scene_quads(batch, rect, blocks, view, |_| {})?,
+                None => self.draw_scene_quads(batch, m, blocks, |_| {})?,
             }
             return Err(SceneError::TooManyScenes);
         }
@@ -307,16 +363,16 @@ impl Game<'_> {
         for (mob, e) in l.mobs.iter_mut().zip(&scene.entities) {
             pose(mob, e, clock);
         }
-        self.draw_live(batch, rect, blocks, view, l, clock.partial)
+        self.draw_live(batch, m, blocks, facing_viewer(view), l, clock.partial)
     }
 
     /// `l`'s blocks, entities and particles as they are, `partial` into the next tick.
     fn draw_live(
         &self,
         batch: &mut HudBatch,
-        rect: [f32; 4],
+        m: Mat4,
         blocks: &[SceneBlock<'_>],
-        view: SceneView,
+        facing: Quat,
         l: &mut Live,
         partial: f32,
     ) -> Result<(), SceneError> {
@@ -326,7 +382,7 @@ impl Game<'_> {
             verts,
             ..
         } = l;
-        self.draw_scene_quads(batch, rect, blocks, view, |quads| {
+        self.draw_scene_quads(batch, m, blocks, |quads| {
             for mob in mobs.iter() {
                 verts.clear();
                 // `DrawContext::entity`'s submission, in the scene's coordinates.
@@ -334,8 +390,7 @@ impl Game<'_> {
                 entity_quads(verts, quads);
             }
             verts.clear();
-            let base = facing_viewer(view);
-            engine.render(DVec3::ZERO, base, partial, &|_| 0xFF, verts);
+            engine.render(DVec3::ZERO, facing, partial, &|_| 0xFF, verts);
             for q in verts.as_chunks::<4>().0 {
                 quads.push(SceneQuad {
                     corners: q.each_ref().map(|v| Vec3::from_array(v.pos)),

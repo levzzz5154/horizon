@@ -132,6 +132,20 @@ pub trait DrawContext {
     ) -> Result<(), SceneError> {
         Err(SceneError::Unavailable)
     }
+    /// Draws the same scene as [`draw_scene`](Self::draw_scene), then draws `overlays`
+    /// in the order given, with the same view and clip. The overlays blend with the scene
+    /// according to their ARGB alpha and depth mode without occluding one another by depth.
+    /// A bad overlay or more than [`SCENE_MAX_OVERLAYS`] overlays refuses the whole draw,
+    /// without advancing the scene clock.
+    fn draw_scene_with_overlays(
+        &mut self,
+        rect: [f32; 4],
+        scene: &Scene,
+        view: SceneView,
+        overlays: &[SceneOverlay],
+    ) -> Result<(), SceneOverlayError> {
+        Err(SceneError::Unavailable.into())
+    }
     /// `GuiGraphics.enableScissor`: what this hook call draws from now on, until the matching
     /// [`pop_clip`](Self::pop_clip), is cut to `rect` (`[x, y, w, h]` in GUI pixels, as
     /// [`fill`](Self::fill) takes it), the visible part of a sprite, glyph or item kept.

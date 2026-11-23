@@ -99,6 +99,23 @@ impl DrawContext for GameDrawContext<'_, '_> {
         self.game
             .native_draw_scene(&mut *self.surface, rect, &blocks, scene, view)
     }
+    fn draw_scene_with_overlays(
+        &mut self,
+        rect: [f32; 4],
+        scene: &mod_api::Scene,
+        view: SceneView,
+        overlays: &[SceneOverlay],
+    ) -> Result<(), SceneOverlayError> {
+        let blocks = crate::game::api_values::aggregates::scene_blocks(&scene.blocks)?;
+        self.game.native_draw_scene_with_overlays(
+            &mut *self.surface,
+            rect,
+            &blocks,
+            scene,
+            view,
+            overlays,
+        )
+    }
     fn push_clip(&mut self, rect: [f32; 4]) -> Result<(), GuiClipRefusal> {
         self.clips.push(self.surface, rect)
     }
