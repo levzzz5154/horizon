@@ -148,12 +148,23 @@ pub struct ItemData {
     root: PathBuf,
     context: LoadContext,
     defaults: ItemDefaults,
+    description_ids: BTreeMap<String, String>,
     prototypes: Result<Arc<Prototypes>, Arc<serde_json::Error>>,
 }
 
 impl ItemData {
     pub fn load(root: &Path, context: LoadContext) -> io::Result<Self> {
         let mut defaults = read(root)?;
+        // The prepared report seeds ITEM_NAME from Item.getDescriptionId. Keep that
+        // identity separate from prototype edits, which can replace or remove ITEM_NAME.
+        let description_ids = defaults
+            .entries()
+            .iter()
+            .filter_map(|(item, components)| {
+                let key = components.get("minecraft:item_name")?.get("translate")?.as_str()?;
+                Some((item.clone(), key.to_owned()))
+            })
+            .collect();
         defaults.apply_native(&context);
         let prototypes = defaults
             .entries()
@@ -169,6 +180,7 @@ impl ItemData {
             root: root.to_owned(),
             context,
             defaults,
+            description_ids,
             prototypes,
         })
     }
@@ -179,6 +191,11 @@ impl ItemData {
 
     pub fn defaults(&self) -> &ItemDefaults {
         &self.defaults
+    }
+
+    /// The item's untranslated identity from the unmodified item report.
+    pub fn description_id(&self, item: &str) -> Option<&str> {
+        self.description_ids.get(item).map(String::as_str)
     }
 
     pub fn context(&self) -> &LoadContext {

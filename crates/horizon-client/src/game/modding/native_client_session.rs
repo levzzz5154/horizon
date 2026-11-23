@@ -84,6 +84,97 @@ impl Game<'_> {
         ))
     }
 
+    fn native_local_player_present(&self) -> Option<()> {
+        self.native_session()?;
+        self.player.as_ref()?;
+        Some(())
+    }
+
+    pub(super) fn local_attack_strength_scale(&self, partial: f32) -> Option<f32> {
+        self.native_local_player_present()?;
+        partial.is_finite().then(|| {
+            self.hand_strength
+                .scale(partial, self.main_hand_attack_speed())
+        })
+    }
+
+    /// `Player.getCurrentItemAttackStrengthDelay`, with the same speed and conversion as the HUD.
+    pub(super) fn local_attack_strength_delay(&self) -> Option<f32> {
+        self.native_local_player_present()?;
+        Some(horizon_client::attack_strength::delay(
+            self.main_hand_attack_speed(),
+        ))
+    }
+
+    /// `Player.getSleepTimer`, including the wake fade.
+    pub(super) fn local_sleep_timer(&self) -> Option<u32> {
+        self.native_local_player_present()?;
+        Some(self.sleep_timer)
+    }
+
+    fn local_held(&self, hand: mod_api::Hand) -> Option<&horizon_client::items::ItemStack> {
+        match hand {
+            mod_api::Hand::Main => self.stack_in(self.selected),
+            mod_api::Hand::Off => self.offhand.as_ref(),
+        }
+        .filter(|stack| stack.count > 0 && &*stack.item != "minecraft:air")
+    }
+
+    pub(super) fn local_held_stack(
+        &self,
+        hand: mod_api::Hand,
+    ) -> Option<&horizon_client::items::ItemStack> {
+        self.native_local_player_present()?;
+        self.local_held(hand)
+    }
+
+    /// `ItemCooldowns.getCooldownPercent(stack, 0)` on the client.
+    pub(super) fn local_held_cooldown_percent(&self, hand: mod_api::Hand) -> Option<f32> {
+        self.native_local_player_present()?;
+        if self.cooldowns.is_empty() {
+            return Some(0.0);
+        }
+        let Some(stack) = self.local_held(hand) else {
+            return Some(0.0);
+        };
+        let default = self
+            .items()
+            .get(&stack.item)
+            .and_then(|item| item.use_cooldown.as_ref());
+        let group = horizon_client::cooldowns::group(stack, default);
+        Some(self.cooldowns.percent(&group, 0.0))
+    }
+
+    /// `Item.getDescriptionId`: the item identity, independent of its stack's name.
+    pub(super) fn local_held_item_translation_key(&self, hand: mod_api::Hand) -> Option<String> {
+        let stack = self.local_held_stack(hand)?;
+        if let Some(key) = self.res.core.item_data.description_id(&stack.item) {
+            return Some(key.to_owned());
+        }
+        let item = self.items().get(&stack.item)?;
+        let prefix = if item.block.is_some() {
+            "block"
+        } else {
+            "item"
+        };
+        let (namespace, path) = item.id.split_once(':')?;
+        let mut key = String::with_capacity(prefix.len() + namespace.len() + path.len() + 2);
+        key.push_str(prefix);
+        key.push('.');
+        key.push_str(namespace);
+        key.push('.');
+        key.extend(path.chars().map(|ch| if ch == '/' { '.' } else { ch }));
+        Some(key)
+    }
+
+    /// `LivingEntity.getUseItem`: the captured slot, not the hand currently acting.
+    pub(super) fn local_item_in_use(&self) -> Option<&horizon_client::items::ItemStack> {
+        self.native_local_player_present()?;
+        let (slot, _) = self.using?;
+        self.stack_in(slot)
+            .filter(|stack| stack.count > 0 && &*stack.item != "minecraft:air")
+    }
+
     /// `setYRot` / `setXRot` of the local player by a client mod: yaw as given, pitch `% 360`
     /// clamped to -90..90, the previous angles moved by as much (`Entity.turn`). Sends nothing:
     /// the tick's player sync (`remote_send_state`) carries the look.

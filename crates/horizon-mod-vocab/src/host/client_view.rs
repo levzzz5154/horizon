@@ -81,6 +81,46 @@ pub trait ClientViewClientHost {
     #[access(ClientSetup)]
     fn local_item_use(&self) -> Option<ItemUse>;
     /// Side: client.
+    /// Local attack charge (`Player.getAttackStrengthScale(partial)`), clamped to 0 through 1.
+    /// None without a logged-in local player or when `partial` is not finite.
+    #[access(ClientSetup)]
+    fn local_attack_strength_scale(&self, partial: f32) -> Option<f32>;
+    /// Side: client.
+    /// Ticks to fully recharge the local player's melee attack at the current main-hand
+    /// attack speed (`Player.getCurrentItemAttackStrengthDelay`). None without a logged-in
+    /// local player.
+    #[access(ClientSetup)]
+    fn local_attack_strength_delay(&self) -> Option<f32>;
+    /// Side: client.
+    /// The local player's sleep timer (`Player.getSleepTimer`): 0 when awake, up to 100
+    /// while sleeping, and 100 through 109 during the wake fade. None without a logged-in
+    /// local player.
+    #[access(ClientSetup)]
+    fn local_sleep_timer(&self) -> Option<u32>;
+    /// Side: client.
+    /// Owned snapshot of the local player's stack in `hand`, including its component patch.
+    /// Use [`ItemResource::value`] with the client host to read effective components.
+    /// None for an empty hand or without a logged-in local player.
+    #[access(ClientSetup)]
+    fn local_held_stack(&self, hand: Hand) -> Option<ItemStack>;
+    /// Side: client.
+    /// Fraction of the held stack's cooldown remaining (`ItemCooldowns.getCooldownPercent`
+    /// at partial tick 0), respecting the stack's cooldown group. Returns 0 for an empty
+    /// hand or inactive cooldown, and None without a logged-in local player.
+    #[access(ClientSetup)]
+    fn local_held_cooldown_percent(&self, hand: Hand) -> Option<f32>;
+    /// Side: client.
+    /// The held item's untranslated description key (`Item.getDescriptionId`), not the
+    /// stack's display name. None for an empty hand or without a logged-in local player.
+    #[access(ClientSetup)]
+    fn local_held_item_translation_key(&self, hand: Hand) -> Option<String>;
+    /// Side: client.
+    /// Owned snapshot of the local player's stack in the slot recorded for the current use,
+    /// with its component patch. None when no stack is in use or without a logged-in local
+    /// player. Use [`Self::local_item_use`] for the use timing and hand.
+    #[access(ClientSetup)]
+    fn local_item_in_use(&self) -> Option<ItemStack>;
+    /// Side: client.
     /// Turns the local player's view to `yaw` and `pitch` (degrees), as `setYRot` and `setXRot`
     /// store them: yaw as given (not wrapped; the server wraps it), pitch `% 360` then clamped to
     /// -90..90. The previous-frame angles move by the same amount, as `Entity.turn` does for the

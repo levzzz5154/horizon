@@ -138,7 +138,7 @@ client query, and the result sends nothing and authorizes no action on the serve
 
 ## Local player reads
 
-These read the local player as the client sees it. They take no mod-controlled numbers and send nothing.
+These read the local player as the client sees it. None of them sends packets.
 
 - `ClientHost::client_session().client_latency()` is the player's latency in milliseconds as the
   tab list draws it (`PlayerInfo.getLatency`): the server's smoothed keep-alive average, refreshed by
@@ -163,6 +163,25 @@ These read the local player as the client sees it. They take no mod-controlled n
   (`isUsingItem`, `getUsedItemHand`, `getTicksUsingItem`, `getUseItemRemainingTicks`).
   `ticks_used + ticks_remaining` is the use duration. It is `None` when no item is in use or no world
   is open.
+- `ClientHost::local_attack_strength_scale(partial)` is the predicted melee recharge in
+  `0.0..=1.0`, using the same ticker as the HUD. `local_attack_strength_delay()` gives the
+  current full recharge in ticks, including attribute modifiers. A nonfinite `partial` or no
+  local player gives `None` for the scale.
+- `ClientHost::local_sleep_timer()` gives the timer that drives the bed overlay: awake is
+  zero, sleep rises to 100, and the wake fade uses 100–109 before going back to zero.
+  For current mining, use `host.local_player()?.block_breaking(host)`: it reads predicted
+  local progress, not another player's visible crack overlay.
+- `ClientHost::local_held_stack(hand)` gives the main- or offhand stack, with `None` for an
+  empty hand. Use `ItemResource::of(&stack).value(host, &component)` for the effective value
+  of a component such as `minecraft:container`, `minecraft:bundle_contents`,
+  `minecraft:charged_projectiles`, or `minecraft:food`, including the item's defaults,
+  stack changes and explicit removals.
+- `ClientHost::local_held_cooldown_percent(hand)` reads the held stack's cooldown group:
+  `0.0` means the hand is empty or the group is ready. `local_held_item_translation_key(hand)`
+  reads the item's description ID, independent of custom names, pack display names and
+  the client's language. `local_item_in_use()` gives the stack in the slot currently being
+  used (including the offhand), alongside the timing from `local_item_use()`.
+  These reads return `None` without a logged-in local player.
 - `ClientHost::hover_name(&stack)` is `ItemStack.getHoverName()` as plain text: the custom name, else
   a written book's non-blank title, else the item's name in the client's language, without rarity
   colour or italics. An invalid stack reads an empty string.
