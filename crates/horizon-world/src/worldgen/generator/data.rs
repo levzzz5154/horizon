@@ -379,7 +379,7 @@ impl GeneratorData {
             densities: read_bundle(dir, ov, "densities")?,
             rules: read_bundle(dir, ov, "rules")?,
             settings: read_bundle(dir, ov, "settings")?,
-            world_presets: read_bundle(dir, ov, "world_presets")?,
+            world_presets: read_bundle(dir, ov, overrides::WORLD_PRESETS)?,
             dimensions: ov.apply(overrides::DIMENSIONS, BTreeMap::new()),
             dimension_types: ov.apply(overrides::DIMENSION_TYPES, BTreeMap::new()),
             warnings,

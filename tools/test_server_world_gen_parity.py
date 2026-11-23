@@ -15,8 +15,9 @@ the worker's number is left out). In a world without structures (`generate-struc
 finds none) and how many of the saved chunks hold structure starts or references (none:
 ChunkStatusTasks.generateStructureStarts does nothing).
 
-Horizon generates the normal, flat, amplified, large-biome and single-biome presets:
-`debug_all_block_states` isn't tested.
+Horizon generates the normal, flat, amplified, large-biome and single-biome presets. A selected
+pack's namespaced preset contributes its complete set of dimensions; a disabled preset falls back
+to normal. `debug_all_block_states` isn't tested.
 """
 import json
 import os
@@ -27,6 +28,7 @@ import shutil
 import subprocess
 import sys
 import time
+import zipfile
 
 try:
     from . import anvil_dump, fast_bins, lab, test_rust_parity as base
@@ -66,6 +68,16 @@ CASES = {
     'large-biomes': {'level-type': 'minecraft:large_biomes', 'level-seed': '2'},
     'single-biome': {'level-type': 'minecraft:single_biome_surface', 'level-seed': '3'},
     'unknown': {'level-type': 'Some Type', 'level-seed': '42'},
+    'pack-preset': {
+        'level-type': 'fixture:terraces', 'level-seed': '13',
+        'initial-enabled-packs': 'vanilla,file/terraces', 'initial-disabled-packs': 'file/z-disabled',
+        # A named flat preset is not minecraft:flat: don't apply these layers.
+        'generator-settings': '{"layers":[{"block":"minecraft:gold_block","height":1}]}',
+    },
+    'disabled-preset': {
+        'level-type': 'fixture:terraces', 'level-seed': '13',
+        'initial-disabled-packs': 'file/terraces,file/z-disabled',
+    },
 }
 WORKER = re.compile(r'\[Worker-Main-\d+/(WARN|ERROR)\]: (.*)')
 LOCATE = ['locate structure #minecraft:village', 'locate structure minecraft:mineshaft']
@@ -101,7 +113,39 @@ def escape(value):
     return value.replace('\\', '\\\\').replace(':', '\\:').replace('=', '\\=').replace('#', '\\#')
 
 
-def run_case(label, command, build, case):
+def install_presets(world, data_format):
+    for name, fill in [('terraces', 'minecraft:glass'), ('z-disabled', 'minecraft:obsidian')]:
+        pack = world / 'datapacks' / name
+        entries = pack / 'data/fixture/worldgen/world_preset'
+        entries.mkdir(parents=True)
+        (pack / 'pack.mcmeta').write_text(json.dumps({'pack': {
+            'description': name, 'pack_format': data_format[0],
+            'min_format': data_format, 'max_format': data_format,
+        }}))
+        dimensions = {
+            'minecraft:overworld': {
+                'type': 'minecraft:overworld',
+                'generator': {'type': 'minecraft:flat', 'settings': {
+                    'biome': 'minecraft:desert', 'lakes': False, 'features': False,
+                    'layers': [{'block': 'minecraft:bedrock', 'height': 1},
+                               {'block': fill, 'height': 5}], 'structure_overrides': [],
+                }},
+            },
+            'minecraft:the_nether': {
+                'type': 'minecraft:the_nether',
+                'generator': {'type': 'minecraft:noise', 'settings': 'minecraft:nether',
+                              'biome_source': {'type': 'minecraft:multi_noise', 'preset': 'minecraft:nether'}},
+            },
+            'minecraft:the_end': {
+                'type': 'minecraft:the_end',
+                'generator': {'type': 'minecraft:noise', 'settings': 'minecraft:end',
+                              'biome_source': {'type': 'minecraft:the_end'}},
+            },
+        }
+        (entries / 'terraces.json').write_text(json.dumps({'dimensions': dimensions}))
+
+
+def run_case(label, command, build, case, data_format):
     directory = build / label / case
     if directory.exists():
         shutil.rmtree(directory)
@@ -110,6 +154,8 @@ def run_case(label, command, build, case):
     (directory / 'server.properties').write_text(''.join(f'{k}={escape(v)}\n' for k, v in props.items()),
                                                  encoding='iso-8859-1')
     (directory / 'eula.txt').write_text('eula=true\n')
+    if case in ('pack-preset', 'disabled-preset'):
+        install_presets(directory / 'world', data_format)
     server = Server(command, directory, f'{label}-{case}')
     replies = []
     try:
@@ -130,6 +176,9 @@ def run_case(label, command, build, case):
 
 def main():
     lock, jars, libraries = base.verify_artifacts()
+    with zipfile.ZipFile(jars['server']) as archive:
+        version = json.loads(archive.read('version.json'))['pack_version']
+    data_format = [version['data_major'], version['data_minor']]
     build = lab.LOCAL / NAME
     build.mkdir(parents=True, exist_ok=True)
     report = build / 'report.json'
@@ -145,8 +194,8 @@ def main():
     horizon_server = [binary, '--resources', lab.RESOURCES, '--dedicated', '--nogui']
     vanilla, horizon = [], []
     for case in CASES:
-        vanilla += run_case('vanilla', vanilla_server, build, case)
-        horizon += run_case('horizon', horizon_server, build, case)
+        vanilla += run_case('vanilla', vanilla_server, build, case, data_format)
+        horizon += run_case('horizon', horizon_server, build, case, data_format)
     (build / 'vanilla.txt').write_text('\n'.join(vanilla) + '\n', encoding='utf-8')
     (build / 'horizon.txt').write_text('\n'.join(horizon) + '\n', encoding='utf-8')
     if vanilla != horizon:
@@ -155,14 +204,18 @@ def main():
         raise AssertionError(f'world settings differ (see {build}/vanilla.txt and horizon.txt):\n' + diff[:6000])
     if not any('minecraft:flat' in l for l in vanilla) or not any(l.startswith('ERROR: ') for l in vanilla):
         raise AssertionError(f'vanilla made no flat world or logged no error (see {build})')
+    if '"minecraft:glass"' not in '\n'.join(vanilla[vanilla.index('# pack-preset'):
+                                                   vanilla.index('# disabled-preset')]):
+        raise AssertionError('vanilla did not use the selected datapack preset')
     lab.write_json(report, dict(
         schema=1, minecraft=lock['minecraft']['version'], platform=platform.platform(),
         java=subprocess.check_output(['java', '--version'], text=True).splitlines()[0],
         cases=list(CASES), lines=len(vanilla), output_sha256=lab.digest(build / 'horizon.txt', 'sha256'),
         scope='a new dedicated-server world: level-type (flat, normal, amplified, large_biomes, '
-              'single_biome_surface, unknown), a flat world\'s generator-settings, generate-structures, as '
-              'world_gen_settings.dat and the lines logged; without structures, locate structure\'s replies and '
-              'the saved chunks\' structure starts and references.'))
+              'single_biome_surface, selected and disabled datapack presets, unknown), a flat '
+              'world\'s generator-settings, generate-structures, as world_gen_settings.dat and the '
+              'lines logged; without structures, locate structure\'s replies and the saved '
+              'chunks\' structure starts and references.'))
     print(f'server world gen: {len(CASES)} cases, {len(vanilla)} lines identical')
 
 

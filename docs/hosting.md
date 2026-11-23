@@ -212,6 +212,12 @@ start instead of being ignored. When the game changes a setting itself (`/whitel
 back into `server.toml` when it stops, and your comments are kept. Changes to the file apply at the next
 restart: there is no live reload yet.
 
+For a new world, put a data pack in `<world>/datapacks/` and set `level-type = "example:skylands"` under
+`[properties]` to select its `data/example/worldgen/world_preset/skylands.json`. Use `initial-enabled-packs`
+to set pack order (later packs win) and `initial-disabled-packs` to leave packs out, unless the world
+already has a `datapacks.json` selection. A missing preset falls back to `minecraft:normal` when vanilla
+is enabled. Changing `level-type` does not change an existing world's generator.
+
 ### Operators' commands: `admin_feedback_to_ops`
 
 On by default, as vanilla: when an operator runs a command that reports to admins (`/gamemode`, `/give`, `/tp`...),

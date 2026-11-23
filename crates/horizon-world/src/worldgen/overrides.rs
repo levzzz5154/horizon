@@ -17,10 +17,13 @@ pub const DIMENSIONS: &str = "dimensions";
 pub const DIMENSION_TYPES: &str = "dimension_types";
 /// The bundle of `worldgen/noise_settings/<id>.json` noise generator settings.
 pub const NOISE_SETTINGS: &str = "settings";
+/// The bundle and pack folder of world presets.
+pub const WORLD_PRESETS: &str = "world_presets";
+pub const WORLD_PRESET_FOLDER: &str = "worldgen/world_preset";
 
 /// Pack folders (`data/<ns>/<kind>/`) the chunk generator reads, and the
 /// bundle each joins.
-const KINDS: [(&str, &str); 16] = [
+const KINDS: [(&str, &str); 17] = [
     ("dimension", DIMENSIONS),
     ("dimension_type", DIMENSION_TYPES),
     ("worldgen/biome", "biomes"),
@@ -38,6 +41,7 @@ const KINDS: [(&str, &str); 16] = [
     ("worldgen/structure", "structures"),
     ("worldgen/structure_set", "structure_sets"),
     ("worldgen/template_pool", "template_pools"),
+    (WORLD_PRESET_FOLDER, WORLD_PRESETS),
 ];
 /// Tag folders the chunk generator reads, and the tag bundle each joins.
 const TAG_KINDS: [(&str, &str); 4] = [
@@ -286,6 +290,37 @@ impl WorldgenOverrides {
         } else {
             PackFile::Other
         }
+    }
+    /// `DedicatedServerProperties.WorldDimensionData.create`: look up the
+    /// requested id in the selected registry, then the legacy aliases, then
+    /// normal (or the first available preset if vanilla is not selected).
+    /// Returns the resolved id, its JSON, and whether it was a fallback.
+    pub fn resolve_world_preset<'a>(
+        &'a self,
+        bundled: &'a BTreeMap<String, String>,
+        level_type: &str,
+    ) -> Option<(&'a str, &'a str, bool)> {
+        let packed = self.entries.get(WORLD_PRESETS);
+        let get = |id: &str| {
+            packed
+                .and_then(|entries| entries.get_key_value(id))
+                .or_else(|| bundled.get_key_value(id))
+        };
+        let id = horizon_core::identifier::Identifier::parse(level_type)
+            .ok()
+            .map(|id| id.to_string());
+        let selected = id.as_deref().and_then(get).or_else(|| match level_type {
+            "default" => get("minecraft:normal"),
+            "largebiomes" => get("minecraft:large_biomes"),
+            _ => None,
+        });
+        if let Some((id, json)) = selected {
+            return Some((id, json, false));
+        }
+        let (id, json) = get("minecraft:normal")
+            .or_else(|| packed.and_then(BTreeMap::first_key_value))
+            .or_else(|| bundled.first_key_value())?;
+        Some((id, json, true))
     }
     /// After the last pack: leaves out the packs' new biomes (`known` says
     /// which the game has), and what names them names the rest without
@@ -631,7 +666,7 @@ mod tests {
         );
         assert_eq!(
             add("data/minecraft/worldgen/world_preset/normal.json", "{}"),
-            PackFile::NotRead("worldgen/world_preset".into())
+            PackFile::Read
         );
         assert_eq!(add("data/p/function/f.mcfunction", ""), PackFile::Other);
         assert_eq!(
@@ -647,8 +682,40 @@ mod tests {
         assert_eq!(get("carvers"), [("minecraft:cave", "6")]);
         assert_eq!(get("features"), [("minecraft:water_delta", "7")]);
         assert_eq!(get("state_providers"), [("p:stony_cliffs", "8")]);
+        assert_eq!(get(WORLD_PRESETS), [("minecraft:normal", "{}")]);
         assert_eq!(get("structures"), []);
         assert_eq!(o.tags("biome_tags").count(), 1);
+    }
+
+    #[test]
+    fn dedicated_presets_use_pack_priority_and_keep_legacy_names() {
+        let bundled = BTreeMap::from([
+            ("minecraft:normal".into(), "bundled normal".into()),
+            (
+                "minecraft:large_biomes".into(),
+                "bundled large biomes".into(),
+            ),
+        ]);
+        let mut presets = WorldgenOverrides::default();
+        presets.set(WORLD_PRESETS, "minecraft:normal", "pack normal".into());
+        presets.set(WORLD_PRESETS, "test:sky/islands", "lower pack".into());
+        presets.set(WORLD_PRESETS, "test:sky/islands", "higher pack".into());
+        for (level_type, id, record, fallback) in [
+            ("test:sky/islands", "test:sky/islands", "higher pack", false),
+            ("default", "minecraft:normal", "pack normal", false),
+            (
+                "largebiomes",
+                "minecraft:large_biomes",
+                "bundled large biomes",
+                false,
+            ),
+            ("missing", "minecraft:normal", "pack normal", true),
+        ] {
+            assert_eq!(
+                presets.resolve_world_preset(&bundled, level_type),
+                Some((id, record, fallback))
+            );
+        }
     }
 
     #[test]

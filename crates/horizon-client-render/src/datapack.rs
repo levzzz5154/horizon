@@ -467,9 +467,18 @@ pub fn install(dir: &Path, world: &Path, selected: &[String]) -> Result<(), Stri
     if !selected.iter().any(|id| id == "vanilla") {
         disabled.push("vanilla".into());
     }
-    let json = serde_json::json!({ "enabled": selected, "disabled": disabled });
+    write_selection(world, selected, &disabled)
+}
+
+/// Save the world's selected pack order and exclusions before it opens.
+pub fn write_selection(
+    world: &Path,
+    enabled: &[String],
+    disabled: &[String],
+) -> Result<(), String> {
+    let json = serde_json::json!({ "enabled": enabled, "disabled": disabled });
     let file = world.join("datapacks.json");
-    std::fs::write(&file, json.to_string()).map_err(|e| err(&file, e))
+    std::fs::write(&file, json.to_string()).map_err(|e| format!("{}: {e}", file.display()))
 }
 /// Re-Create World's packs from a saved world: a new folder holding a copy of
 /// its `datapacks` (`CreateWorldScreen.createTempDataPackDirFromExistingWorld`; `None` when the
@@ -1125,9 +1134,9 @@ fn hash_normalize(s: &str) -> String {
 /// Whether every flag `pack` asks for (`Pack.getRequestedFeatures`) is among
 /// the world's `enabled_features`.
 fn features_enabled(pack: &DataPack, enabled_features: &[String]) -> bool {
-    pack.features()
-        .iter()
-        .all(|f| enabled_features.iter().any(|e| e == f))
+    pack.features().iter().all(|f| {
+        enabled_features.contains(f) || (enabled_features.is_empty() && f == "minecraft:vanilla")
+    })
 }
 
 /// The ids of `packs` (a world's, from `discover`) that are enabled, lowest
@@ -1135,36 +1144,92 @@ fn features_enabled(pack: &DataPack, enabled_features: &[String]) -> bool {
 /// order, then every pack it lists neither way, in name order.
 ///
 /// `enabled_features` are the world's feature flags
-/// (`WorldDataConfiguration.enabledFeatures`): a pack a pack file selected
-/// while asking for missing features comes off
-/// (`MinecraftServer.configurePackRepository`), and a feature pack whose
-/// features the world enables is forced on however the world's selection
-/// feels about it (`MinecraftServer.enableForcedFeaturePacks`).
+/// (`WorldDataConfiguration.enabledFeatures`): a selected pack asking for
+/// missing features comes off (`MinecraftServer.configurePackRepository`),
+/// and a feature pack is forced on if it supplies a world flag no selected
+/// pack supplies (`MinecraftServer.enableForcedFeaturePacks`).
 pub fn enabled_ids(world: &Path, packs: &[DataPack], enabled_features: &[String]) -> Vec<String> {
-    let saved: Option<serde_json::Value> = std::fs::read(world.join("datapacks.json"))
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok());
-    let list = |key: &str| -> Vec<String> {
-        saved
-            .as_ref()
-            .and_then(|v| v[key].as_array())
-            .map(|a| {
-                a.iter()
-                    .filter_map(|s| s.as_str().map(str::to_owned))
-                    .collect()
-            })
-            .unwrap_or_default()
+    let (enabled, disabled) = read_selection(world).unwrap_or_default();
+    select_packs(packs, &enabled, &disabled, Some(enabled_features))
+}
+
+/// A new dedicated world's pack order, exclusions and requested feature flags.
+pub struct InitialPackSelection {
+    pub enabled: Vec<String>,
+    pub disabled: Vec<String>,
+    pub features: Vec<String>,
+}
+
+/// `MinecraftServer.configurePackRepository` in init mode: new worlds admit
+/// the flags their selected packs ask for. An explicit world selection takes
+/// precedence over the server's defaults.
+pub fn initial_pack_selection(
+    world: &Path,
+    packs: &[DataPack],
+    enabled: &[String],
+    disabled: &[String],
+) -> InitialPackSelection {
+    let saved = read_selection(world);
+    let (requested, excluded) = saved.as_ref().map_or((enabled, disabled), |(on, off)| {
+        (on.as_slice(), off.as_slice())
+    });
+    let mut enabled = select_packs(packs, requested, excluded, None);
+    let vanilla = |id: &String| id == "vanilla";
+    let mut features = Vec::new();
+    if requested.iter().any(vanilla) || !excluded.iter().any(vanilla) || enabled.is_empty() {
+        enabled.insert(0, "vanilla".to_owned());
+        features.push("minecraft:vanilla".to_owned());
+    }
+    features.extend(
+        enabled
+            .iter()
+            .filter_map(|id| packs.iter().find(|p| &p.id == id))
+            .flat_map(DataPack::features),
+    );
+    features.sort();
+    features.dedup();
+    let mut disabled: Vec<String> = excluded
+        .iter()
+        .filter(|id| !enabled.contains(id))
+        .cloned()
+        .collect();
+    for pack in packs {
+        if !enabled.contains(&pack.id) && !disabled.contains(&pack.id) {
+            disabled.push(pack.id.clone());
+        }
+    }
+    InitialPackSelection {
+        enabled,
+        disabled,
+        features,
+    }
+}
+
+fn read_selection(world: &Path) -> Option<(Vec<String>, Vec<String>)> {
+    let saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(world.join("datapacks.json")).ok()?).ok()?;
+    let list = |key: &str| {
+        saved[key]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|id| id.as_str().map(str::to_owned))
+            .collect()
     };
-    let disabled = list("disabled");
-    let mut enabled: Vec<String> = list("enabled")
-        .into_iter()
-        .filter(|id| packs.iter().any(|p| &p.id == id))
-        .filter(|id| {
-            packs
-                .iter()
-                .find(|p| &p.id == id)
-                .is_none_or(|p| features_enabled(p, enabled_features))
-        })
+    Some((list("enabled"), list("disabled")))
+}
+
+fn select_packs(
+    packs: &[DataPack],
+    selected: &[String],
+    disabled: &[String],
+    enabled_features: Option<&[String]>,
+) -> Vec<String> {
+    let admits = |p: &DataPack| enabled_features.is_none_or(|flags| features_enabled(p, flags));
+    let mut enabled: Vec<String> = selected
+        .iter()
+        .filter_map(|id| packs.iter().find(|p| &p.id == id).filter(|p| admits(p)))
+        .map(|p| p.id.clone())
         .collect();
     for p in packs {
         // A pack nobody mentions comes on (`PackRepository.reload` selects
@@ -1173,18 +1238,37 @@ pub fn enabled_ids(world: &Path, packs: &[DataPack], enabled_features: &[String]
         if !enabled.contains(&p.id)
             && !disabled.contains(&p.id)
             && p.id.starts_with("file/")
-            && features_enabled(p, enabled_features)
+            && admits(p)
         {
             enabled.push(p.id.clone());
         }
     }
-    for p in packs {
-        if p.is_feature()
-            && !p.features().is_empty()
-            && features_enabled(p, enabled_features)
-            && !enabled.contains(&p.id)
+    if let Some(flags) = enabled_features
+        && flags.iter().any(|flag| flag != "minecraft:vanilla")
+    {
+        let mut missing: Vec<_> = flags
+            .iter()
+            .filter(|flag| *flag != "minecraft:vanilla")
+            .collect();
+        for pack in enabled
+            .iter()
+            .filter_map(|id| packs.iter().find(|p| &p.id == id))
         {
-            enabled.push(p.id.clone());
+            for flag in pack.features() {
+                missing.retain(|id| *id != &flag);
+            }
+        }
+        for pack in packs.iter().filter(|p| p.is_feature()) {
+            if missing.is_empty() {
+                break;
+            }
+            let requested = pack.features();
+            if requested.iter().any(|flag| missing.contains(&flag))
+                && requested.iter().all(|flag| flags.contains(flag))
+            {
+                enabled.push(pack.id.clone());
+                missing.retain(|flag| !requested.contains(flag));
+            }
         }
     }
     selected_ids(packs.iter(), &enabled)

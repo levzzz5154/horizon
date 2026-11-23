@@ -10,6 +10,8 @@ pub(super) struct WorldRequest {
     pub seed: Option<i64>,
     pub creative: bool,
     pub create: Option<horizon_client::title::WorldOptions>,
+    /// First-run dedicated pack configuration, before the first level.dat exists.
+    pub initial_packs: Option<horizon_client::datapack::InitialPackSelection>,
     pub rule_registry: Arc<horizon_client::gamerules::RuleRegistry>,
     /// The account the world opens under, for an integrated server
     /// (`IntegratedServer.getSingleplayerProfile`): its name and UUID.
@@ -64,6 +66,7 @@ impl WorldRequest {
             seed,
             creative,
             create: create.cloned(),
+            initial_packs: None,
             rule_registry,
             owner: None,
         })
@@ -130,6 +133,7 @@ impl WorldRequest {
             seed,
             creative,
             create,
+            initial_packs,
             rule_registry,
             owner,
         } = self;
@@ -258,6 +262,10 @@ impl WorldRequest {
                 .copy_with_features(&level.enabled_features)
                 .by_name();
         }
+        if created && let Some(packs) = initial_packs {
+            level.data_packs = Some((packs.enabled, packs.disabled));
+            level.enabled_features = packs.features.into();
+        }
         // Worlds made without the Create New World screen (--world, the
         // control socket) take its default: commands on for Creative only.
         if created {
@@ -294,6 +302,7 @@ impl WorldRequest {
             &save_root,
             &options.resources,
             res.biomes(),
+            &level.enabled_features,
             &pack.additional_data,
         );
         Dim::set_extra(shapes.extra.iter().map(|level| level.id));
@@ -717,17 +726,15 @@ fn worldgen_overrides_of(
 /// The shapes of the world's levels: their dimension types, the world's
 /// enabled packs' stems, then saved preset/editor stems, over vanilla's. A refused type keeps the
 /// vanilla shape, with a warning.
-pub(super) fn level_shapes(
+fn level_shapes(
     world_root: &std::path::Path,
     resources: &std::path::Path,
     biomes: &horizon_client::biome::Biomes,
+    enabled_features: &[String],
     additional: &[Arc<horizon_client::datapack::DataPack>],
 ) -> horizon_client::chunk::LevelShapes {
     let packs = super::pack_finders::data_repository(world_root, resources, additional);
-    let enabled_features = horizon_client::save::Level::read(world_root)
-        .map(|l| l.enabled_features)
-        .unwrap_or_default();
-    let enabled = horizon_client::datapack::enabled_ids(world_root, &packs, &enabled_features);
+    let enabled = horizon_client::datapack::enabled_ids(world_root, &packs, enabled_features);
     let enabled: Vec<_> = enabled
         .iter()
         .filter_map(|id| packs.iter().find(|p| &p.id == id))
@@ -1488,6 +1495,7 @@ mod tests {
                 seed: Some(1),
                 creative: true,
                 create: Some(create.clone()),
+                initial_packs: None,
                 rule_registry: registry.clone(),
             };
             assert!(Arc::ptr_eq(
@@ -1949,6 +1957,7 @@ mod tests {
                             seed: Some(12345),
                             creative: true,
                             create: None,
+                            initial_packs: None,
                             rule_registry: Level::default().rule_registry,
                         };
                         game.load_world(request).unwrap();
@@ -2089,6 +2098,7 @@ mod unused_feature_startup_tests {
                 seed: Some(259),
                 creative: false,
                 create: None,
+                initial_packs: None,
                 owner: None,
                 rule_registry: Level::default().rule_registry,
             };
@@ -2204,6 +2214,7 @@ mod unused_feature_preservation_tests {
             seed: Some(259),
             creative: false,
             create: None,
+            initial_packs: None,
             owner: None,
             rule_registry: Level::default().rule_registry,
         };

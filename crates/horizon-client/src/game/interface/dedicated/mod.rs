@@ -781,16 +781,6 @@ fn ip_ban_key<'a>(
     })
 }
 
-/// DedicatedServerProperties.LEGACY_PRESET_NAMES: the old `level-type`
-/// names, before the presets had their own ids.
-const LEGACY_PRESET_NAMES: [(&str, horizon_client::save::WorldPreset); 2] = [
-    ("default", horizon_client::save::WorldPreset::Normal),
-    (
-        "largebiomes",
-        horizon_client::save::WorldPreset::LargeBiomes,
-    ),
-];
-
 /// server.properties' line for `server.toml`'s `max_view_distance` (horizon-server writes it).
 const FAR_PROPERTY: &str = "horizon-max-view-distance";
 /// A tick slower than this, in milliseconds, enters the slow ring (five ticks' worth, a stall players feel) unless `HORIZON_SPIKES` names another.
@@ -801,44 +791,111 @@ const OVERLOAD_WARNING_INTERVAL: Duration = Duration::from_secs(15);
 /// server.properties' line for `server.toml`'s `admin_feedback_to_ops` (horizon-server writes it).
 const ADMIN_FEEDBACK_PROPERTY: &str = "horizon-admin-feedback-to-ops";
 
-/// Identifier.tryParse: `namespace:path`, or a path in `minecraft`.
-fn parse_identifier(text: &str) -> Option<String> {
-    let (namespace, path) = text.split_once(':').unwrap_or(("minecraft", text));
-    let valid = |s: &str, extra: &[char]| {
-        s.chars()
-            .all(|c| matches!(c, 'a'..='z' | '0'..='9' | '_' | '.' | '-') || extra.contains(&c))
+/// The saved stems use qualified registry ids, like `LevelStem.CODEC`'s output.
+fn preset_dimensions(json: &str) -> Result<Tag> {
+    use horizon_core::identifier::parse_or_keep;
+    use serde_json::Value;
+
+    let mut preset: Value = serde_json::from_str(json)?;
+    let Some(stems) = preset.get_mut("dimensions").and_then(Value::as_object_mut) else {
+        return Err("missing world preset dimensions".into());
     };
-    (valid(namespace, &[]) && valid(path, &['/'])).then(|| format!("{namespace}:{path}"))
+    let qualify = |value: Option<&mut Value>| {
+        if let Some(Value::String(id)) = value
+            && (!id.contains(':') || id.starts_with(':'))
+        {
+            *id = parse_or_keep(id);
+        }
+    };
+    let dimensions = std::mem::take(stems)
+        .into_iter()
+        .map(|(id, mut stem)| {
+            qualify(stem.get_mut("type"));
+            if let Some(generator) = stem.get_mut("generator") {
+                qualify(generator.get_mut("type"));
+                qualify(generator.get_mut("settings"));
+            }
+            let id = if id.contains(':') && !id.starts_with(':') {
+                id
+            } else {
+                parse_or_keep(&id)
+            };
+            (
+                id.as_str().into(),
+                horizon_client::scoreboard::json_to_tag(&stem),
+            )
+        })
+        .collect();
+    Ok(Tag::Compound(dimensions))
 }
 
 impl Game<'_> {
-    /// DedicatedServerProperties.createDimensions for a world that doesn't
-    /// exist yet: `level-type`'s preset, a flat world's `generator-settings`
-    /// and `generate-structures`, written before the world opens so that
-    /// streaming reads them.
-    fn write_world_gen(&self, dir: &std::path::Path, props: &ServerProperties) -> Result<()> {
+    /// `DedicatedServerProperties.createDimensions`: resolve `level-type`
+    /// against the new world's selected registry, and save the stems before
+    /// the world opens so streaming reads them.
+    fn write_world_gen(
+        &self,
+        dir: &std::path::Path,
+        props: &ServerProperties,
+    ) -> Result<horizon_client::datapack::InitialPackSelection> {
+        use horizon_client::datapack;
+        use horizon_world::worldgen::overrides::{
+            PackFile, WORLD_PRESET_FOLDER, WORLD_PRESETS, WorldgenOverrides,
+        };
+
+        let packs = super::pack_finders::data_repository(
+            dir,
+            &self.options.resources,
+            &self.pack.additional_data,
+        );
+        let selection = datapack::initial_pack_selection(
+            dir,
+            &packs,
+            &props.initial_enabled_packs,
+            &props.initial_disabled_packs,
+        );
+        // Read only the preset registry here; world opening loads the other
+        // registries, including the noise settings the saved stems refer to.
+        let mut overrides = WorldgenOverrides::default();
+        for pack in selection
+            .enabled
+            .iter()
+            .filter_map(|id| packs.iter().find(|p| &p.id == id))
+        {
+            for file in pack.list_folder(WORLD_PRESET_FOLDER) {
+                if overrides.add_file(&pack.id, &file, || {
+                    String::from_utf8(pack.read(&file)?).ok()
+                }) == PackFile::Unreadable
+                {
+                    return Err(format!("{}: {file}: unreadable world preset", pack.id).into());
+                }
+            }
+        }
+        let bundled = if selection.enabled.iter().any(|id| id == "vanilla") {
+            let path = self
+                .options
+                .resources
+                .join("worldgen")
+                .join(format!("{WORLD_PRESETS}.json"));
+            let bytes = std::fs::read(&path).map_err(|err| format!("{}: {err}", path.display()))?;
+            serde_json::from_slice(&bytes).map_err(|err| format!("{}: {err}", path.display()))?
+        } else {
+            Default::default()
+        };
         let level_type = &props.level_type;
-        let preset = parse_identifier(level_type)
-            .as_deref()
-            .and_then(horizon_client::save::WorldPreset::of_id)
-            .or_else(|| {
-                LEGACY_PRESET_NAMES
-                    .iter()
-                    .find(|(name, _)| *name == level_type)
-                    .map(|(_, preset)| *preset)
-            })
-            .unwrap_or_else(|| {
-                log_from(
-                    "Worker-Main-1",
-                    "WARN",
-                    &format!(
-                        "Failed to parse level-type {level_type}, defaulting to minecraft:normal"
-                    ),
-                );
-                horizon_client::save::WorldPreset::Normal
-            });
-        let flat = preset == horizon_client::save::WorldPreset::Flat;
-        let settings = if flat {
+        let (preset, json, fallback) = overrides
+            .resolve_world_preset(&bundled, level_type)
+            .ok_or("Invalid datapack contents: can't find default preset")?;
+        if fallback {
+            log_from(
+                "Worker-Main-1",
+                "WARN",
+                &format!("Failed to parse level-type {level_type}, defaulting to {preset}"),
+            );
+        }
+        let mut dimensions = preset_dimensions(json)
+            .map_err(|err| format!("Invalid world preset {preset}: {err}"))?;
+        if preset == "minecraft:flat" {
             let biomes = world_biomes!(self);
             let (settings, errors) = horizon_client::flatgen::settings_from_json(
                 &props.generator_settings,
@@ -848,18 +905,32 @@ impl Game<'_> {
             for e in errors {
                 log_from("Worker-Main-1", "ERROR", &e);
             }
-            settings
-        } else {
-            None
-        };
+            if let Some(settings) = settings
+                && let Some(Tag::Compound(overworld)) = dimensions.get_mut("minecraft:overworld")
+            {
+                overworld.insert(
+                    "generator".into(),
+                    Tag::compound([
+                        ("type", Tag::String("minecraft:flat".into())),
+                        ("settings", settings),
+                    ]),
+                );
+            }
+        }
         let options = horizon_client::save::WorldGen {
-            preset,
             structures: props.generate_structures,
-            bonus_chest: false,
+            ..horizon_client::save::WorldGen::default()
         };
         horizon_client::save::write_world_gen_settings_with(
-            dir, props.seed, options, settings, None, None,
-        )
+            dir,
+            props.seed,
+            options,
+            None,
+            None,
+            Some(dimensions),
+        )?;
+        datapack::write_selection(dir, &selection.enabled, &selection.disabled)?;
+        Ok(selection)
     }
 }
 
@@ -1088,13 +1159,15 @@ impl Game<'_> {
         // Main's WorldLoader: a new world's dimensions come from
         // server.properties before the server starts.
         let world_dir = std::env::current_dir()?.join(&universe).join(&level_name);
-        let new_world = !world_dir.join("level.dat").exists();
-        if new_world {
-            self.write_world_gen(&world_dir, &props)?;
+        let new_world =
+            !world_dir.join("level.dat").exists() && !world_dir.join("level.dat_old").exists();
+        let initial_packs = if new_world {
+            Some(self.write_world_gen(&world_dir, &props)?)
         } else {
             // Before anything writes the world: a refusal leaves it as it was saved.
             self.check_missing_mods(&world_dir, allow_missing_mods)?;
-        }
+            None
+        };
         // The console thread starts first, as in initServer.
         let (tx, console) = mpsc::channel();
         std::thread::Builder::new()
@@ -1201,14 +1274,16 @@ impl Game<'_> {
         // Read before the levels are made: each one's block ticks take it (`Levels::new_ticks`).
         self.levels
             .set_max_chained_neighbor_updates(props.max_chained_neighbor_updates);
-        let prepared = self.prepare_world_and_rules(WorldRequest::new(
+        let mut request = WorldRequest::new(
             &folder,
             Some(&level_name),
             Some(props.seed),
             game_mode == 1,
             None,
             Arc::new(crate::game::api_values::game_rule_registry()),
-        )?)?;
+        )?;
+        request.initial_packs = initial_packs;
+        let prepared = self.prepare_world_and_rules(request)?;
         *startup_began = true;
         self.native_server_about_to_start(true);
         self.native_server_starting(true);
