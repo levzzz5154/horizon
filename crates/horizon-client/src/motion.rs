@@ -1246,7 +1246,18 @@ impl MotionWorld<'_, '_, '_> {
         keys: crate::sprint::Keys,
         sprint_window: i32,
     ) -> Result<()> {
-        self.local_tick(keys, |player, keys| {
+        self.local_tick(keys, false, |player, keys| {
+            player.sprint_input_tick_with_window(keys, sprint_window)
+        })
+    }
+
+    /// Local controller override that retains the analog shape, with the same gameplay multipliers.
+    pub fn controlled_simulation_tick_with_linear_stick(
+        &mut self,
+        keys: crate::sprint::Keys,
+        sprint_window: i32,
+    ) -> Result<()> {
+        self.local_tick(keys, true, |player, keys| {
             player.sprint_input_tick_with_window(keys, sprint_window)
         })
     }
@@ -1257,7 +1268,7 @@ impl MotionWorld<'_, '_, '_> {
         self.player.replaying = true;
         let result = match self.try_fast_stationary_replayed_tick(keys, sprinting) {
             Ok(true) => Ok(()),
-            Ok(false) => self.local_tick(keys, |player, _| {
+            Ok(false) => self.local_tick(keys, false, |player, _| {
                 if player.sprinting == sprinting {
                     Ok(())
                 } else {
@@ -1591,6 +1602,7 @@ impl MotionWorld<'_, '_, '_> {
     fn local_tick(
         &mut self,
         keys: crate::sprint::Keys,
+        linear_stick: bool,
         sprint: impl FnOnce(&mut PlayerMotion, crate::sprint::Keys) -> Result<()>,
     ) -> Result<()> {
         // The base tick (fluids, swimming) precedes LocalPlayer.aiStep.
@@ -1616,7 +1628,11 @@ impl MotionWorld<'_, '_, '_> {
         } else {
             None
         };
-        let modified = crate::input::modify_input(direction, self.player.item_use_speed, sneak);
+        let modified = if linear_stick {
+            crate::input::modify_input_linear(direction, self.player.item_use_speed, sneak)
+        } else {
+            crate::input::modify_input(direction, self.player.item_use_speed, sneak)
+        };
         self.player.applied_input = modified;
         self.simulation_tick_with_fluids(modified, keys.jump)
     }
@@ -6869,7 +6885,7 @@ mod tests {
         seed.client_side = true;
         for _ in 0..2 {
             mw!(&mut seed, &mut scene)
-                .local_tick(crate::sprint::Keys::default(), |p, _| {
+                .local_tick(crate::sprint::Keys::default(), false, |p, _| {
                     p.set_sprinting(false)
                 })
                 .unwrap();
@@ -6888,7 +6904,7 @@ mod tests {
             full.replaying = true;
             let full_before_events = full.events.len();
             mw!(&mut full, &mut scene_full)
-                .local_tick(crate::sprint::Keys::default(), |p, _| {
+                .local_tick(crate::sprint::Keys::default(), false, |p, _| {
                     p.set_sprinting(false)
                 })
                 .unwrap();
@@ -6968,7 +6984,7 @@ mod tests {
             .unwrap();
         full_bounce.replaying = true;
         mw!(&mut full_bounce, &mut scene_full)
-            .local_tick(crate::sprint::Keys::default(), |p, _| {
+            .local_tick(crate::sprint::Keys::default(), false, |p, _| {
                 p.set_sprinting(false)
             })
             .unwrap();
@@ -7015,7 +7031,7 @@ mod tests {
         let mut seed = PlayerMotion::new(resources, Vec3::new(20.5, 64.0, 20.5)).unwrap();
         for _ in 0..2 {
             mw!(&mut seed, &mut scene)
-                .local_tick(crate::sprint::Keys::default(), |p, _| {
+                .local_tick(crate::sprint::Keys::default(), false, |p, _| {
                     p.set_sprinting(false)
                 })
                 .unwrap();
