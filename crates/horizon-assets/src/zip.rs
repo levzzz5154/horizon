@@ -251,21 +251,18 @@ impl Zip {
         self.index(name).is_some()
     }
     pub fn read(&self, name: &str) -> io::Result<Vec<u8>> {
-        self.read_within(name, &self.budget)
+        self.read_limited(name, MAX_ENTRY as u64)
     }
-    fn read_within(&self, name: &str, budget: &AtomicU64) -> io::Result<Vec<u8>> {
-        let bytes = self.read_limited(name, MAX_ENTRY as u64)?;
-        take(budget, bytes.len() as u64)?;
-        Ok(bytes)
-    }
-    /// Read an entry under a caller's size limit, checking actual output rather
-    /// than trusting the archive's declared uncompressed size.
+
+    /// Read an entry under the per-call limit and the archive's shared
+    /// budget, checking actual output rather than the declared size.
     pub fn read_limited(&self, name: &str, max: u64) -> io::Result<Vec<u8>> {
         let max = usize::try_from(max).unwrap_or(usize::MAX).min(MAX_ENTRY);
         let bytes = self.read_prefix(name, max as u64 + 1)?;
         if bytes.len() > max {
             return Err(invalid("entry exceeds the size limit"));
         }
+        take(&self.budget, bytes.len() as u64)?;
         Ok(bytes)
     }
     /// Read a prefix without inflating the remainder or trusting declared sizes.
@@ -657,15 +654,15 @@ mod tests {
     #[test]
     fn entries_share_one_total_inflated_budget() {
         let zip = Zip::from_bytes(archive()).unwrap();
-        let tight = AtomicU64::new(16);
-        assert!(zip.read_within("a/b.txt", &tight).is_err());
-        let zip = Zip::from_bytes(archive()).unwrap();
-        let tight = AtomicU64::new(12);
+        zip.budget.store(30, Ordering::Relaxed);
         assert_eq!(
-            zip.read_within("pack.mcmeta", &tight).unwrap(),
+            zip.read_limited("pack.mcmeta", 16).unwrap(),
             b"{\"pack\":{}}"
         );
-        assert!(zip.read_within("a/b.txt", &tight).is_err());
+        assert_eq!(
+            zip.read("a/b.txt").unwrap_err().kind(),
+            io::ErrorKind::FileTooLarge
+        );
     }
 
     /// The offset of the central-directory header of `name`.

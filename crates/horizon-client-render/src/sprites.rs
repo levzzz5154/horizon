@@ -2,11 +2,18 @@
 use crate::{
     Result,
     resource_source::{ResourceRoot, ResourceSource},
+    sprite_cache::Decoded,
 };
 use horizon_assets::animation::{AnimationClip, AnimationMetadata};
 #[cfg(test)]
 use std::path::Path;
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 #[derive(Clone)]
 enum AnimationFrames {
@@ -243,6 +250,47 @@ struct StillKey {
     flags: [bool; 4],
 }
 
+/// Colour sprite limits, separate from HUD/entity PNGs and the final GPU array budget.
+/// Stock colour sheets top out at 128 KiB RGBA; 32 MiB also admits a 2048² sprite and
+/// long strips of small frames. Only actual texels count here, not a strip's squared side.
+const MAX_SPRITE_RGBA_BYTES: usize = 32 << 20;
+// A 16-bit RGBA source can use twice the bytes of the decoded RGBA8 image.
+const MAX_SPRITE_PNG_BYTES: u64 = 72 << 20;
+/// Allow frame tables and animation sequences as well as RGBA, without letting a
+/// single small-pixel strip allocate unbounded per-frame bookkeeping.
+const MAX_SPRITE_STORAGE_BYTES: usize = 64 << 20;
+/// Bound metadata parsing independently of the decoded pixels.
+const MAX_SPRITE_METADATA_BYTES: u64 = 64 << 10;
+const SPRITE_PNG_SCRATCH_BYTES: usize = 4 << 20;
+const PREFETCH_WORKERS: usize = 8;
+
+struct SpriteMemory {
+    sheet: usize,
+    ready: usize,
+    native: usize,
+}
+impl Default for SpriteMemory {
+    fn default() -> Self {
+        Self {
+            sheet: MAX_SPRITE_RGBA_BYTES,
+            ready: 128 << 20,
+            // Holds ordinary 256x packs as well as smaller packs with many animations.
+            native: 512 << 20,
+        }
+    }
+}
+
+fn native_colour_bytes(
+    frames: usize,
+    animation: Option<&AnimationMetadata>,
+    physical: usize,
+) -> usize {
+    // Each sequence entry is two u32s and a cumulative u64. For a filtered explicit
+    // sequence, allow spare capacity and charge even the entries the clip discards.
+    let entries = animation.map_or(0, |a| a.frames.as_ref().map_or(physical, Vec::len));
+    frames.saturating_add(entries.saturating_mul(32))
+}
+
 #[derive(Default)]
 pub struct Sprites {
     source: ResourceSource,
@@ -283,7 +331,11 @@ pub struct Sprites {
     disk: Option<crate::sprite_cache::SpriteCache>,
     /// Textures [`Sprites::prefetch`] decoded ahead of their insert, by sprite name or
     /// resource path.
-    ready: std::collections::HashMap<String, crate::sprite_cache::Decoded>,
+    ready: std::collections::HashMap<String, Decoded>,
+    ready_bytes: usize,
+    /// Retained colour frames and animation data, independent of the resampled array.
+    native_bytes: usize,
+    memory: SpriteMemory,
     /// Textures past [`max_layers`] that the missing texture stands in for
     /// ([`Sprites::plan_within_capacity`]).
     dropped: std::collections::HashSet<String>,
@@ -604,6 +656,7 @@ impl Sprites {
     fn lay_out(&mut self, pixels: bool) {
         // Prefetched textures nothing inserted.
         self.ready = Default::default();
+        self.ready_bytes = 0;
         let layers = self.native.len().max(1) as u64;
         let largest = self.native.iter().map(|n| n.0).max().unwrap_or(SPRITE_SIZE);
         self.minimum_size = self.native.iter().map(|n| n.0).min().unwrap_or(SPRITE_SIZE);
@@ -855,13 +908,14 @@ impl Sprites {
         self.overflow_layer = Some(layer);
         layer
     }
-    /// Decode on every thread the textures about to be inserted: sprite names, or resource
-    /// paths outside `textures/` (as [`Sprites::insert_file`] takes them). A loader that adds
-    /// many (the block models, an OptiFine pack's tiles) calls this first and then inserts
-    /// them in its own order, so the layers are the same as without it. What is already a
-    /// layer or in the disk cache is skipped; what fails to decode is left for the insert,
-    /// which reports it.
+    /// Decode the textures about to be inserted: sprite names, or resource paths outside
+    /// `textures/` (as [`Sprites::insert_file`] takes them). Nothing takes a layer until insert,
+    /// so callers still set their order. Cache hits are skipped; a failed or deferred prefetch
+    /// follows the usual on-demand insert path.
     pub fn prefetch<'a>(&mut self, names: impl IntoIterator<Item = &'a str>) {
+        if self.ready_bytes >= self.memory.ready {
+            return;
+        }
         let names: Vec<&str> = names
             .into_iter()
             .filter(|name| {
@@ -873,48 +927,74 @@ impl Sprites {
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect();
-        let decoded = crate::par::par_map(&names, |name| {
-            if name.contains(':') {
-                Self::decode(&self.source, name).ok()
-            } else {
-                Self::decode_file(&self.source, name, name).ok()
+        // Each lane holds one encoded input at a time, using the resource source's
+        // existing read limits. Decoded working buffers have their own shared budget.
+        let workers = PREFETCH_WORKERS
+            .min(horizon_threads::worker_count())
+            .min(names.len());
+        let next = AtomicUsize::new(0);
+        let used = AtomicUsize::new(self.ready_bytes);
+        let decoded = crate::par::par_map(&[(); PREFETCH_WORKERS][..workers], |_| {
+            let mut ready = Vec::new();
+            while used.load(Ordering::Relaxed) < self.memory.ready {
+                let Some(&name) = names.get(next.fetch_add(1, Ordering::Relaxed)) else {
+                    break;
+                };
+                let mut reserved = 0;
+                let decoded =
+                    Self::decode(&self.source, name, None, self.memory.sheet, |_, peak| {
+                        if used
+                            .try_update(Ordering::Relaxed, Ordering::Relaxed, |bytes| {
+                                bytes.checked_add(peak).filter(|&n| n <= self.memory.ready)
+                            })
+                            .is_ok()
+                        {
+                            reserved = peak;
+                            true
+                        } else {
+                            false
+                        }
+                    });
+                match decoded {
+                    Ok(decoded) => {
+                        let retained = Decoded::named_bytes(name) + decoded.heap_bytes();
+                        used.fetch_sub(reserved - retained, Ordering::Relaxed);
+                        ready.push((name, decoded));
+                    }
+                    Err(_) => {
+                        used.fetch_sub(reserved, Ordering::Relaxed);
+                    }
+                }
             }
+            ready
         });
-        for (name, decoded) in names.into_iter().zip(decoded) {
-            if let Some(decoded) = decoded {
-                self.ready.insert(name.to_owned(), decoded);
-            }
-        }
+        self.ready_bytes = used.into_inner();
+        self.ready.extend(
+            decoded
+                .into_iter()
+                .flatten()
+                .map(|(name, decoded)| (name.to_owned(), decoded)),
+        );
+    }
+    fn take_ready(&mut self, name: &str) -> Option<Decoded> {
+        let decoded = self.ready.remove(name)?;
+        self.ready_bytes -= Decoded::named_bytes(name) + decoded.heap_bytes();
+        Some(decoded)
     }
     fn load(&mut self, name: &str, png: Option<&[u8]>) -> Result<u32> {
         // Custom Item Textures' files are outside `textures/`, which the disk cache's
         // fingerprint covers: like `insert_file`'s, they skip it.
-        let cit = name.starts_with("horizon_cit:") || !name.contains(':');
-        let disk = self.disk.as_mut().filter(|_| !cit);
-        let cached = disk.as_ref().and_then(|d| d.get(name)).cloned();
-        let decoded = match cached {
-            Some(decoded) => decoded,
-            None => {
-                let decoded = match self.ready.remove(name) {
-                    Some(decoded) => decoded,
-                    None => match png {
-                        Some(bytes) => {
-                            let path = if name.contains(':') {
-                                crate::atlas_sources::texture_resource(name, "textures")
-                            } else {
-                                name.to_owned()
-                            };
-                            Self::decode_file_data(&self.source, &path, name, Some(bytes))?
-                        }
-                        None => Self::decode(&self.source, name)?,
-                    },
-                };
-                if let Some(disk) = disk {
-                    disk.insert(name, decoded.clone());
-                }
-                decoded
-            }
-        };
+        let use_disk = !name.starts_with("horizon_cit:") && name.contains(':');
+        if use_disk && let Some(cached) = self.disk.as_ref().and_then(|d| d.get(name)) {
+            return self.register(name, cached.clone());
+        }
+        if !name.contains(':') && png.is_none() && !self.ready.contains_key(name) {
+            return Err("invalid sprite identifier".into());
+        }
+        let decoded = self.take_or_decode(name, png)?;
+        if use_disk && let Some(disk) = &mut self.disk {
+            disk.insert(name, decoded.clone());
+        }
         self.register(name, decoded)
     }
     /// The layer of a texture outside `textures/` (an OptiFine pack's connected-texture tile),
@@ -925,11 +1005,16 @@ impl Sprites {
         if let Some(layer) = self.layers.get(resource) {
             return Ok(*layer);
         }
-        let decoded = match self.ready.remove(resource) {
-            Some(decoded) => decoded,
-            None => Self::decode_file(&self.source, resource, resource)?,
-        };
+        let decoded = self.take_or_decode(resource, None)?;
         self.register(resource, decoded)
+    }
+    fn take_or_decode(&mut self, name: &str, png: Option<&[u8]>) -> Result<Decoded> {
+        if let Some(decoded) = self.take_ready(name) {
+            return Ok(decoded);
+        }
+        Self::decode(&self.source, name, png, self.memory.sheet, |retained, _| {
+            retained <= self.memory.native - self.native_bytes
+        })
     }
     /// The tiles of the texture `name` (`ns:path`) cut into a `columns` x `rows` grid, row by
     /// row from the top left: a Fusion connecting texture's sheet. Each tile is its own layer
@@ -1004,7 +1089,7 @@ impl Sprites {
                 if alphas().all(|&a| a == 0) {
                     return Ok(None);
                 }
-                let decoded = crate::sprite_cache::Decoded {
+                let decoded = Decoded {
                     side,
                     frame_size: [side, side],
                     animation: animation.clone().filter(|_| frames.len() > 1),
@@ -1013,7 +1098,7 @@ impl Sprites {
                     has_transparent: alphas().any(|&a| a == 0),
                     opaque: alphas().all(|&a| a == 255),
                     translucent: alphas().any(|&a| a != 0 && a != 255),
-                    frames,
+                    frames: Arc::new(frames),
                 };
                 let tile_name = format!("fusion/{}#{tile}", name.replace(':', "/"));
                 self.register(&tile_name, decoded).map(Some)
@@ -1051,34 +1136,73 @@ impl Sprites {
         }
     }
     /// Read and decode one texture and its `.mcmeta`.
-    fn decode(source: &ResourceSource, name: &str) -> Result<crate::sprite_cache::Decoded> {
-        if !name.contains(':') {
-            return Err("invalid sprite identifier".into());
-        }
-        // `texture_resource`, so Custom Item Textures' `horizon_cit:` sprites find their file.
-        let path = crate::atlas_sources::texture_resource(name, "textures");
-        Self::decode_file(source, &path, name)
-    }
-    fn decode_file(
+    fn decode(
         source: &ResourceSource,
-        path: &str,
-        name: &str,
-    ) -> Result<crate::sprite_cache::Decoded> {
-        Self::decode_file_data(source, path, name, None)
-    }
-    fn decode_file_data(
-        source: &ResourceSource,
-        path: &str,
         name: &str,
         png: Option<&[u8]>,
-    ) -> Result<crate::sprite_cache::Decoded> {
-        let metadata = match source.read_to_string(&format!("{path}.mcmeta")) {
-            Ok(text) => Some(crate::packs::first_json::<
-                BTreeMap<String, Box<serde_json::value::RawValue>>,
-            >(text.as_bytes())?),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(error) => return Err(error.into()),
+        sheet_limit: usize,
+        admit: impl FnOnce(usize, usize) -> bool,
+    ) -> Result<Decoded> {
+        // `texture_resource`, so Custom Item Textures' `horizon_cit:` sprites find their file.
+        let resource;
+        let path: &str = if name.contains(':') {
+            resource = crate::atlas_sources::texture_resource(name, "textures");
+            &resource
+        } else {
+            name
         };
+        let owned;
+        let png = match png {
+            Some(bytes) => bytes,
+            None => {
+                // One read of the prepared/loose file or archive entry. The archive's
+                // cumulative read budget still applies.
+                owned = source.read_limited(path, MAX_SPRITE_PNG_BYTES)?;
+                &owned
+            }
+        };
+        let (canvas_width, canvas_height) =
+            crate::hud::png_bytes_size(png).ok_or("invalid sprite PNG header")?;
+        let rgba_bytes = u64::from(canvas_width)
+            .checked_mul(u64::from(canvas_height))
+            .and_then(|area| area.checked_mul(4))
+            .filter(|&size| size != 0 && size <= sheet_limit as u64)
+            .ok_or_else(|| {
+                format!(
+                    "a {canvas_width}x{canvas_height} PNG exceeds the sprite decoded size limit"
+                )
+            })? as usize;
+        let mut decoder = png::Decoder::new_with_limits(
+            std::io::Cursor::new(png),
+            png::Limits {
+                bytes: SPRITE_PNG_SCRATCH_BYTES,
+            },
+        );
+        decoder.ignore_checksums(true);
+        // Sprite pixels do not use PNG text or colour profiles.
+        decoder.set_ignore_text_chunk(true);
+        decoder.set_ignore_iccp_chunk(true);
+        decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+        let reader = decoder.read_info()?;
+        let (png_width, png_height) = reader
+            .info()
+            .frame_control
+            .as_ref()
+            .map_or((canvas_width, canvas_height), |frame| {
+                (frame.width, frame.height)
+            });
+        let output_size = reader
+            .output_buffer_size()
+            .filter(|&size| size <= rgba_bytes)
+            .ok_or("invalid sprite PNG size")?;
+        let metadata =
+            match source.read_limited(&format!("{path}.mcmeta"), MAX_SPRITE_METADATA_BYTES) {
+                Ok(bytes) => Some(crate::packs::first_json::<
+                    BTreeMap<String, Box<serde_json::value::RawValue>>,
+                >(&bytes)?),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(error.into()),
+            };
         let animation_text = metadata
             .as_ref()
             .and_then(|v| v.get("animation"))
@@ -1087,10 +1211,7 @@ impl Sprites {
             .as_deref()
             .map(AnimationMetadata::from_json)
             .transpose()?;
-        let (png_width, png_height, pixels) = match png {
-            Some(bytes) => decode_rgba(bytes)?,
-            None => read_rgba(source, path)?,
-        };
+        // Size the frames and reserve their memory before inflating PNG pixels.
         let (width, height) = if let Some(animation) = &animation {
             let [width, height] =
                 animation.frame_size(i32::try_from(png_width)?, i32::try_from(png_height)?);
@@ -1107,9 +1228,29 @@ impl Sprites {
         }
         let columns = png_width / width;
         let count = columns * (png_height / height);
-        // Layers are square; a frame of another shape is nearest-resampled to
-        // its longer side so UVs (normalized per layer) are unchanged. That square is
-        // made only at the layers' size (`lay_out`).
+        let rgba = png_width as usize * png_height as usize * 4;
+        // RGBA can reuse the canvas allocation for a single frame. Other formats need
+        // a second buffer for conversion; multi-frame sprites allocate the split frames.
+        let rgba_output = reader.output_color_type().0 == png::ColorType::Rgba;
+        let (pixels, scratch) = match (count == 1, rgba_output) {
+            (true, true) => (output_size, 0),
+            (true, false) | (false, true) => (rgba, output_size),
+            (false, false) => (rgba, output_size.max(rgba)),
+        };
+        let retained = pixels
+            + count as usize * std::mem::size_of::<Vec<u8>>()
+            + animation_text.as_ref().map_or(0, String::capacity);
+        let native = native_colour_bytes(retained, animation.as_ref(), count as usize);
+        if native > MAX_SPRITE_STORAGE_BYTES {
+            return Err("sprite frame storage exceeds the decoded size limit".into());
+        }
+        let peak = retained + scratch + Decoded::named_bytes(name);
+        if !admit(native, peak) {
+            return Err("sprite decoded bytes exceed the remaining colour sprite budget".into());
+        }
+        let (_, _, pixels) = decode_rgba_frame(reader, vec![0; output_size])?;
+        // Keep the decoded frames rectangular until layout knows the atlas size. Neither
+        // prefetch nor registration allocates their hypothetical full native squares.
         let side = width.max(height);
         let mut has_transparent = false;
         let mut opaque = true;
@@ -1132,11 +1273,14 @@ impl Sprites {
             vec![pixels]
         } else if columns == 1 {
             let frame_bytes = width as usize * height as usize * 4;
-            pixels
-                .chunks_exact(frame_bytes)
-                .take(count as usize)
-                .map(<[u8]>::to_vec)
-                .collect()
+            let mut frames = Vec::with_capacity(count as usize);
+            frames.extend(
+                pixels
+                    .chunks_exact(frame_bytes)
+                    .take(count as usize)
+                    .map(<[u8]>::to_vec),
+            );
+            frames
         } else {
             let mut frames = Vec::with_capacity(count as usize);
             let row_bytes = width as usize * 4;
@@ -1154,10 +1298,10 @@ impl Sprites {
             frames
         };
         let texture = texture_section(metadata.as_ref());
-        Ok(crate::sprite_cache::Decoded {
+        Ok(Decoded {
             side,
             frame_size: [width, height],
-            frames,
+            frames: Arc::new(frames),
             animation: animation_text,
             strategy: texture
                 .as_ref()
@@ -1176,7 +1320,8 @@ impl Sprites {
     /// Give a decoded texture its layer (or the one an identical still has).
     #[horizon_mod_api_macros::replaceable]
     fn register(&mut self, name: &str, decoded: crate::sprite_cache::Decoded) -> Result<u32> {
-        let crate::sprite_cache::Decoded {
+        let frame_bytes = decoded.heap_bytes();
+        let Decoded {
             side,
             frame_size,
             frames,
@@ -1187,11 +1332,20 @@ impl Sprites {
             opaque,
             translucent,
         } = decoded;
+        if frame_bytes > self.memory.native - self.native_bytes {
+            return Err("sprite exceeds the remaining native colour sprite budget".into());
+        }
         let animation = animation_text
             .as_deref()
             .map(AnimationMetadata::from_json)
             .transpose()?;
         let count = frames.len() as u32;
+        let bytes = native_colour_bytes(frame_bytes, animation.as_ref(), frames.len());
+        if bytes > self.memory.native - self.native_bytes {
+            return Err(
+                "sprite animation exceeds the remaining native colour sprite budget".into(),
+            );
+        }
         let layer = u32::try_from(self.native.len())?;
         let pbr = match name.split_once(':') {
             Some(_) if labpbr_maps() => {
@@ -1248,17 +1402,17 @@ impl Sprites {
             self.layers.insert(name.to_owned(), layer);
             return Ok(layer);
         }
-        if let Some(key) = still {
-            self.still.insert(key, layer);
-        }
-        let frames = Arc::new(frames);
-        let mut initial = 0;
-        if let Some(clip) = animation
+        let clip = animation
             .as_ref()
             .map(|m| m.clip(count))
             .transpose()?
-            .flatten()
-        {
+            .flatten();
+        self.native_bytes += bytes;
+        if let Some(key) = still {
+            self.still.insert(key, layer);
+        }
+        let mut initial = 0;
+        if let Some(clip) = clip {
             initial = clip.sample(0).frame as usize;
             self.animations.push(SpriteAnimation {
                 layer,
@@ -1316,7 +1470,14 @@ fn read_png_dimensions(source: &ResourceSource, path: &str) -> Result<(u32, u32)
     Ok((width, height))
 }
 pub(crate) fn decode_rgba(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
-    let (mut reader, mut bytes) = crate::hud::read_png(bytes)?;
+    let (reader, bytes) = crate::hud::read_png(bytes)?;
+    decode_rgba_frame(reader, bytes)
+}
+
+fn decode_rgba_frame(
+    mut reader: png::Reader<std::io::Cursor<&[u8]>>,
+    mut bytes: Vec<u8>,
+) -> Result<(u32, u32, Vec<u8>)> {
     let info = reader.next_frame(&mut bytes)?;
     if info.color_type == png::ColorType::Rgba {
         bytes.truncate(info.buffer_size());
@@ -2459,7 +2620,13 @@ mod png_size_tests {
             )
         });
         let source = super::ResourceSource::indexed(files.into_iter().collect());
-        super::Sprites::decode_file_data(&source, path, "minecraft:block/test", Some(png))
+        super::Sprites::decode(
+            &source,
+            "minecraft:block/test",
+            Some(png),
+            super::MAX_SPRITE_RGBA_BYTES,
+            |_, _| true,
+        )
     }
 
     /// A real 32768x1 (or 1x32768) PNG is a few hundred bytes and decodes to 128 KiB; its
@@ -2495,6 +2662,106 @@ mod png_size_tests {
         writer.finish().unwrap();
         encoded
     }
+
+    #[test]
+    fn sprite_sheet_limit_precedes_pixel_buffer_admission() {
+        let result = super::Sprites::decode(
+            &super::ResourceSource::default(),
+            "demo:block/sheet",
+            Some(&grey_png(16, 32)),
+            16 * 16 * 4,
+            |_, _| panic!("an over-budget sheet must not reach pixel buffer admission"),
+        );
+        assert!(
+            result
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("sprite decoded size limit")
+        );
+    }
+
+    #[test]
+    fn prefetch_accounts_for_split_scratch_before_decoding_an_animation() {
+        use horizon_assets::resource_source::Resource;
+
+        let path = "assets/demo/textures/block/strip.png";
+        let image = pattern(16, 32);
+        let mut sprites = super::Sprites::new(super::ResourceSource::indexed(
+            [
+                (path.to_owned(), Resource::bytes(png_of(16, 32, &image))),
+                (
+                    format!("{path}.mcmeta"),
+                    Resource::bytes(br#"{"animation":{"frames":[1,0]}}"#.to_vec()),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        ));
+        // Its two retained frames fit, but not while the whole sheet is also in memory.
+        sprites.memory.ready = 3000;
+        let name = "demo:block/strip";
+        sprites.prefetch([name]);
+        assert!(sprites.ready.is_empty());
+        assert_eq!(sprites.ready_bytes, 0);
+        assert_eq!(sprites.try_insert(name).unwrap(), 0);
+        let animation = &sprites.animations[0];
+        assert_eq!(animation.frame(0), 1);
+        assert_eq!(animation.pixels(1), &image[16 * 16 * 4..]);
+    }
+
+    #[test]
+    fn saturated_prefetch_keeps_insert_order_and_cannot_bypass_native_budget() {
+        use horizon_assets::resource_source::Resource;
+
+        let mut files = std::collections::BTreeMap::new();
+        let ids = [
+            "demo:block/a",
+            "demo:block/b",
+            "demo:block/c",
+            "demo:block/d",
+        ];
+        let red = |name: &str| name.as_bytes()[name.len() - 1];
+        for name in ids {
+            files.insert(
+                crate::atlas_sources::texture_resource(name, "textures"),
+                Resource::bytes(png_of(16, 16, &[red(name), 0, 0, 255].repeat(256))),
+            );
+        }
+        let mut sprites = super::Sprites::new(super::ResourceSource::indexed(files));
+        // Each PNG decodes to 1024 pixel bytes, plus its one frame table entry.
+        sprites.memory.ready = 1800;
+        sprites.memory.native = 2400;
+        sprites.prefetch(ids[..3].iter().copied());
+        assert_eq!(sprites.ready.len(), 1);
+        let ready = ids[..3]
+            .iter()
+            .copied()
+            .find(|&name| sprites.ready.contains_key(name))
+            .unwrap();
+        let deferred: Vec<_> = ids[..3].iter().copied().filter(|&id| id != ready).collect();
+        sprites.prefetch(deferred.iter().copied());
+        assert_eq!(
+            sprites.ready.len(),
+            1,
+            "a second batch must share the budget"
+        );
+        assert_eq!(sprites.try_insert(deferred[0]).unwrap(), 0);
+        assert_eq!(sprites.try_insert(ready).unwrap(), 1);
+        assert_eq!(sprites.native[0].1[0][0], red(deferred[0]));
+        assert_eq!(sprites.native[1].1[0][0], red(ready));
+        assert_eq!(sprites.ready_bytes, 0);
+
+        // Refilled readiness is only staging; an insert now has no native room.
+        sprites.prefetch([deferred[1]]);
+        assert!(sprites.ready.contains_key(deferred[1]));
+        let missing = sprites.insert(deferred[1]).unwrap();
+        assert_eq!(missing, 2);
+        assert_eq!(sprites.native[missing as usize].1[0][..4], [0, 0, 0, 255]);
+        assert!(sprites.try_insert(ids[3]).is_err());
+        assert_eq!(sprites.count(), 3);
+    }
+
     /// What Horizon did before frames kept their shape: the region squared at its longer side,
     /// then that square resampled to `size`.
     fn squared_then_resampled(

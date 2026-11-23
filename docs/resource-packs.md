@@ -18,6 +18,21 @@ archive generation retain its open files. Prepared registry tables and disposabl
 separate filesystem locations. [The older overlay measurements](reuse-pack-overlays.md) describe the
 previous materializing loader, not the current startup path.
 
+Colour sprite sheets used by the block/item arrays are limited to 32 MiB of decoded
+RGBA per sheet; long animation strips count by their actual pixels. The loader
+prefetches at most 128 MiB of decoded work and retains up to 512 MiB of native
+colour frames. Work that does not fit prefetch still loads on demand in atlas
+order. Sprites that cannot fit the retained limit use the usual missing-texture
+handling. These are CPU budgets, not the GPU atlas size or limits for optional
+LabPBR maps.
+
+Sound effects can decode up to 16 MiB of samples and 90 seconds. Entries marked
+`stream` in `sounds.json` can decode up to 384 MiB and 20 minutes, including the
+vanilla End music. An output admits two stream decodes at a time and holds up to
+640 MiB of stream samples across decoding and playback. A sound that exceeds a
+limit does not start; use `stream` for long music instead of buffering it as an
+ordinary effect.
+
 Vanilla 26.3's reload listeners (`Minecraft.<init>`, `Gui`, `Hud`): languages, textures, shaders, sounds, atlases,
 fonts, grass / foliage / dry foliage colour maps, models (block states, block models, item definitions), equipment
 assets, paletted textures, entity and block entity renderers, particles, the game renderer (post effects), the level

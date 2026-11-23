@@ -13,13 +13,16 @@ use crate::sound_engine::{
 use crate::sound_events::{Sound, SoundRegistry};
 #[cfg(feature = "audio")]
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use horizon_assets::resource_source::{Resource, ResourceSource};
+use horizon_assets::resource_source::ResourceSource;
 use horizon_core::random::{LegacyRandom, RandomSource};
 #[cfg(any(feature = "audio", test))]
 use std::path::Path;
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex, Weak,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 /// An OpenAL source's state.
@@ -32,7 +35,8 @@ enum State {
 }
 /// An OpenAL source.
 struct Channel {
-    samples: Option<(Arc<Vec<f32>>, u32, u16)>,
+    samples: Samples,
+    stream: Option<StreamState>,
     position: f64,
     state: State,
     gain: f32,
@@ -416,7 +420,8 @@ pub struct MixerBackend {
     root: ResourceSource,
     cache: Arc<Mutex<SoundCache>>,
     /// The decoder thread for static sounds, started with the first one.
-    decoder: Option<std::sync::mpsc::Sender<Decode>>,
+    decoder: Option<std::sync::mpsc::SyncSender<Decode>>,
+    stream_budget: Arc<StreamBudget>,
     next: ChannelId,
     live: bool,
     /// Whose channels these are (`Channel::owner`).
@@ -447,8 +452,10 @@ impl Drop for MixerBackend {
 static SHARED_CHANNELS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// Two players' copies of one sound: started within this of each other.
 const SAME_SOUND: std::time::Duration = std::time::Duration::from_millis(150);
-/// Decoded interleaved samples, their rate and channel count (`None`: the file did not load).
-type Samples = Option<(Arc<Vec<f32>>, u32, u16)>;
+/// Decoded interleaved samples, their rate and channel count.
+type PcmSamples = (Arc<Vec<f32>>, u32, u16);
+/// `None` means the file did not load.
+type Samples = Option<PcmSamples>;
 /// Decoded static sounds (`SoundBufferLibrary`'s buffers), dropped least
 /// recently used first past `CACHE_BYTES`: kept forever, every sound heard in
 /// a session stayed (up to 1.4 GiB of samples, villages playing hundreds).
@@ -495,23 +502,152 @@ impl SoundCache {
 /// A static sound to decode for a channel waiting on it.
 struct Decode {
     key: String,
-    file: Resource,
+    source: ResourceSource,
+    path: String,
     channel: ChannelId,
     looping: bool,
 }
-/// Give a channel waiting on its sound the decoded samples and start it, as
-/// the buffer future attaching and playing the source. A source stopped or
-/// released meanwhile stays so.
+/// Give a channel waiting on its sound the decoded samples and start it. A failed
+/// load stops the channel for the engine to reap; a stopped or released source stays so.
 fn attach(mixer: &Mutex<Mixer>, channel: ChannelId, samples: Samples, looping: bool) {
-    if let Some(samples) = samples
-        && let Ok(mut m) = mixer.lock()
+    if let Ok(mut m) = mixer.lock()
         && let Some(c) = m.channels.get_mut(&channel)
-        && c.state == State::Initial
     {
-        c.samples = Some(samples);
-        c.position = 0.0;
-        c.state = State::Playing;
-        c.looping |= looping;
+        c.attach(samples, looping);
+    }
+}
+
+impl Channel {
+    fn attach(&mut self, samples: Samples, looping: bool) {
+        if self.state != State::Initial {
+            return;
+        }
+        self.state = if samples.is_some() {
+            self.position = 0.0;
+            self.looping |= looping;
+            State::Playing
+        } else {
+            State::Stopped
+        };
+        self.samples = samples;
+    }
+}
+
+/// Per-output limits shared by its splitscreen players and resource generations.
+struct StreamBudget {
+    workers: AtomicUsize,
+    samples: AtomicUsize,
+    max_workers: usize,
+    max_samples: usize,
+}
+
+impl StreamBudget {
+    fn new(max_workers: usize, max_samples: usize) -> Self {
+        Self {
+            workers: AtomicUsize::new(0),
+            samples: AtomicUsize::new(0),
+            max_workers,
+            max_samples,
+        }
+    }
+}
+
+impl Default for StreamBudget {
+    fn default() -> Self {
+        // Two decoders and 640 MiB of PCM capacity between all decoding and retained
+        // streams. Two copies of the longest prepared track (~304 MiB each) fit once decoded.
+        Self::new(2, (640 << 20) / size_of::<f32>())
+    }
+}
+
+enum StreamState {
+    Decoding { _pending: Arc<()> },
+    Loaded { _pcm: StreamPcm },
+}
+
+/// Accounts for PCM capacity from before a decoder grows its buffer until the
+/// mixer drops that buffer, including while the sound is paused or looping.
+struct StreamPcm {
+    budget: Arc<StreamBudget>,
+    capacity: usize,
+}
+
+impl StreamPcm {
+    /// Prefer exponential growth, but only take the spare capacity the mixer has.
+    fn grow(&mut self, minimum: usize, preferred: usize) -> Option<usize> {
+        let capacity = |used| preferred.min(self.capacity + (self.budget.max_samples - used));
+        let used = self
+            .budget
+            .samples
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                let next = capacity(used);
+                (next >= minimum).then(|| used + (next - self.capacity))
+            })
+            .ok()?;
+        self.capacity = capacity(used);
+        Some(self.capacity)
+    }
+
+    fn trim(&mut self, capacity: usize) {
+        if self.capacity != capacity {
+            self.budget
+                .samples
+                .fetch_sub(self.capacity - capacity, Ordering::Relaxed);
+            self.capacity = capacity;
+        }
+    }
+}
+
+impl Drop for StreamPcm {
+    fn drop(&mut self) {
+        self.trim(0);
+    }
+}
+
+/// Holds a worker slot until exit, even after its channel is cancelled. Dropping
+/// an unfinished job (including on thread launch failure) stops its channel.
+struct StreamDecode {
+    budget: Arc<StreamBudget>,
+    mixer: Arc<Mutex<Mixer>>,
+    channel: Option<ChannelId>,
+    pending: Weak<()>,
+}
+
+impl StreamDecode {
+    fn run(mut self, source: &ResourceSource, path: &str, looping: bool) {
+        let mut pcm = StreamPcm {
+            budget: self.budget.clone(),
+            capacity: 0,
+        };
+        let samples = decode(source, path, DecodeLimits::STREAM, Some(&mut pcm), || {
+            self.cancelled()
+        });
+        self.finish(samples.map(|(s, r, c)| ((Arc::new(s), r, c), pcm)), looping);
+    }
+
+    fn cancelled(&self) -> bool {
+        self.pending.strong_count() == 0
+    }
+
+    fn finish(&mut self, decoded: Option<(PcmSamples, StreamPcm)>, looping: bool) {
+        if let Some(channel) = self.channel.take()
+            && let Ok(mut m) = self.mixer.lock()
+            && let Some(c) = m.channels.get_mut(&channel)
+            && c.state == State::Initial
+        {
+            let (samples, stream) = decoded.map_or((None, None), |(s, pcm)| {
+                (Some(s), Some(StreamState::Loaded { _pcm: pcm }))
+            });
+            c.stream = stream;
+            c.attach(samples, looping);
+        }
+    }
+}
+
+impl Drop for StreamDecode {
+    fn drop(&mut self) {
+        self.finish(None, false);
+        self.budget.workers.fetch_sub(1, Ordering::Relaxed);
     }
 }
 /// The open output stream. A build without the `audio` feature (the server build, which must not
@@ -629,12 +765,139 @@ fn probe_devices(default_seen: Option<String>, cards_seen: Option<String>) -> De
         devices,
     }
 }
-fn decode(resource: &Resource) -> Option<(Vec<f32>, u32, u16)> {
-    use symphonia::core::{
-        audio::SampleBuffer, codecs::DecoderOptions, formats::FormatOptions, io::MediaSourceStream,
-        meta::MetadataOptions, probe::Hint,
+#[derive(Clone, Copy)]
+struct DecodeLimits {
+    encoded_bytes: u64,
+    pcm_samples: usize,
+    seconds: u32,
+}
+
+impl DecodeLimits {
+    const STATIC: Self = Self {
+        encoded_bytes: 4 << 20,
+        pcm_samples: (16 << 20) / size_of::<f32>(),
+        seconds: 90,
     };
-    let file = std::io::Cursor::new(resource.read().ok()?);
+    // The longest prepared track is about 15 minutes at stereo 44.1 kHz
+    // (~304 MiB of PCM, ~11 MiB on disk). Leave room for longer pack music.
+    const STREAM: Self = Self {
+        encoded_bytes: 24 << 20,
+        pcm_samples: (384 << 20) / size_of::<f32>(),
+        seconds: 20 * 60,
+    };
+}
+
+struct DecodedPcm {
+    samples: Vec<f32>,
+    rate: u32,
+    source_channels: usize,
+    limit: usize,
+}
+
+impl DecodedPcm {
+    fn new(rate: u32, source_channels: usize, limits: DecodeLimits) -> Option<Self> {
+        if rate == 0 || source_channels == 0 {
+            return None;
+        }
+        // Count actual complete frames at the source rate, not the Ogg granule
+        // position or estimated frame count. Interleaving/downmixing stores at most two
+        // samples per frame; the separate PCM cap also bounds high-rate files.
+        let frames = u64::from(rate) * u64::from(limits.seconds);
+        let duration_samples = usize::try_from(frames)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(source_channels.min(2));
+        Some(Self {
+            samples: Vec::new(),
+            rate,
+            source_channels,
+            limit: limits.pcm_samples.min(duration_samples),
+        })
+    }
+
+    fn append(
+        &mut self,
+        buffer: &symphonia::core::audio::AudioBuffer<f32>,
+        reservation: Option<&mut StreamPcm>,
+    ) -> Option<()> {
+        use symphonia::core::audio::Signal;
+
+        let spec = buffer.spec();
+        if spec.rate != self.rate || spec.channels.count() != self.source_channels {
+            return None;
+        }
+        let frames = buffer.frames();
+        let channels = self.source_channels.min(2);
+        let required = self
+            .samples
+            .len()
+            .checked_add(frames.checked_mul(channels)?)?;
+        if required > self.limit {
+            return None;
+        }
+        let capacity = self.samples.capacity();
+        if required > capacity {
+            let preferred = required
+                .max(capacity.saturating_add(capacity / 2))
+                .min(self.limit);
+            let next = match reservation {
+                Some(pcm) => pcm.grow(required, preferred)?,
+                None => preferred,
+            };
+            self.samples
+                .try_reserve_exact(next - self.samples.len())
+                .ok()?;
+        }
+        // Vorbis already gives us floats. Write its planar channels straight into the
+        // output, without a second interleaved allocation for a multichannel packet.
+        match self.source_channels {
+            1 => self.samples.extend_from_slice(buffer.chan(0)),
+            2 => {
+                for (&left, &right) in buffer.chan(0).iter().zip(buffer.chan(1)) {
+                    self.samples.push(left);
+                    self.samples.push(right);
+                }
+            }
+            n => {
+                // OpenAL direct stereo: keep the existing odd/even downmix.
+                let lefts = n.div_ceil(2) as f32;
+                let rights = (n / 2) as f32;
+                for frame in 0..frames {
+                    let (mut left, mut right) = (0.0, 0.0);
+                    for ch in 0..n {
+                        let sample = buffer.chan(ch)[frame];
+                        if ch.is_multiple_of(2) {
+                            left += sample;
+                        } else {
+                            right += sample;
+                        }
+                    }
+                    self.samples.push(left / lefts);
+                    self.samples.push(right / rights);
+                }
+            }
+        }
+        Some(())
+    }
+}
+
+fn decode(
+    source: &ResourceSource,
+    path: &str,
+    limits: DecodeLimits,
+    mut reservation: Option<&mut StreamPcm>,
+    cancelled: impl Fn() -> bool,
+) -> Option<(Vec<f32>, u32, u16)> {
+    use symphonia::core::{
+        audio::AudioBufferRef, codecs::DecoderOptions, formats::FormatOptions,
+        io::MediaSourceStream, meta::MetadataOptions, probe::Hint,
+    };
+    if cancelled() {
+        return None;
+    }
+    let file = std::io::Cursor::new(source.read_limited(path, limits.encoded_bytes).ok()?);
+    if cancelled() {
+        return None;
+    }
     let stream = MediaSourceStream::new(Box::new(file), Default::default());
     let mut hint = Hint::new();
     hint.with_extension("ogg");
@@ -649,67 +912,35 @@ fn decode(resource: &Resource) -> Option<(Vec<f32>, u32, u16)> {
     let mut format = probed.format;
     let track = format.default_track()?;
     let id = track.id;
-    let rate = track.codec_params.sample_rate?;
+    let mut pcm = DecodedPcm::new(
+        track.codec_params.sample_rate?,
+        track.codec_params.channels?.count(),
+        limits,
+    )?;
     let mut decoder = symphonia::default::get_codecs()
         .make(&track.codec_params, &DecoderOptions::default())
         .ok()?;
-    let estimated = track
-        .codec_params
-        .n_frames
-        .and_then(|n| {
-            let ch = track.codec_params.channels.map_or(1, |c| c.count().min(2));
-            usize::try_from(n).ok()?.checked_mul(ch)
-        })
-        .unwrap_or(0);
-    // Cap preallocation so malformed headers cannot force an excessive upfront allocation.
-    let mut samples = Vec::with_capacity(estimated.min(4 * 1024 * 1024));
-    let mut sample_buf: Option<SampleBuffer<f32>> = None;
-    let mut channels = 0u16;
-    while let Ok(packet) = format.next_packet() {
+    while !cancelled() {
+        let Ok(packet) = format.next_packet() else {
+            break;
+        };
         if packet.track_id() != id {
             continue;
         }
-        let Ok(buffer) = decoder.decode(&packet) else {
+        let Ok(AudioBufferRef::F32(buffer)) = decoder.decode(&packet) else {
             continue;
         };
-        let spec = *buffer.spec();
-        let frame_channels = spec.channels.count().max(1);
-        let needed = buffer.capacity().saturating_mul(spec.channels.count());
-        let decoded = match &mut sample_buf {
-            Some(buf) if buf.capacity() >= needed => buf,
-            slot => slot.insert(SampleBuffer::<f32>::new(buffer.capacity() as u64, spec)),
-        };
-        decoded.copy_interleaved_ref(buffer);
-        if channels == 0 {
-            channels = frame_channels.min(2) as u16;
-        }
-        if frame_channels <= 2 {
-            samples.extend_from_slice(decoded.samples());
-        } else {
-            // OpenAL plays multi-channel buffers direct; a stereo output hears the odd/even split.
-            for frame in decoded.samples().chunks(frame_channels) {
-                let (mut left, mut right) = (0.0, 0.0);
-                let (mut lefts, mut rights) = (0.0f32, 0.0f32);
-                for (i, sample) in frame.iter().enumerate() {
-                    if i.is_multiple_of(2) {
-                        left += sample;
-                        lefts += 1.0;
-                    } else {
-                        right += sample;
-                        rights += 1.0;
-                    }
-                }
-                samples.push(left / lefts.max(1.0));
-                samples.push(right / rights.max(1.0));
-            }
-        }
+        pcm.append(&buffer, reservation.as_deref_mut())?;
     }
-    if channels == 0 {
+    if cancelled() || pcm.samples.is_empty() {
         return None;
     }
-    // Trim exponential growth slack so cached sounds and streamed music hold only their samples.
-    samples.shrink_to_fit();
-    Some((samples, rate, channels))
+    // Long tracks should stop charging growth slack as soon as they enter the mixer.
+    pcm.samples.shrink_to_fit();
+    if let Some(reservation) = reservation {
+        reservation.trim(pcm.samples.capacity());
+    }
+    Some((pcm.samples, pcm.rate, pcm.source_channels.min(2) as u16))
 }
 /// A sound file without its variant number (`mob/creeper/say2.ogg` is `mob/creeper/say`): each
 /// player's game picks its own variant of the same event.
@@ -771,6 +1002,34 @@ impl MixerBackend {
             f(c);
         }
     }
+
+    fn begin_stream(&self, channel: ChannelId) -> Option<StreamDecode> {
+        let mut m = self.mixer.lock().ok()?;
+        let c = m.channels.get_mut(&channel)?;
+        if c.state != State::Initial || c.stream.is_some() {
+            return None;
+        }
+        let budget = &self.stream_budget;
+        if budget
+            .workers
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+                (n < budget.max_workers).then(|| n + 1)
+            })
+            .is_err()
+        {
+            c.state = State::Stopped;
+            return None;
+        }
+        let pending = Arc::new(());
+        let weak = Arc::downgrade(&pending);
+        c.stream = Some(StreamState::Decoding { _pending: pending });
+        Some(StreamDecode {
+            budget: budget.clone(),
+            mixer: self.mixer.clone(),
+            channel: Some(channel),
+            pending: weak,
+        })
+    }
 }
 impl Backend for MixerBackend {
     fn create(&mut self, _streaming: bool) -> Option<ChannelId> {
@@ -780,6 +1039,7 @@ impl Backend for MixerBackend {
             id,
             Channel {
                 samples: None,
+                stream: None,
                 position: 0.0,
                 state: State::Initial,
                 gain: 1.0,
@@ -887,11 +1147,10 @@ impl Backend for MixerBackend {
         }
     }
     /// `getCompleteBuffer` (cached, else decoded on the decoder thread) or
-    /// `getStream` (decoded on a thread of its own), then attach and
-    /// `alSourcePlay`. A sound that cannot load leaves its source initial,
-    /// as a failed buffer future does in vanilla.
+    /// `getStream` (decoded on a bounded worker), then attach and `alSourcePlay`.
     fn start(&mut self, channel: ChannelId, sound: &Sound, looping: bool) {
         if !self.live {
+            self.stop(channel);
             return;
         }
         // A looping sound follows its entity in one client's tracking only: each keeps its own.
@@ -902,14 +1161,15 @@ impl Backend for MixerBackend {
             }
         }
         if sound.stream {
-            let (namespace, path) = sound.path();
-            let file = Resource::file(self.root.clone(), format!("assets/{namespace}/{path}"));
-            // A streamed sound loops by restarting its stream.
-            let mixer = self.mixer.clone();
-            std::thread::spawn(move || {
-                let samples = decode(&file).map(|(s, r, c)| (Arc::new(s), r, c));
-                attach(&mixer, channel, samples, looping);
-            });
+            if let Some(job) = self.begin_stream(channel) {
+                let (namespace, path) = sound.path();
+                let path = format!("assets/{namespace}/{path}");
+                let root = self.root.clone();
+                // A failed spawn drops the captured job, refusing its channel.
+                let _ = std::thread::Builder::new()
+                    .name("sound stream decoder".into())
+                    .spawn(move || job.run(&root, &path, looping));
+            }
             return;
         }
         let key = crate::sound_events::normalize_cow(&sound.location);
@@ -919,19 +1179,31 @@ impl Backend for MixerBackend {
             return;
         }
         let (namespace, path) = sound.path();
-        let file = Resource::file(self.root.clone(), format!("assets/{namespace}/{path}"));
+        let path = format!("assets/{namespace}/{path}");
         let key = key.into_owned();
-        let decoder = self.decoder.get_or_insert_with(|| {
-            let (send, receive) = std::sync::mpsc::channel::<Decode>();
+        if self.decoder.is_none() {
+            let (send, receive) =
+                std::sync::mpsc::sync_channel::<Decode>(crate::sound_engine::STATIC_CHANNELS);
             let (mixer, cache) = (self.mixer.clone(), self.cache.clone());
-            std::thread::Builder::new()
+            if std::thread::Builder::new()
                 .name("sound decoder".into())
                 .spawn(move || {
                     for job in receive {
+                        if !mixer.lock().is_ok_and(|m| {
+                            m.channels
+                                .get(&job.channel)
+                                .is_some_and(|c| c.state == State::Initial)
+                        }) {
+                            continue;
+                        }
                         // Queued twice before the first decode finished.
                         let cached = cache.lock().ok().and_then(|mut c| c.get(&job.key));
                         let samples = cached.unwrap_or_else(|| {
-                            let samples = decode(&job.file).map(|(s, r, c)| (Arc::new(s), r, c));
+                            let samples =
+                                decode(&job.source, &job.path, DecodeLimits::STATIC, None, || {
+                                    false
+                                })
+                                .map(|(s, r, c)| (Arc::new(s), r, c));
                             if let Ok(mut c) = cache.lock() {
                                 c.insert(job.key, samples.clone());
                             }
@@ -940,15 +1212,23 @@ impl Backend for MixerBackend {
                         attach(&mixer, job.channel, samples, job.looping);
                     }
                 })
-                .expect("sound decoder thread");
-            send
-        });
-        let _ = decoder.send(Decode {
+                .is_err()
+            {
+                self.stop(channel);
+                return;
+            }
+            self.decoder = Some(send);
+        }
+        let job = Decode {
             key,
-            file,
+            source: self.root.clone(),
+            path,
             channel,
             looping,
-        });
+        };
+        if self.decoder.as_ref().unwrap().try_send(job).is_err() {
+            self.stop(channel);
+        }
     }
     /// `alSourceStop`: any state becomes stopped, an initial source too (a
     /// sound still decoding then never starts).
@@ -956,6 +1236,7 @@ impl Backend for MixerBackend {
         self.with(channel, |c| {
             c.state = State::Stopped;
             c.samples = None;
+            c.stream = None;
         });
     }
     fn pause(&mut self, channel: ChannelId) {
@@ -1820,6 +2101,7 @@ impl Audio {
                 root: root.to_owned(),
                 cache: Arc::default(),
                 decoder: None,
+                stream_budget: Arc::default(),
                 next: 0,
                 live,
                 owner: 0,
@@ -1990,6 +2272,7 @@ impl Audio {
                 root: self.backend.root.clone(),
                 cache: self.backend.cache.clone(),
                 decoder: None,
+                stream_budget: self.backend.stream_budget.clone(),
                 next: (SHARED_CHANNELS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1)
                     << 40,
                 live: self.backend.live,
@@ -2721,6 +3004,123 @@ impl Sounds for Audio {
 mod tests {
     use super::*;
 
+    fn frame(rate: u32, channels: &[&[f32]]) -> symphonia::core::audio::AudioBuffer<f32> {
+        use symphonia::core::audio::{AudioBuffer, Channels, Signal, SignalSpec};
+        let layout = match channels.len() {
+            1 => Channels::FRONT_LEFT,
+            2 => Channels::FRONT_LEFT | Channels::FRONT_RIGHT,
+            4 => {
+                Channels::FRONT_LEFT
+                    | Channels::FRONT_RIGHT
+                    | Channels::REAR_LEFT
+                    | Channels::REAR_RIGHT
+            }
+            _ => unreachable!(),
+        };
+        let mut buffer = AudioBuffer::new(8, SignalSpec::new(rate, layout));
+        buffer.render_reserved(Some(channels[0].len()));
+        for (index, samples) in channels.iter().enumerate() {
+            buffer.chan_mut(index).copy_from_slice(samples);
+        }
+        buffer
+    }
+
+    #[test]
+    fn bounded_audio_counts_interleaved_downmix_samples() {
+        let buffer = frame(48_000, &[&[0.25], &[0.5], &[0.75], &[1.0]]);
+        let limits = DecodeLimits {
+            pcm_samples: 2,
+            ..DecodeLimits::STREAM
+        };
+        let mut pcm = DecodedPcm::new(48_000, 4, limits).unwrap();
+        assert!(pcm.append(&buffer, None).is_some());
+        assert_eq!(pcm.samples, [0.5, 0.75]);
+        assert!(pcm.append(&buffer, None).is_none());
+        assert_eq!(pcm.samples, [0.5, 0.75]);
+    }
+
+    #[test]
+    fn bounded_audio_limits_duration_independently_of_size() {
+        let buffer = frame(8_000, &[&[0.25; 8]]);
+        let limits = DecodeLimits {
+            pcm_samples: 16_000,
+            seconds: 1,
+            ..DecodeLimits::STATIC
+        };
+        let mut pcm = DecodedPcm::new(8_000, 1, limits).unwrap();
+        for _ in 0..1_000 {
+            assert!(pcm.append(&buffer, None).is_some());
+        }
+        assert!(pcm.append(&buffer, None).is_none());
+        assert_eq!(pcm.samples.len(), 8_000);
+    }
+
+    #[test]
+    fn bounded_stream_pcm_remains_charged_during_playback_and_pause() {
+        let mut audio = Audio::silent(&ResourceSource::indexed(Default::default()));
+        audio.backend.stream_budget = Arc::new(StreamBudget::new(1, 4));
+        let buffer = frame(48_000, &[&[0.25, 0.5], &[0.375, 0.625]]);
+        let collect = |job: &mut StreamDecode, looping| {
+            let mut pcm = StreamPcm {
+                budget: job.budget.clone(),
+                capacity: 0,
+            };
+            let mut decoded = DecodedPcm::new(48_000, 2, DecodeLimits::STREAM).unwrap();
+            let samples = decoded
+                .append(&buffer, Some(&mut pcm))
+                .map(|()| ((Arc::new(decoded.samples), 48_000, 2), pcm));
+            job.finish(samples, looping);
+        };
+
+        let channel = audio.backend.create(true).unwrap();
+        collect(&mut audio.backend.begin_stream(channel).unwrap(), true);
+        let mut out = [0.0; 4];
+        audio.mix_buffer(&mut out, 2, 48_000);
+        assert_eq!(out, [0.25, 0.375, 0.25, 0.375]);
+        audio.backend.pause(channel);
+
+        let refused = audio.backend.create(true).unwrap();
+        collect(&mut audio.backend.begin_stream(refused).unwrap(), false);
+        assert!(audio.backend.stopped(refused));
+
+        audio.backend.destroy(channel);
+        let next = audio.backend.create(true).unwrap();
+        collect(&mut audio.backend.begin_stream(next).unwrap(), false);
+        audio.mix_buffer(&mut out, 2, 48_000);
+        assert_eq!(out, [0.25, 0.375, 0.0, 0.0]);
+        assert!(audio.backend.stopped(next));
+    }
+
+    #[test]
+    fn bounded_stream_workers_are_shared_and_cancelled_jobs_keep_their_slot_until_exit() {
+        let mut audio = Audio::silent(&ResourceSource::indexed(Default::default()));
+        audio.backend.live = true;
+        audio.backend.stream_budget = Arc::new(StreamBudget::new(1, 4));
+        let mut guest = audio.share(1);
+        let channel = audio.backend.create(true).unwrap();
+        let job = audio.backend.begin_stream(channel).unwrap();
+        assert!(!job.cancelled());
+        audio.backend.stop(channel);
+        assert!(job.cancelled());
+
+        let refused = guest.backend.create(true).unwrap();
+        let sound = Sound {
+            stream: true,
+            ..Sound::empty()
+        };
+        guest.backend.start(refused, &sound, true);
+        let mut stopped = Vec::new();
+        guest.backend.filter_stopped(&[(1, refused)], &mut stopped);
+        assert_eq!(stopped, [1]);
+
+        drop(job);
+        let next = guest.backend.create(true).unwrap();
+        let admitted = guest.backend.begin_stream(next).unwrap();
+        assert!(!guest.backend.stopped(next));
+        drop(admitted);
+        assert!(guest.backend.stopped(next));
+    }
+
     /// A run of backend errors close together is a dead stream; one or two, or errors far apart,
     /// are hiccups.
     #[test]
@@ -2865,7 +3265,13 @@ mod tests {
             .find(|name| name.ends_with(".ogg"))
             .expect("imported ogg");
         let bytes = source.read(&name).unwrap();
-        let original = decode(&Resource::bytes(bytes.clone())).expect("vanilla ogg decodes");
+        let original = decode(&source, &name, DecodeLimits::STREAM, None, || false)
+            .expect("vanilla ogg decodes");
+        let tiny_limit = DecodeLimits {
+            encoded_bytes: bytes.len() as u64 - 1,
+            ..DecodeLimits::STREAM
+        };
+        assert!(decode(&source, &name, tiny_limit, None, || false).is_none());
         assert!(!original.0.is_empty());
         let folder = std::env::temp_dir().join(format!(
             "horizon-archive-sound-{}-{}",
@@ -2883,9 +3289,10 @@ mod tests {
             .unwrap();
         writer.write_all(&bytes).unwrap();
         writer.finish().unwrap();
-        let resource = Resource::file(ResourceSource::archive(&jar).unwrap(), name);
+        let archive = ResourceSource::archive(&jar).unwrap();
         std::fs::remove_file(&jar).unwrap();
-        let archived = decode(&resource).expect("retained archive ogg decodes");
+        let archived = decode(&archive, &name, DecodeLimits::STREAM, None, || false)
+            .expect("retained archive ogg decodes");
         assert_eq!(archived, original);
         assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 0);
         std::fs::remove_dir(&folder).unwrap();
@@ -3096,6 +3503,7 @@ mod tests {
     fn channel(samples: Vec<f32>, linear: Option<f32>, at: [f32; 3], looping: bool) -> Channel {
         Channel {
             samples: Some((Arc::new(samples), 48_000, 1)),
+            stream: None,
             position: 0.0,
             state: State::Playing,
             gain: 1.0,
@@ -3493,6 +3901,7 @@ mod tests {
             root: ResourceSource::indexed(Default::default()),
             cache: Arc::default(),
             decoder: None,
+            stream_budget: Arc::default(),
             next: (u64::from(owner)) << 40,
             live: true,
             owner,

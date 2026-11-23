@@ -4,15 +4,15 @@
 //! same identities/change stamps (or open archive contents) and format version; anything
 //! else (missing, corrupt, stale, unwritable) means the normal decoding path.
 use crate::{mipmap::Strategy, resource_source::ResourceRoot};
-use std::{collections::HashMap, fs, path::PathBuf};
+use std::{collections::HashMap, fs, io::Read, path::PathBuf, sync::Arc};
 
 const MAGIC: &[u8; 4] = b"HSPR";
 /// Bump when `Decoded` or the decoding in `Sprites::decode` changes.
-const VERSION: u32 = 3;
+const VERSION: u32 = 4;
 const FILE: &str = "horizon-sprites.cache";
-/// The most pixel bytes one entry's frames may hold: a full atlas, the most one decoded image
-/// may be (`hud::read_png`).
-const MAX_ENTRY_BYTES: u64 = (crate::hud::MAX_ATLAS_SIZE as u64).pow(2) * 4;
+/// A startup accelerator only: keep decoded blocks even when not used this load, but
+/// bound their aggregate memory (and the serialized file).
+const CACHE_BYTES: usize = 64 << 20;
 
 /// What decoding one texture gives, before it takes a layer.
 #[derive(Clone)]
@@ -22,7 +22,7 @@ pub(crate) struct Decoded {
     /// Each frame's width and height; `frames` are this size, not squared to `side`, until
     /// `Sprites::finish` knows the layers' size.
     pub frame_size: [u32; 2],
-    pub frames: Vec<Vec<u8>>,
+    pub frames: Arc<Vec<Vec<u8>>>,
     /// The `.mcmeta` `animation` value, as text.
     pub animation: Option<String>,
     pub strategy: Strategy,
@@ -31,11 +31,29 @@ pub(crate) struct Decoded {
     pub opaque: bool,
     pub translucent: bool,
 }
+impl Decoded {
+    pub(super) fn heap_bytes(&self) -> usize {
+        self.frames.capacity() * std::mem::size_of::<Vec<u8>>()
+            + self.frames.iter().map(Vec::capacity).sum::<usize>()
+            + self.animation.as_ref().map_or(0, String::capacity)
+    }
+
+    pub(super) fn named_bytes(name: &str) -> usize {
+        name.len() + ENTRY_OVERHEAD
+    }
+}
+
+const ENTRY_OVERHEAD: usize = std::mem::size_of::<(String, Decoded)>();
+fn entry_bytes(name: &str, decoded: &Decoded) -> usize {
+    Decoded::named_bytes(name) + decoded.heap_bytes()
+}
 
 pub(crate) struct SpriteCache {
     path: PathBuf,
     fingerprint: u64,
     entries: HashMap<String, Decoded>,
+    bytes: usize,
+    limit: usize,
     dirty: bool,
 }
 
@@ -46,14 +64,16 @@ impl SpriteCache {
         let fingerprint = root.source().fingerprint_under("assets", &["textures"])?;
         fs::create_dir_all(root.cache()).ok()?;
         let path = root.cache().join(FILE);
-        let entries = fs::read(&path)
-            .ok()
+        let entries = read_cache(&path)
             .and_then(|bytes| parse(&bytes, fingerprint))
             .unwrap_or_default();
+        let bytes = entries.iter().map(|(n, d)| entry_bytes(n, d)).sum();
         Some(Self {
             path,
             fingerprint,
             entries,
+            bytes,
+            limit: CACHE_BYTES,
             dirty: false,
         })
     }
@@ -61,6 +81,12 @@ impl SpriteCache {
         self.entries.get(name)
     }
     pub fn insert(&mut self, name: &str, decoded: Decoded) {
+        let old = self.entries.get(name).map_or(0, |d| entry_bytes(name, d));
+        let bytes = self.bytes - old + entry_bytes(name, &decoded);
+        if bytes > self.limit {
+            return;
+        }
+        self.bytes = bytes;
         self.entries.insert(name.to_owned(), decoded);
         self.dirty = true;
     }
@@ -81,6 +107,18 @@ impl SpriteCache {
     }
 }
 
+fn read_cache(path: &std::path::Path) -> Option<Vec<u8>> {
+    let mut file = fs::File::open(path).ok()?;
+    let len = usize::try_from(file.metadata().ok()?.len()).ok()?;
+    // The serialized header is 20 bytes. Each entry is smaller on disk than its charge.
+    if len > CACHE_BYTES + 20 {
+        return None;
+    }
+    let mut bytes = vec![0; len];
+    file.read_exact(&mut bytes).ok()?;
+    (file.read(&mut [0]).ok()? == 0).then_some(bytes)
+}
+
 fn serialize(fingerprint: u64, entries: &HashMap<String, Decoded>) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(MAGIC);
@@ -93,7 +131,7 @@ fn serialize(fingerprint: u64, entries: &HashMap<String, Decoded>) -> Vec<u8> {
         out.extend_from_slice(&d.frame_size[0].to_le_bytes());
         out.extend_from_slice(&d.frame_size[1].to_le_bytes());
         out.extend_from_slice(&(d.frames.len() as u32).to_le_bytes());
-        for frame in &d.frames {
+        for frame in d.frames.iter() {
             put_bytes(&mut out, frame);
         }
         put_bytes(&mut out, d.animation.as_deref().unwrap_or("").as_bytes());
@@ -127,12 +165,12 @@ impl<'a> Reader<'a> {
     }
 }
 /// Whether `count` frames of `frame_len` bytes fit both what is left of the file (each record
-/// is a 4-byte length and its bytes) and a full atlas, frame table included.
+/// is a 4-byte length and its bytes) and the cache budget, frame table included.
 fn frames_fit(frame_len: u128, count: u32, remaining: usize) -> bool {
     let count = u128::from(count);
     let table_entry = std::mem::size_of::<Vec<u8>>() as u128;
     count * (frame_len + 4) <= remaining as u128
-        && count * (frame_len + table_entry) <= u128::from(MAX_ENTRY_BYTES)
+        && count * (frame_len + table_entry) <= CACHE_BYTES as u128
 }
 fn parse(bytes: &[u8], fingerprint: u64) -> Option<HashMap<String, Decoded>> {
     let mut r = Reader(bytes);
@@ -144,15 +182,15 @@ fn parse(bytes: &[u8], fingerprint: u64) -> Option<HashMap<String, Decoded>> {
     }
     let count = r.u32()?;
     let mut entries = HashMap::new();
+    let mut used = 0;
     for _ in 0..count {
-        let name = String::from_utf8(r.bytes()?.to_vec()).ok()?;
+        let name = r.bytes()?;
         let side = r.u32()?;
         let frame_size = [r.u32()?, r.u32()?];
         let frame_count = r.u32()?;
         // Checked before anything is copied: the shape, then the frames' total against what the
-        // file holds and against a full atlas (what one decoded image may be), counting the
-        // frame table too, which for tiny frames outweighs their pixels. The table grows only
-        // as each record's length checks out.
+        // file holds and against the cache budget, counting the frame table too,
+        // which for tiny frames outweighs their pixels.
         if frame_count == 0 || frame_size.contains(&0) || frame_size[0].max(frame_size[1]) != side {
             return None;
         }
@@ -160,7 +198,13 @@ fn parse(bytes: &[u8], fingerprint: u64) -> Option<HashMap<String, Decoded>> {
         if !frames_fit(frame_len, frame_count, r.0.len()) {
             return None;
         }
-        let mut frames = Vec::new();
+        used += name.len()
+            + ENTRY_OVERHEAD
+            + frame_count as usize * (frame_len as usize + std::mem::size_of::<Vec<u8>>());
+        if used > CACHE_BYTES {
+            return None;
+        }
+        let mut frames = Vec::with_capacity(frame_count as usize);
         for _ in 0..frame_count {
             let frame = r.bytes()?;
             if frame.len() as u128 != frame_len {
@@ -168,7 +212,12 @@ fn parse(bytes: &[u8], fingerprint: u64) -> Option<HashMap<String, Decoded>> {
             }
             frames.push(frame.to_vec());
         }
-        let animation = String::from_utf8(r.bytes()?.to_vec()).ok()?;
+        let animation = r.bytes()?;
+        used += animation.len();
+        if used > CACHE_BYTES {
+            return None;
+        }
+        let animation = String::from_utf8(animation.to_vec()).ok()?;
         let has_animation = r.take(1)?[0] != 0;
         let strategy = match r.take(1)?[0] {
             0 => Strategy::Auto,
@@ -181,11 +230,11 @@ fn parse(bytes: &[u8], fingerprint: u64) -> Option<HashMap<String, Decoded>> {
         let alpha_cutoff_bias = f32::from_bits(r.u32()?);
         let flags = r.take(1)?[0];
         entries.insert(
-            name,
+            String::from_utf8(name.to_vec()).ok()?,
             Decoded {
                 side,
                 frame_size,
-                frames,
+                frames: Arc::new(frames),
                 animation: has_animation.then_some(animation),
                 strategy,
                 alpha_cutoff_bias,
@@ -207,7 +256,7 @@ mod tests {
         Decoded {
             side: 2,
             frame_size: [2, 2],
-            frames: vec![vec![blue; 16], vec![blue + 1; 16]],
+            frames: Arc::new(vec![vec![blue; 16], vec![blue + 1; 16]]),
             animation: animation.map(str::to_owned),
             strategy: Strategy::Cutout,
             alpha_cutoff_bias: 0.25,
@@ -242,6 +291,27 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn cache_stops_collecting_entries_at_its_total_budget() {
+        let root = scratch("budget");
+        let png = root.join("assets/minecraft/textures/block/x.png");
+        write_png(&png, [255, 0, 0, 255]);
+        let resource = ResourceRoot::directory(root.clone());
+        let mut cache = SpriteCache::open(&resource).unwrap();
+        let first = "minecraft:block/x";
+        let second = "minecraft:block/y";
+        let decoded = sample(1, None);
+        cache.limit = entry_bytes(first, &decoded);
+        cache.insert(first, decoded);
+        cache.insert(second, sample(2, None));
+        cache.save();
+        let reloaded = SpriteCache::open(&resource).unwrap();
+        assert!(reloaded.get(first).is_some());
+        assert!(reloaded.get(second).is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn wrong_fingerprint_truncation_and_garbage_are_misses() {
         let mut entries = HashMap::new();
@@ -260,10 +330,9 @@ mod tests {
     #[test]
     fn a_frame_table_counts_toward_the_entry_budget() {
         let table = std::mem::size_of::<Vec<u8>>() as u128;
-        let tiny = 100_000_000;
-        // 1x1 frames: 400 MB of pixels fit a full atlas, their table does not.
-        assert!(u128::from(tiny) * 4 <= u128::from(MAX_ENTRY_BYTES));
-        assert!(u128::from(tiny) * (4 + table) > u128::from(MAX_ENTRY_BYTES));
+        let tiny = (CACHE_BYTES / 4) as u32;
+        // The pixels alone fit the cache; adding the table would exceed its limit.
+        assert!(u128::from(tiny) * (4 + table) > CACHE_BYTES as u128);
         assert!(!frames_fit(4, tiny, usize::MAX));
         assert!(frames_fit(4, 1000, 8000));
         assert!(!frames_fit(4, 1000, 7999));
@@ -308,7 +377,7 @@ mod tests {
     fn a_zero_frame_side_is_a_miss() {
         let entry = |frame_size: [u32; 2], frames: Vec<Vec<u8>>| {
             let mut d = sample(1, None);
-            (d.side, d.frame_size, d.frames) = (16, frame_size, frames);
+            (d.side, d.frame_size, d.frames) = (16, frame_size, Arc::new(frames));
             serialize(7, &HashMap::from([("a:b".to_owned(), d)]))
         };
         assert!(parse(&entry([0, 16], vec![vec![]]), 7).is_none());
