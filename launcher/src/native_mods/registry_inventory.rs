@@ -384,12 +384,13 @@ mod tests {
             "[package]\nname = 'horizon-test-sdk-patch'\nversion = '0.1.0'\nedition = '2024'\n",
         )
         .unwrap();
+        let patch = patch.canonicalize().unwrap();
         let workspace = toml::toml! {
             [workspace]
             resolver = "2"
             members = ["first", "second"]
             [patch.crates-io]
-            horizon-test-sdk-patch.path = (patch.canonicalize().unwrap().to_str().unwrap())
+            horizon-test-sdk-patch.path = (patch.to_str().unwrap())
         };
         fs::write(stage.join("Cargo.toml"), workspace.to_string()).unwrap();
         let cargo = Command::new(env!("CARGO"))
