@@ -78,6 +78,8 @@ GUEST_DISPATCH = "pub fn hook(id: u32,"
 GUEST_ARM = re.compile(r"^\d+ => \{.*?(?=^\d+ => \{|^_ =>)", re.MULTILINE | re.DOTALL)
 GUEST_HOOK_ARM = re.compile(r"\d+ => \{ let receiver = super::hooks\(\); ")
 GUEST_HOOK_CALL = re.compile(r"\blet answer = receiver\.([a-zA-Z0-9_]+)\(")
+HOOK_NAMES = re.compile(r"\bpub fn hook_name\(id: crate::HookId\) -> &'static str \{ match id \{ ([^\n]*) \} \}")
+HOOK_NAME = re.compile(r'crate::HookId::\w+ => "(\w+)",')
 WIRE_RECORD = re.compile(r"\b__wire_record_(\d+)\b")
 # A guest forwarder's host call: the import's name (with its signature hash) and the generator's position number for it.
 HOST_IMPORT = re.compile(r'host_import!\("([^"]+)", \d+u32')
@@ -142,10 +144,10 @@ def guest_wire_without_hooks(guest, hooks, base, *, added_calls=False):
     numbers they consumed closed, or None where no such removal turns it into `base`.
 
     A record number is the generator's index of a named type in the order it first meets them, method by method, and
-    the dispatch arms follow that order. A new hook's types take the numbers between the arms around its own: those its
-    arm references and, for an owned event (which has no record constructor), numbers no arm references. Each number the
-    head has more than the base below a retained reference must lie between the records of the arms before and after an
-    added one's; the retained text then has to match the base exactly.
+    the dispatch arms follow that order. A new hook's types take the numbers between the retained arms around its
+    position, whether the new hook has an arm or appears only in the full `hook_name` table. Owned types (which have
+    no record constructor) can take numbers no arm references. Each extra number below a retained reference must
+    lie in one of the new hooks' windows; the retained text then has to match the base exactly.
 
     Owned types are invisible here: an owned event or answer has no record constructor, and an answer's type is not
     even written in its arm. So an owned type an existing hook gains or loses inside an added hook's window is absorbed
@@ -153,6 +155,7 @@ def guest_wire_without_hooks(guest, hooks, base, *, added_calls=False):
     gains an output or changes its signature is breaking there. An added hook that is the first to use an owned type a
     later hook already used moves that type's number, so the later numbers shift by less than the ones just after it.
     That fails here: a number missing after the window looks the same as a later hook losing an owned type."""
+    catalog = HOOK_NAMES.search(guest)
     for name in hooks:
         guest, count = re.subn(rf'crate::HookId::\w+ => "{re.escape(name)}",', "", guest)
         if count != 1:
@@ -160,11 +163,16 @@ def guest_wire_without_hooks(guest, hooks, base, *, added_calls=False):
     arms = list(GUEST_ARM.finditer(guest, max(guest.find(GUEST_DISPATCH), 0)))
     references = [set(map(int, WIRE_RECORD.findall(arm[0]))) for arm in arms]
 
-    def added(arm):
-        call = GUEST_HOOK_CALL.search(arm[0])
-        return GUEST_HOOK_ARM.match(arm[0]) is not None and call is not None and call[1] in hooks
-
-    removed = [index for index, arm in enumerate(arms) if added(arm)]
+    retained_arms = {}
+    added_names = set()
+    removed = []
+    for index, arm in enumerate(arms):
+        call = GUEST_HOOK_CALL.search(arm[0]) if GUEST_HOOK_ARM.match(arm[0]) else None
+        if call and call[1] in hooks:
+            added_names.add(call[1])
+            removed.append(index)
+        elif call:
+            retained_arms.setdefault(call[1], set()).update(references[index])
     for index in reversed(removed):
         guest = guest[:arms[index].start()] + guest[arms[index].end():]
 
@@ -173,12 +181,25 @@ def guest_wire_without_hooks(guest, hooks, base, *, added_calls=False):
         # covers both additions while preserving the generated uses of every retained record.
         return records_in_order(guest)
 
-    windows = []
-    for index in removed:
-        low = max((n for j in range(index) if j not in removed for n in references[j]), default=-1)
-        high = min((n for j in range(index + 1, len(arms)) if j not in removed for n in references[j] if n > low),
-                   default=float("inf"))
-        windows.append((low, high))
+    def window(records, split):
+        low = max((n for refs in records[:split] for n in refs), default=-1)
+        high = min((n for refs in records[split:] for n in refs if n > low), default=float("inf"))
+        return low, high
+
+    removed_indices = set(removed)
+    retained = [refs if index not in removed_indices else () for index, refs in enumerate(references)]
+    windows = [window(retained, index) for index in removed]
+    if catalog and hooks - added_names:
+        # Native-only hooks have no dispatch position. Apply the same bounds to the retained arm
+        # records in catalog order, skipping other entries that have no guest-side records.
+        catalog_records = []
+        splits = set()
+        for name in HOOK_NAME.findall(catalog[1]):
+            if name in retained_arms:
+                catalog_records.append(retained_arms[name])
+            elif name in hooks and name not in added_names:
+                splits.add(len(catalog_records))
+        windows.extend(window(catalog_records, split) for split in splits)
 
     head_parts, base_parts = WIRE_RECORD.split(guest), WIRE_RECORD.split(base)
     if len(head_parts) != len(base_parts) or head_parts[::2] != base_parts[::2]:

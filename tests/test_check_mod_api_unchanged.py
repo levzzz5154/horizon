@@ -299,7 +299,8 @@ class CompareTests(unittest.TestCase):
         before, effect, nested, outer = records
         names = ('crate::HookId::DimensionTransitionScreenDraw => "dimension_transition_screen_draw",'
                  + ('crate::HookId::DragonFightWon => "dragon_fight_won",' if added_name else "")
-                 + 'crate::HookId::EffectParticleModification => "effect_particle_modification",')
+                 + 'crate::HookId::EffectParticleModification => "effect_particle_modification",'
+                 'crate::HookId::EnchantmentLevelSet => "enchantment_level_set",')
         arms = [
             ('1914093287 => { let receiver = super::hooks(); let p1_0: f32 = input.take()?;\n'
              f'let mut p1 = crate::__wire_record_{before}(p1_0);\n'
@@ -352,6 +353,22 @@ class CompareTests(unittest.TestCase):
         self.assertEqual(self.compare_hook_addition((857, 859, 863, 862), self.OWNED_ARM), 0)
         with self.subTest("the event and a new owned type only it uses: two numbers"):
             self.assertEqual(self.compare_hook_addition((857, 860, 864, 863), self.OWNED_ARM), 0)
+
+    def test_an_added_native_only_hook_can_shift_later_records(self):
+        # #20252: new native-only types consume three numbers without a guest dispatch arm.
+        self.assertEqual(self.compare_hook_addition((857, 861, 865, 864), None), 0)
+
+    def test_an_added_native_only_hook_only_explains_its_catalog_window(self):
+        cases = {
+            "an existing arm's text": ((857, 861, 865, 864), lambda text: text.replace("out.put(&p1.visible);", "")),
+            "an existing HookId mapping": ((857, 861, 865, 864), lambda text: text.replace(
+                "HookId::EffectParticleModification", "HookId::Different")),
+            "a shift before the native-only hook": ((860, 861, 865, 864), lambda text: text),
+            "a shift after the next arm": ((857, 858, 865, 864), lambda text: text),
+        }
+        for name, (records, edit) in cases.items():
+            with self.subTest(name):
+                self.assertEqual(self.compare_hook_addition(records, None, edit), 1)
 
     def test_an_owned_type_an_existing_hook_gains_beside_an_added_hook_is_not_seen_here(self):
         # Not coverage: dimension_transition_screen_draw's answer going from () to a new owned type takes 858 and
