@@ -2176,6 +2176,7 @@ mod tests {
         let mut screen = GraphicsScreen {
             framebuffer: FB,
             output: NONE,
+            benchmark: None,
         };
         let default = Settings::default();
         for (_, item) in items() {

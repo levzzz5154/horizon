@@ -7748,6 +7748,8 @@ mod tests {
                     Item::Vanilla(o) => format!("{o:?}"),
                     Item::Horizon(h) => format!("graphics:{h:?}"),
                     Item::Extra(e) => format!("extra:{e:?}"),
+                    // Benchmark actions and measurements are not settings.
+                    Item::Benchmark(_) => continue,
                 };
                 graphics_rows.insert(id.clone());
                 put(id, "Graphics");
