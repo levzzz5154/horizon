@@ -537,7 +537,13 @@ impl Game<'_> {
             .is_some_and(is_shulker_box)
         {
             // `ShulkerBoxScreen.extractBackground`.
-            batch.texture_blit(atlas, "gui/container/shulker_box", [ox, oy, 176.0, 167.0], [0.0; 2], [256.0; 2]);
+            batch.texture_blit(
+                atlas,
+                "gui/container/shulker_box",
+                [ox, oy, 176.0, 167.0],
+                [0.0; 2],
+                [256.0; 2],
+            );
             self.draw_screen_phase(batch, horizon_client::screen_draw::RenderPhase::Background);
             // ShulkerBoxScreen draws the menu's title: the box's custom name
             // (BaseContainerBlockEntity.getDisplayName) or its default name.
@@ -559,7 +565,13 @@ impl Game<'_> {
         // the player inventory starts at v = 126 even for fewer container rows.
         let texture = "gui/container/generic_54";
         batch.texture_blit(atlas, texture, [ox, oy, 176.0, top], [0.0; 2], [256.0; 2]);
-        batch.texture_blit(atlas, texture, [ox, oy + top, 176.0, 96.0], [0.0, 126.0], [256.0; 2]);
+        batch.texture_blit(
+            atlas,
+            texture,
+            [ox, oy + top, 176.0, 96.0],
+            [0.0, 126.0],
+            [256.0; 2],
+        );
         self.draw_screen_phase(batch, horizon_client::screen_draw::RenderPhase::Background);
         let title = self.chest_title(rows);
         super::screen_info::name_container(|| title.plain());

@@ -41,7 +41,13 @@ impl Game<'_> {
                 "Dropper",
             ),
         };
-        batch.texture_blit(atlas, texture, [ox, oy, 176.0, height], [0.0; 2], [256.0; 2]);
+        batch.texture_blit(
+            atlas,
+            texture,
+            [ox, oy, 176.0, height],
+            [0.0; 2],
+            [256.0; 2],
+        );
         self.draw_screen_phase(batch, horizon_client::screen_draw::RenderPhase::Background);
         let grey = horizon_client::hud::rgba(64, 64, 64, 255);
         let title = &self.remote_menu_title().unwrap_or_else(|| {

@@ -1073,7 +1073,9 @@ pub fn paint(batch: &mut HudBatch, atlas: &HudAtlas, draws: &[Draw]) -> Option<u
                 color,
             } => {
                 let texture = texture.strip_prefix("minecraft:").unwrap_or(texture);
-                let texture = texture.trim_start_matches("textures/").trim_end_matches(".png");
+                let texture = texture
+                    .trim_start_matches("textures/")
+                    .trim_end_matches(".png");
                 let key = if atlas.sprites.contains_key(texture) {
                     texture
                 } else {
@@ -1099,8 +1101,15 @@ pub fn paint(batch: &mut HudBatch, atlas: &HudAtlas, draws: &[Draw]) -> Option<u
                             }
                         } else {
                             crate::ui::tiled(
-                                batch, atlas, key, *x as f32, *y as f32, *w as f32, *h as f32,
-                                tex[0] as f32, color,
+                                batch,
+                                atlas,
+                                key,
+                                *x as f32,
+                                *y as f32,
+                                *w as f32,
+                                *h as f32,
+                                tex[0] as f32,
+                                color,
                             );
                         }
                     },

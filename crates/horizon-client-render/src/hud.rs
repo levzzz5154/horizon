@@ -1935,7 +1935,12 @@ impl Blend {
     fn scissor_core(&mut self, mut clip: [f32; 4]) {
         if let Some(old) = self.core_scissor() {
             let [x0, y0, x1, y1] = old.map(f32::from_bits);
-            clip = [x0.max(clip[0]), y0.max(clip[1]), x1.min(clip[2]), y1.min(clip[3])];
+            clip = [
+                x0.max(clip[0]),
+                y0.max(clip[1]),
+                x1.min(clip[2]),
+                y1.min(clip[3]),
+            ];
         }
         let clip = clip.map(f32::to_bits);
         *self = match *self {
@@ -2098,7 +2103,12 @@ impl HudBatch {
         invert_text: bool,
     ) {
         if invert_text {
-            self.fill_with(atlas, [x, y, w, h], rgba(255, 255, 255, 255), GuiFill::Invert);
+            self.fill_with(
+                atlas,
+                [x, y, w, h],
+                rgba(255, 255, 255, 255),
+                GuiFill::Invert,
+            );
         }
         self.fill_with(atlas, [x, y, w, h], rgba(0, 0, 255, 255), GuiFill::Additive);
     }
@@ -2319,7 +2329,9 @@ impl HudBatch {
     }
     pub fn clip_since(&mut self, start: usize, x0: f32, y0: f32, x1: f32, y1: f32) {
         let start_vertex = start as u32;
-        let first = self.blends.partition_point(|(range, _)| range.end <= start_vertex);
+        let first = self
+            .blends
+            .partition_point(|(range, _)| range.end <= start_vertex);
         // A scissor can start in a run coalesced with the fill immediately before it.
         if let Some((range, blend)) = self.blends.get_mut(first)
             && range.start < start_vertex
@@ -2442,17 +2454,37 @@ impl HudBatch {
             let x0 = x.max(x + w);
             let y0 = y.max(y + h);
             let uv = [(r.u0 + r.u1) / 2.0, (r.v0 + r.v1) / 2.0];
-            self.core_quad([[x0, y0], [x0, y1], [x1, y1], [x1, y0]], [uv; 4], [color; 4]);
+            self.core_quad(
+                [[x0, y0], [x0, y1], [x1, y1], [x1, y0]],
+                [uv; 4],
+                [color; 4],
+            );
             self.blend_since(start, Blend::GuiFill(mode, None));
         } else {
             let u = (r.u0 + r.u1) / 2.0;
             let v = (r.v0 + r.v1) / 2.0;
-            self.rect_uv(x, y, w, h, Rect { u0: u, v0: v, u1: u, v1: v, ..r }, color);
-            self.blend_since(start, match mode {
-                GuiFill::Alpha => Blend::Alpha,
-                GuiFill::Invert => Blend::Invert,
-                GuiFill::Additive => Blend::Additive,
-            });
+            self.rect_uv(
+                x,
+                y,
+                w,
+                h,
+                Rect {
+                    u0: u,
+                    v0: v,
+                    u1: u,
+                    v1: v,
+                    ..r
+                },
+                color,
+            );
+            self.blend_since(
+                start,
+                match mode {
+                    GuiFill::Alpha => Blend::Alpha,
+                    GuiFill::Invert => Blend::Invert,
+                    GuiFill::Additive => Blend::Additive,
+                },
+            );
         }
     }
     /// Any four-cornered shape in one colour, corners in order round it.
@@ -2475,7 +2507,8 @@ impl HudBatch {
             let start = self.vertices.len();
             self.core_quad(
                 [[x, y], [x, y + h], [x + w, y + h], [x + w, y]],
-                [uv; 4], [top, bottom, bottom, top],
+                [uv; 4],
+                [top, bottom, bottom, top],
             );
             self.blend_since(start, Blend::GuiFill(GuiFill::Alpha, None));
             return;
@@ -2930,7 +2963,10 @@ const GUI_ADD: wgpu::BlendComponent = wgpu::BlendComponent {
     operation: wgpu::BlendOperation::Add,
 };
 /// `BlendFunction.ADDITIVE`: ONE, ONE.
-const GUI_ADDITIVE: wgpu::BlendState = wgpu::BlendState { color: GUI_ADD, alpha: GUI_ADD };
+const GUI_ADDITIVE: wgpu::BlendState = wgpu::BlendState {
+    color: GUI_ADD,
+    alpha: GUI_ADD,
+};
 
 pub struct HudRenderer {
     pictures: HashMap<u64, (Arc<pictures::Picture>, wgpu::BindGroup)>,
@@ -3372,7 +3408,10 @@ impl HudRenderer {
                 batch.glint_colour,
             )),
         );
-        for pack in [&self.pack_text, &self.pack_gui, &self.pack_blit].into_iter().flatten() {
+        for pack in [&self.pack_text, &self.pack_gui, &self.pack_blit]
+            .into_iter()
+            .flatten()
+        {
             pack.prepare(uploads, encoder, batch, size, batch.scale * self.zoom);
         }
     }

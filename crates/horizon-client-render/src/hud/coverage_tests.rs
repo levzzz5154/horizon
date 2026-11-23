@@ -145,7 +145,8 @@ impl Gpu {
     fn prepare(&mut self, batch: &HudBatch) {
         let mut uploads = crate::gfx::upload::Uploads::new(&self.device);
         let mut encoder = self.device.create_command_encoder(&Default::default());
-        self.hud.prepare(&self.device, &mut uploads, &mut encoder, batch, [4, 2]);
+        self.hud
+            .prepare(&self.device, &mut uploads, &mut encoder, batch, [4, 2]);
         uploads.finish(&encoder);
         self.queue.submit([encoder.finish()]);
     }
@@ -494,7 +495,11 @@ fn a_pack_blit_replaces_its_native_tiles_only_with_the_packs_shader() {
     batch.rect_uv(0.0, 0.0, 4.0, 2.0, rect, rgba(0, 255, 0, 255));
     batch.blend_since(0, Blend::PackBlitNative(image.id));
     let start = batch.vertices.len();
-    batch.rect_uv(0.0, 0.0, 4.0, 2.0, rect, u32::MAX);
+    batch.core_quad(
+        [[0.0, 0.0], [0.0, 2.0], [4.0, 2.0], [4.0, 0.0]],
+        [[0.0, 0.0], [0.0, 1.0], [0.5, 1.0], [0.5, 0.0]],
+        [u32::MAX; 4],
+    );
     batch.blend_since(start, Blend::PackBlit(image.id));
     let draw = |gpu: &mut Gpu| {
         let mut uploads = crate::gfx::upload::Uploads::new(&gpu.device);
@@ -553,11 +558,21 @@ fn loaded_core_gui_preserves_gradient_scissor_and_hdr_coverage() {
     let stock = HudAtlas::build(&stock_src).unwrap();
     let atlas = HudAtlas::build_over(&pack_src, &stock_src).unwrap();
     assert!(stock.gui_shader.is_none());
-    let shader = atlas.gui_shader.as_deref().expect("core/gui in the pack is loaded");
-    let Some(mut gpu) = Gpu::with_pixels(atlas.width, atlas.height, &atlas.pixels()) else { return };
+    let shader = atlas
+        .gui_shader
+        .as_deref()
+        .expect("core/gui in the pack is loaded");
+    let Some(mut gpu) = Gpu::with_pixels(atlas.width, atlas.height, &atlas.pixels()) else {
+        return;
+    };
     let draw = |atlas: &HudAtlas, gpu: &mut Gpu| {
         let mut batch = HudBatch::scratch([4, 2]);
-        batch.fill_gradient(atlas, (0.0, 0.0, 3.0, 2.0), rgba(255, 0, 0, 255), rgba(0, 0, 255, 255));
+        batch.fill_gradient(
+            atlas,
+            (0.0, 0.0, 3.0, 2.0),
+            rgba(255, 0, 0, 255),
+            rgba(0, 0, 255, 255),
+        );
         batch.clip_since(0, 1.0, 0.0, 3.0, 2.0);
         // An ordinary atlas quad immediately after the clipped draw must not inherit its scissor
         // or be sent to the fill program merely because its UVs sample white.
@@ -572,10 +587,23 @@ fn loaded_core_gui_preserves_gradient_scissor_and_hdr_coverage() {
         let px = |c: [u8; 4]| [[0; 4], c, c, [0, 255, 0, 255]];
         let expected = [px(top), px(bottom)].into_iter().flatten().flatten();
         assert_eq!(pixels.len(), 32);
-        assert!(pixels.iter().copied().zip(expected).all(|(p, w)| p.abs_diff(w) <= 1), "{pixels:?}");
+        assert!(
+            pixels
+                .iter()
+                .copied()
+                .zip(expected)
+                .all(|(p, w)| p.abs_diff(w) <= 1),
+            "{pixels:?}"
+        );
         let expected = [0, top[3], top[3], 255, 0, bottom[3], bottom[3], 255];
         assert_eq!(mask.len(), 8);
-        assert!(mask.iter().copied().zip(expected).all(|(p, w)| p.abs_diff(w) <= 1), "{mask:?}");
+        assert!(
+            mask.iter()
+                .copied()
+                .zip(expected)
+                .all(|(p, w)| p.abs_diff(w) <= 1),
+            "{mask:?}"
+        );
     };
     check(draw(&stock, &mut gpu), [191, 0, 64, 255], [64, 0, 191, 255]);
     gpu.hud.set_gui_shader(&gpu.device, Some(shader));
@@ -591,14 +619,26 @@ fn loaded_gui_textured_blit_samples_and_rescales_the_original_inventory_texture(
     let root = tempfile::tempdir().unwrap();
     let source = crate::resource_source::ResourceSource::directory(root.path().to_owned());
     let texture = "gui/container/inventory";
-    let image = root.path().join(format!("assets/minecraft/textures/{texture}.png"));
+    let image = root
+        .path()
+        .join(format!("assets/minecraft/textures/{texture}.png"));
     fs::create_dir_all(image.parent().unwrap()).unwrap();
     let mut png = png::Encoder::new(fs::File::create(image).unwrap(), 8, 2);
     png.set_color(png::ColorType::Rgba);
     png.set_depth(png::BitDepth::Eight);
-    let colors = [[255, 0, 255, 255], [0, 255, 255, 255], [0, 0, 255, 255], [255, 255, 0, 255]];
-    let row = [colors[0], colors[0], colors[1], colors[1], colors[2], colors[2], colors[3], colors[3]];
-    png.write_header().unwrap().write_image_data(&[row, row].as_flattened().as_flattened()).unwrap();
+    let colors = [
+        [255, 0, 255, 255],
+        [0, 255, 255, 255],
+        [0, 0, 255, 255],
+        [255, 255, 0, 255],
+    ];
+    let row = [
+        colors[0], colors[0], colors[1], colors[1], colors[2], colors[2], colors[3], colors[3],
+    ];
+    png.write_header()
+        .unwrap()
+        .write_image_data(&[row, row].as_flattened().as_flattened())
+        .unwrap();
     let stock = HudAtlas::build(&source).unwrap();
     let pack = tempfile::tempdir().unwrap();
     write_gui_fixture_shader(
@@ -621,9 +661,15 @@ fn loaded_gui_textured_blit_samples_and_rescales_the_original_inventory_texture(
     let atlas = HudAtlas::build_over(
         &crate::resource_source::ResourceSource::directory(pack.path().to_owned()),
         &source,
-    ).unwrap();
-    let shader = atlas.blit_shader.as_deref().expect("core/position_tex_color in the pack is loaded");
-    let Some(mut gpu) = Gpu::with_pixels(stock.width, stock.height, &stock.pixels()) else { return };
+    )
+    .unwrap();
+    let shader = atlas
+        .blit_shader
+        .as_deref()
+        .expect("core/position_tex_color in the pack is loaded");
+    let Some(mut gpu) = Gpu::with_pixels(stock.width, stock.height, &stock.pixels()) else {
+        return;
+    };
     let batch = |atlas: &HudAtlas| {
         let mut batch = HudBatch::scratch([4, 2]);
         // Same extraction as InventoryScreen and AbstractMountInventoryScreen: the source
@@ -636,8 +682,13 @@ fn loaded_gui_textured_blit_samples_and_rescales_the_original_inventory_texture(
     gpu.prepare(&native);
     assert_eq!(
         gpu.draw(&native, 0.0, 0.0, true),
-        ([colors[0], colors[1], [0; 4], [0; 4], [0; 4], [0; 4], [0; 4], [0; 4]].concat(),
-         vec![255, 255, 0, 0, 0, 0, 0, 0]),
+        (
+            [
+                colors[0], colors[1], [0; 4], [0; 4], [0; 4], [0; 4], [0; 4], [0; 4]
+            ]
+            .concat(),
+            vec![255, 255, 0, 0, 0, 0, 0, 0]
+        ),
     );
     gpu.hud.set_blit_shader(&gpu.device, Some(shader));
     assert!(gpu.hud.pack_blit.is_some());
@@ -673,6 +724,11 @@ fn loaded_gui_textured_blit_samples_and_rescales_the_original_inventory_texture(
     gpu.prepare(&stretched);
     assert_eq!(
         gpu.draw(&stretched, 0.0, 0.0, true),
-        ([colors[2], colors[2], colors[3], colors[3]].repeat(2).concat(), vec![255; 8]),
+        (
+            [colors[2], colors[2], colors[3], colors[3]]
+                .repeat(2)
+                .concat(),
+            vec![255; 8]
+        ),
     );
 }

@@ -127,7 +127,11 @@ pub(super) fn load_shaders(
     atlas.sky_shader = sky("sky");
     atlas.stars_shader = sky("stars");
     atlas.sunrise_shader = load_core(
-        root, defaults, "position_color", &[], &crate::gfx::core_sky::SUNRISE_GLUE,
+        root,
+        defaults,
+        "position_color",
+        &[],
+        &crate::gfx::core_sky::SUNRISE_GLUE,
     );
     let world = |defines: &[&str], glue| load_core(root, defaults, "text", defines, glue);
     atlas.text_shaders.world = world(&[], &crate::gfx::core_text::WORLD_GLUE);
@@ -286,7 +290,8 @@ impl PackText {
                 multiview_mask: None,
                 cache: None,
             };
-            let source = wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(program.fragment.clone()));
+            let source =
+                wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(program.fragment.clone()));
             Pipeline::new(device, &desc, source, coverage)
         };
         let pipeline = create(wgpu::BlendState::ALPHA_BLENDING);
@@ -321,7 +326,14 @@ impl PackText {
         texture: &wgpu::TextureView,
         sampler: &wgpu::Sampler,
     ) -> wgpu::BindGroup {
-        bind_group(device, &self.layout, &self.uniform, texture, sampler, self.kind.samplers())
+        bind_group(
+            device,
+            &self.layout,
+            &self.uniform,
+            texture,
+            sampler,
+            self.kind.samplers(),
+        )
     }
 
     /// The frame's blocks, as `GuiRenderer` sets them for the GUI.

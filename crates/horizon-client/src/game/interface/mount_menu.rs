@@ -480,7 +480,13 @@ impl Game<'_> {
         } else {
             "gui/container/horse"
         };
-        batch.texture_blit(atlas, background, [ox, oy, 176.0, 166.0], [0.0; 2], [256.0; 2]);
+        batch.texture_blit(
+            atlas,
+            background,
+            [ox, oy, 176.0, 166.0],
+            [0.0; 2],
+            [256.0; 2],
+        );
         if open.columns > 0 {
             batch.sprite_region(
                 atlas,

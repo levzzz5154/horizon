@@ -157,16 +157,24 @@ impl HudBatch {
         let [x, y, w, h] = dest;
         let [u, v] = source;
         let [tw, th] = dims;
-        self.pack_blit(atlas, texture, dest, [u, v, w, h], dims, u32::MAX, |batch| {
-            if let Some(mut r) = atlas.sprites.get(texture).copied() {
-                let (du, dv) = ((r.u1 - r.u0) / tw, (r.v1 - r.v0) / th);
-                r.u0 += u * du;
-                r.v0 += v * dv;
-                r.u1 = r.u0 + w * du;
-                r.v1 = r.v0 + h * dv;
-                batch.rect_uv(x, y, w, h, r, u32::MAX);
-            }
-        });
+        self.pack_blit(
+            atlas,
+            texture,
+            dest,
+            [u, v, w, h],
+            dims,
+            u32::MAX,
+            |batch| {
+                if let Some(mut r) = atlas.sprites.get(texture).copied() {
+                    let (du, dv) = ((r.u1 - r.u0) / tw, (r.v1 - r.v0) / th);
+                    r.u0 += u * du;
+                    r.v0 += v * dv;
+                    r.u1 = r.u0 + w * du;
+                    r.v1 = r.v0 + h * dv;
+                    batch.rect_uv(x, y, w, h, r, u32::MAX);
+                }
+            },
+        );
     }
 }
 

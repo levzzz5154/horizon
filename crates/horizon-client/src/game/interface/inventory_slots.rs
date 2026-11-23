@@ -565,7 +565,13 @@ impl Game<'_> {
                         "gui/container/inventory"
                     };
                     // `InventoryScreen.extractBackground` / `CraftingScreen.extractBackground`.
-                    batch.texture_blit(atlas, texture, [ox, oy, 176.0, 166.0], [0.0; 2], [256.0; 2]);
+                    batch.texture_blit(
+                        atlas,
+                        texture,
+                        [ox, oy, 176.0, 166.0],
+                        [0.0; 2],
+                        [256.0; 2],
+                    );
                     self.draw_screen_phase(
                         batch,
                         horizon_client::screen_draw::RenderPhase::Background,

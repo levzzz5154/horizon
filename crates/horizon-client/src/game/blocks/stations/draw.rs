@@ -148,7 +148,11 @@ impl Game<'_> {
             {
                 let atlas = &self.gui.atlas;
                 batch.texture_blit(
-                    atlas, kind.texture(), [ox, oy, 176.0, 166.0], [0.0; 2], [256.0; 2],
+                    atlas,
+                    kind.texture(),
+                    [ox, oy, 176.0, 166.0],
+                    [0.0; 2],
+                    [256.0; 2],
                 );
                 self.draw_screen_phase(batch, horizon_client::screen_draw::RenderPhase::Background);
                 let (tx, ty) = kind.title_pos();

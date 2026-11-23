@@ -207,7 +207,11 @@ impl Part {
             log::warn!("the resource pack's {name} shader is not used: {e}");
             return None;
         }
-        let count = (if indices.is_empty() { vertices.len() } else { indices.len() }) as u32;
+        let count = (if indices.is_empty() {
+            vertices.len()
+        } else {
+            indices.len()
+        }) as u32;
         let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some(name),
             contents: bytemuck::cast_slice(vertices),
@@ -481,7 +485,8 @@ mod tests {
         };
         const SIZE: u32 = 64;
         let format = wgpu::TextureFormat::Rgba8Unorm;
-        let sky = CoreSky::new(&device, format, Some(&program), None, None).expect("the sky pipeline");
+        let sky =
+            CoreSky::new(&device, format, Some(&program), None, None).expect("the sky pipeline");
         let projection = crate::gfx::world_projection(90.0, 1.0, 2048.0);
         let data = uniforms(
             [0; 48],

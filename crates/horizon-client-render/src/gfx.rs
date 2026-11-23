@@ -9432,7 +9432,11 @@ impl Renderer {
                 )
             });
             core.prepare(
-                &mut self.uploads, &mut encoder, &sky, stars.as_deref(), sunrise.as_deref(),
+                &mut self.uploads,
+                &mut encoder,
+                &sky,
+                stars.as_deref(),
+                sunrise.as_deref(),
             );
         }
         let skin = frame.skin.filter(|skin| match &mut self.entity_skin {

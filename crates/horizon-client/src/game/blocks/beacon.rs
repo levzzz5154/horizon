@@ -553,7 +553,11 @@ impl Game<'_> {
         let atlas = &self.gui.atlas;
         // `BeaconScreen.extractBackground`.
         batch.texture_blit(
-            atlas, "gui/container/beacon", [bx, by, 230.0, HEIGHT], [0.0; 2], [256.0; 2],
+            atlas,
+            "gui/container/beacon",
+            [bx, by, 230.0, HEIGHT],
+            [0.0; 2],
+            [256.0; 2],
         );
         self.draw_screen_phase(batch, horizon_client::screen_draw::RenderPhase::Background);
         let label = 0xFFE0_E0E0;
