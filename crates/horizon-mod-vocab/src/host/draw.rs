@@ -206,6 +206,12 @@ pub trait DrawContext {
     fn widget_text_field(&mut self, field: &TextFieldView) -> TextFieldLayout {
         unimplemented!("DrawContext::widget_text_field")
     }
+    /// Draw a [`InputGlyph`] at the top-left of its layout box, using its stock artwork or key
+    /// label. `argb` multiplies its colours (`0xFFFFFFFF` leaves them unchanged). Returns `false`
+    /// when the surface cannot draw the glyph or the position is not finite.
+    fn input_glyph(&mut self, glyph: &InputGlyph, at: [f32; 2], argb: u32) -> bool {
+        false
+    }
 }
 /// What a block entity, mob or player submit hook draws with, in blocks under a pose stack (`PoseStack`): one per hook call.
 pub trait BlockEntityDrawContext {
