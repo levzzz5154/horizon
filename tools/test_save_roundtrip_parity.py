@@ -52,6 +52,7 @@ LOCAL = ROOT / '.local'
 RESOURCES = lab.RESOURCES
 SERVER = lab.GAME / 'jars' / 'server.jar'
 RUN = LOCAL / 'save-roundtrip' / 'run'
+PLAYER = 'RoundTrip'
 
 # Game rules Horizon's player changes before saving: rule -> (vanilla's value, Horizon's).
 # The new value must be in Horizon's save, and nothing else may differ (#74).
@@ -301,15 +302,18 @@ def build_world(directory):
     server.run('gamerule advance_weather false')
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import vanilla_login
-    threading.Thread(target=lambda: vanilla_login.join('127.0.0.1', server.port, 'RoundTrip', 25), daemon=True).start()
+    threading.Thread(target=lambda: vanilla_login.join('127.0.0.1', server.port, PLAYER, 25), daemon=True).start()
     time.sleep(6)
-    server.run('item replace entity RoundTrip container.0 with minecraft:iron_sword[damage=3]')
-    server.run('give RoundTrip minecraft:apple 7')
-    server.run('xp set RoundTrip 5 levels')
+    server.run(f'item replace entity {PLAYER} container.0 with minecraft:iron_sword[damage=3]')
+    server.run(f'give {PLAYER} minecraft:apple 7')
+    server.run(f'xp set {PLAYER} 5 levels')
     time.sleep(20)
     server.run('save-all flush')
     time.sleep(2)
     server.stop()
+    player_file = directory / 'world' / 'players' / 'data' / f'{lab.offline_uuid(PLAYER)}.dat'
+    if not player_file.is_file():
+        raise AssertionError(f'vanilla did not save the fixture player {PLAYER}')
     return failed, server.problems()
 
 
@@ -368,7 +372,8 @@ def horizon_resave(source, destination, bin_dir):
         env['ALSA_CONFIG_PATH'] = str(alsa)
         subprocess.run(['vscreen', 'up'], check=False, capture_output=True)
     launch = subprocess.run(
-        ctl + ['launch', '--resources', str(RESOURCES), '--world', 'world', '--render-distance', '6'] + extra,
+        ctl + ['launch', '--resources', str(RESOURCES), '--game-dir', str(destination),
+               '--world', 'world', '--name', PLAYER, '--render-distance', '6'] + extra,
         cwd=destination, env=env, capture_output=True, text=True)
     print(launch.stdout.strip())
     if launch.returncode:
@@ -580,9 +585,33 @@ def load_regions(folder):
 
 
 def compare_dat(name, a, b, report):
-    out = []
-    diff(unwrap(a), unwrap(b), name, out)
-    report.extend(out)
+    a, b = unwrap(a), unwrap(b)
+    if name == 'level.dat':
+        # Stock Horizon records an empty mod inventory even in a vanilla world.
+        # Admit only its exact additions, and compare metadata already in the input.
+        if 'fml' not in a and b.get('fml') == {'LoadingModList': []}:
+            del b['fml']
+        if 'horizon' not in a:
+            records = b.get('horizon')
+            expected = {'ContentModList': [], 'BlockNamespaces': []}
+            if isinstance(records, dict):
+                commit = records.get('LastSavedCommit')
+                if isinstance(commit, str) and re.fullmatch(r'[0-9a-f]{7,40}', commit):
+                    expected['LastSavedCommit'] = commit
+                if records == expected:
+                    del b['horizon']
+    elif re.fullmatch(r'players/data/[^/]+\.dat', name):
+        # AttributeMap packs a hash map and applies the values by registry key.
+        # Leave malformed or duplicate entries in place for the strict diff.
+        for player in (a, b):
+            attributes = player.get('attributes')
+            if isinstance(attributes, list) and all(
+                isinstance(row, dict) and isinstance(row.get('id'), str) for row in attributes
+            ):
+                ids = {row['id'] for row in attributes}
+                if len(ids) == len(attributes):
+                    attributes.sort(key=lambda row: row['id'])
+    diff(a, b, name, report)
 
 
 def dimension(world):

@@ -150,6 +150,8 @@ Optional Windows allocator build features are documented in
 | Esc | Pause menu (Save and Quit) |
 
 Worlds autosave every 6000 ticks (5 minutes), when chunks unload and on quit.
+Single-player saves write the owner to `players/data/<uuid>.dat` using their active profile, including a custom
+offline name. Opening a world copied from a dedicated server keeps that profile's existing inventory and progress.
 On headless Linux use `vscreen start ./target/release/horizon-client` and
 `vscreen shot`.
 

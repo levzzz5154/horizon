@@ -156,5 +156,54 @@ class SaveRoundtripDatFileSetTests(unittest.TestCase):
         self.assertEqual(self.rows(report, 'data/other.dat'), [])
 
 
+class SaveRoundtripMetadataTests(unittest.TestCase):
+    def test_only_stock_horizon_metadata_can_be_added_to_level_dat(self):
+        vanilla = {'Data': {'SpawnX': 0}}
+        stock = {
+            'Data': {'SpawnX': 0},
+            'fml': {'LoadingModList': []},
+            'horizon': {'BlockNamespaces': [], 'ContentModList': [],
+                        'LastSavedCommit': 'abcdef012345'},
+        }
+        report = []
+        roundtrip.compare_dat('level.dat', vanilla, stock, report)
+        self.assertEqual(report, [])
+
+        for field, change in (
+            ('fml', {'LoadingModList': [{'ModId': 'example'}]}),
+            ('horizon', {**stock['horizon'], 'BlockNamespaces': ['example']}),
+            ('horizon', {**stock['horizon'], 'Unrecognized': []}),
+            ('horizon', {**stock['horizon'], 'LastSavedCommit': ''}),
+        ):
+            with self.subTest(field=field, change=change):
+                report = []
+                roundtrip.compare_dat('level.dat', vanilla, {**stock, field: change}, report)
+                self.assertEqual(report, [(f'level.dat.{field}', None, change)])
+
+        original = {**vanilla, 'fml': {'LoadingModList': [], 'Unrecognized': 'kept'}}
+        report = []
+        roundtrip.compare_dat('level.dat', original, stock, report)
+        self.assertEqual(report, [('level.dat.fml.Unrecognized', 'kept', None)])
+
+    def test_player_attribute_order_is_ignored_only_for_distinct_ids(self):
+        path = 'players/data/example.dat'
+        reach = {'base': ('d', 4.5), 'id': 'minecraft:block_interaction_range'}
+        speed = {'base': ('d', 0.1), 'id': 'minecraft:movement_speed'}
+        report = []
+        roundtrip.compare_dat(path, {'attributes': [reach, speed]},
+                              {'attributes': [speed, reach]}, report)
+        self.assertEqual(report, [])
+
+        changed = {**speed, 'base': ('d', 0.2)}
+        roundtrip.compare_dat(path, {'attributes': [reach, speed]},
+                              {'attributes': [changed, reach]}, report)
+        self.assertEqual(report, [(f'{path}.attributes[1].base', ('d', 0.1), ('d', 0.2))])
+
+        report = []
+        roundtrip.compare_dat(path, {'attributes': [speed, changed]},
+                              {'attributes': [changed, speed]}, report)
+        self.assertEqual(len(report), 2)
+
+
 if __name__ == '__main__':
     unittest.main()

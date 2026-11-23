@@ -194,6 +194,11 @@ impl WorldRequest {
             ..Level::default()
         });
         let mut level = level;
+        if created && let Some((_, profile)) = &owner {
+            // IntegratedServer.initServer saves with its profile before the
+            // first tick, including an offline profile with a custom name.
+            level.player_uuid = Some(horizon_client::lan::playerdata::uuid_ints(*profile));
+        }
         // `IntegratedServer.setSingleplayerProfile`: a world older Horizon builds made
         // under the offline profile moves its owner to the account at open — the player
         // file, its `UUID` and level.dat's `singleplayer_uuid`. Its entities follow as
@@ -201,13 +206,11 @@ impl WorldRequest {
         let owner_migration = owner.and_then(|(player, account)| {
             let old = horizon_protocol::crypto::offline_uuid(&player);
             (old != account).then(|| {
-                if created {
-                    // `IntegratedServer.initServer` saves with the profile before the first
-                    // tick: a world made under the account names it from its first level.dat.
-                    level.player_uuid = Some(horizon_client::lan::playerdata::uuid_ints(account));
-                } else if horizon_client::lan::playerdata::migrate_owner(
-                    &save_root, &mut level, old, account,
-                ) {
+                if !created
+                    && horizon_client::lan::playerdata::migrate_owner(
+                        &save_root, &mut level, old, account,
+                    )
+                {
                     log::info!(
                         "Horizon: \"{folder}\" was made under the offline profile; \
                          its owner moved to the account's UUID"
