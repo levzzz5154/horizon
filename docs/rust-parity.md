@@ -59,12 +59,11 @@ interpolation and game-loop synchronization remain unfinished.
 
 ## Completion criteria and playable builds
 
-The final deliverable is the complete Horizon Rust game with one-to-one parity
-with pinned Java Edition 26.3, packaged for players across desktop platforms
-(the initial milestone targeted Linux x86-64 with Vulkan on Wayland; Horizon
-now ships on Windows x64/ARM64, macOS and Linux). Each release includes the
-packaged native executable, required runtime resources, launch instructions,
-signed artifact checksums, and tested OS/CPU/GPU configurations.
+The target is one-to-one parity with pinned Java Edition 26.3. The
+[nightly game releases](https://github.com/horizon-rust/horizon/releases/tag/nightly)
+already publish packages for Windows x64 and ARM64, macOS x64 and ARM64, and Linux x86-64,
+with signed artifact checksums. Package availability does not certify complete parity or
+play on every OS, CPU and GPU combination.
 
 The build is complete only after its packaged Rust game is launched and tested on the target machine:
 create/load a world, render terrain, use keyboard/mouse controls, move and interact,
@@ -347,7 +346,7 @@ encoding plus malformed-property fallback. Block gameplay remains pending.
 | Dimensions, portals, weather and game rules | Not implemented | Cross-dimension state, transitions, time/weather and rule-dependent behavior |
 | Multiplayer, protocol, authentication and commands | Not implemented | Packet/codec fixtures, vanilla interoperability, reconnects and command behavior |
 | Rendering, resources, sound, UI and input | Native inspection client with selected block models, neighbor visibility, greedy meshing and a free camera; gameplay rendering/audio/UI incomplete | Resource compatibility, render/culling correctness, controls and playable interaction tests |
-| Performance and platform support | Registered-attribute allocation reduction measured on Linux; whole-game performance and playable platform packages pending | Repeated matched gameplay workloads, frame/tick distributions, memory and physical GPU tests |
+| Performance and platform support | Registered-attribute allocation reduction measured on Linux; packages are available, but whole-game performance and platform play coverage remain incomplete | Repeated matched gameplay workloads, frame/tick distributions, memory and physical GPU tests |
 
 The next simulation milestone is integrating the checked scheduler and
 registry-backed sections with actual block behavior and neighbor updates. World
@@ -1081,8 +1080,8 @@ hashes can change iteration order and subsequent callback paths between JVMs.
 The checks execute inherited native entity and instance methods, native maps,
 synchronized data and both RNG implementations. Library and fixture Clippy pass.
 Registered effect bodies, attribute/packet notification side effects and random
-position methods are still controlled. Complete entity ticking, gameplay and
-playable platform builds remain pending.
+position methods are still controlled. The results do not establish complete entity
+ticking, gameplay or platform-specific play coverage.
 
 ## Pending-attribute set storage
 
@@ -1235,8 +1234,8 @@ prototypes, reference-sharing modifiers, alias/null lookup entries, prototype
 and instance cache state, nonfinite arithmetic and dirty callback failures.
 Library and fixture Clippy pass. Present supplier prototypes are non-null;
 custom virtual prototype methods, registered ranged-attribute integration and
-combined health/dimension consequences remain outside this gate. Complete
-gameplay and playable platform builds remain unfinished.
+combined health/dimension consequences remain outside this gate. The results establish
+neither complete gameplay parity nor play coverage across the packaged platforms.
 
 ## Live registered attribute component
 
