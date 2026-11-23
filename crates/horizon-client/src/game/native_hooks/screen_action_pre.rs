@@ -28,11 +28,7 @@ impl Game<'_> {
         let Some(screen) = self.screen_view_now() else {
             return false;
         };
-        let input = ScreenActionInput {
-            action,
-            source,
-            focused: focused(),
-        };
+        let input = ScreenActionInput::new(action, source, focused());
         let mut canceled = false;
         self.native_screen_action_pre(&screen, &input, &mut canceled);
         canceled

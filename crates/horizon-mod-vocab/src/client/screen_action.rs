@@ -55,6 +55,7 @@ pub enum ScreenAction {
 
 /// The action and focus visible to a screen input listener.
 #[derive(Clone, Copy, Debug, PartialEq, horizon_mod_api_macros::Wire)]
+#[non_exhaustive]
 pub struct ScreenActionInput {
     /// The requested action.
     pub action: ScreenAction,
@@ -62,4 +63,20 @@ pub struct ScreenActionInput {
     pub source: ScreenActionSource,
     /// The focused registered widget, in GUI pixels `[x, y, width, height]`.
     pub focused: Option<[f32; 4]>,
+}
+
+impl ScreenActionInput {
+    // hidden: the game constructs this event; listeners only receive it.
+    #[doc(hidden)]
+    pub const fn new(
+        action: ScreenAction,
+        source: ScreenActionSource,
+        focused: Option<[f32; 4]>,
+    ) -> Self {
+        Self {
+            action,
+            source,
+            focused,
+        }
+    }
 }
