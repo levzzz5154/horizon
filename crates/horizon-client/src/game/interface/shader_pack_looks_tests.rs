@@ -20,7 +20,8 @@ fn manifest(shadow: bool) -> String {
 fn pack(shadow: bool) -> horizon_shader_api::Report {
     use horizon_shader_api::{MANIFEST, Pack, check};
     let manifest = manifest(shadow);
-    let material = "fn material(input: MaterialInput) -> Surface { return Surface(input.albedo); }\n";
+    let material =
+        "fn material(input: MaterialInput) -> Surface { return Surface(input.albedo); }\n";
     let files = [(MANIFEST, manifest.as_str()), ("material.wgsl", material)]
         .map(|(name, text)| (name.to_owned(), text.as_bytes().to_vec()));
     check(&Pack::from_files(files.into_iter().collect()).unwrap()).unwrap()
@@ -28,13 +29,19 @@ fn pack(shadow: bool) -> horizon_shader_api::Report {
 
 fn install(game: &mut super::Game<'_>, shadow: bool) {
     let renderer = game.renderer.as_mut().unwrap();
-    let pack = (pack(shadow), Vec::new(), Vec::new(), Vec::new(), Default::default());
+    let pack = (
+        pack(shadow),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Default::default(),
+    );
     renderer.set_native_shader_pack(Some(pack)).unwrap();
 }
 
 /// Section `sy` of column (0, 0), meshed as the game's workers mesh it, with its quads' looks
 /// while the game asks for them (`streaming.looks`).
-fn mesh(game: &super::Game<'_>, sy: i32) -> SectionMesh {
+pub(in crate::game) fn mesh(game: &super::Game<'_>, sy: i32) -> SectionMesh {
     let context = game.worker_context();
     let chunk = |x: i32, z: i32| game.world.chunks.get(&(x, z)).map(|c| &**c);
     let region: [[Option<&Chunk>; 3]; 3] =
@@ -83,8 +90,15 @@ fn held_as_handed(game: &mut super::Game<'_>, key: (i32, i32, i32), case: &str) 
             part.handed.iter().any(|l| l.0[0] != 0),
             "{case}: {name} looks are set"
         );
-        let held = part.held.as_ref().unwrap_or_else(|| panic!("{case}: {name} has no looks"));
-        let wrong = held.iter().zip(&part.handed).filter(|(a, b)| a != b).count();
+        let held = part
+            .held
+            .as_ref()
+            .unwrap_or_else(|| panic!("{case}: {name} has no looks"));
+        let wrong = held
+            .iter()
+            .zip(&part.handed)
+            .filter(|(a, b)| a != b)
+            .count();
         assert!(
             held.len() == part.handed.len() && wrong == 0,
             "{case}: {name}: {wrong} of {} slots differ",
@@ -153,7 +167,8 @@ fn install_and_upload(game: &mut super::Game<'_>, key: (i32, i32, i32), shadow: 
 #[test]
 #[ignore = "daily"]
 fn terrain_looks_stay_with_their_quads_through_pack_changes() {
-    let name = "game::shader_pack_looks_tests::terrain_looks_stay_with_their_quads_through_pack_changes";
+    let name =
+        "game::shader_pack_looks_tests::terrain_looks_stay_with_their_quads_through_pack_changes";
     if run_fresh_cases(name, "HORIZON_TERRAIN_LOOKS", &["1"]) {
         return;
     }
@@ -201,8 +216,14 @@ fn terrain_looks_go_with_the_world_to_a_new_renderer() {
         make_again(game, &event_loop);
         frame(game);
         frame(game);
-        assert!(!game.renderer.as_mut().unwrap().take_dropped_sections(), "kept for the pack");
-        assert!(game.renderer.as_ref().unwrap().terrain_looks(), "held for the pack");
+        assert!(
+            !game.renderer.as_mut().unwrap().take_dropped_sections(),
+            "kept for the pack"
+        );
+        assert!(
+            game.renderer.as_ref().unwrap().terrain_looks(),
+            "held for the pack"
+        );
         assert!(game.streaming.looks, "the game meshes with looks still");
         install(game, true);
         frame(game);
@@ -242,11 +263,17 @@ fn a_world_held_for_a_pack_that_no_longer_builds_follows_no_pack() {
         install_and_upload(game, key, false);
         make_again(game, &event_loop);
         frame(game);
-        assert!(game.renderer.as_ref().unwrap().terrain_looks(), "held for the pack");
+        assert!(
+            game.renderer.as_ref().unwrap().terrain_looks(),
+            "held for the pack"
+        );
         let files = tempfile::tempdir().unwrap();
         let file = |name: &str, text: &str| std::fs::write(files.path().join(name), text).unwrap();
         file(horizon_shader_api::MANIFEST, &manifest(false));
-        file("material.wgsl", "fn material(input: MaterialInput) -> Surface {");
+        file(
+            "material.wgsl",
+            "fn material(input: MaterialInput) -> Surface {",
+        );
         game.tick_native_shader_pack(files.path());
         frame(game);
         frame(game);
@@ -270,7 +297,10 @@ fn a_world_held_for_a_pack_whose_folder_is_gone_follows_no_pack() {
         install_and_upload(game, key, false);
         make_again(game, &event_loop);
         frame(game);
-        assert!(game.renderer.as_ref().unwrap().terrain_looks(), "held for the pack");
+        assert!(
+            game.renderer.as_ref().unwrap().terrain_looks(),
+            "held for the pack"
+        );
         let files = tempfile::tempdir().unwrap();
         game.tick_native_shader_pack(&files.path().join("gone"));
         frame(game);
