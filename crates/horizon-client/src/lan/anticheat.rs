@@ -9,7 +9,11 @@ use crate::collisions::SceneCollisions;
 use horizon_anticheat::{Check, Config, Strikes};
 use horizon_core::geometry::{Aabb, Vec3};
 use horizon_core::nbt::{JavaString, Tag};
-use std::{io::Write, time::Instant};
+use std::{
+    io::{self, Write},
+    path::Path,
+    time::Instant,
+};
 
 pub struct Anticheat {
     pub config: Config,
@@ -82,22 +86,47 @@ impl Anticheat {
     /// Player `uuid` was kicked by `check`: its kicks by it so far and whether this one bans. The
     /// count is saved at once, so a restart doesn't forgive it.
     fn strike(&mut self, uuid: u128, check: Check) -> (u32, bool) {
-        let path = std::path::Path::new(&self.config.strikes);
-        let strikes = self.strikes.get_or_insert_with(|| {
-            std::fs::read(path)
-                .ok()
-                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-                .unwrap_or_default()
-        });
+        let path = Path::new(&self.config.strikes);
+        let strikes = self.strikes.get_or_insert_with(|| read_strikes(path));
         let ban_after = self.config.actions(check).ban_after;
         let kick = strikes.kick(&uuid_text(uuid), check, ban_after);
-        if !self.config.strikes.is_empty()
-            && let Ok(json) = serde_json::to_vec_pretty(strikes)
-        {
-            let _ = std::fs::write(path, json);
+        if !path.as_os_str().is_empty() {
+            // An unqualified name, including the default, lives in the current directory.
+            // Give the durable publisher an explicit directory to sync after the rename.
+            let relative =
+                (path.parent() == Some(Path::new(""))).then(|| Path::new(".").join(path));
+            let result = serde_json::to_vec_pretty(strikes).and_then(|json| {
+                horizon_server_files::durable::write(relative.as_deref().unwrap_or(path), &json)
+                    .map_err(serde_json::Error::io)
+            });
+            if let Err(error) = result {
+                log::warn!(
+                    "Could not save anticheat strikes to {}: {error}",
+                    path.display()
+                );
+            }
         }
         kick
     }
+}
+
+fn read_strikes(path: &Path) -> Strikes {
+    if !path.as_os_str().is_empty() {
+        match std::fs::read(path) {
+            Ok(bytes) => match serde_json::from_slice(&bytes) {
+                Ok(strikes) => return strikes,
+                Err(error) => {
+                    log::warn!("Invalid anticheat strikes in {}: {error}", path.display());
+                }
+            },
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => log::warn!(
+                "Could not read anticheat strikes from {}: {error}",
+                path.display()
+            ),
+        }
+    }
+    Strikes::default()
 }
 
 /// The flag log's writer thread. Dropped with the anticheat (the server stopping), it closes the
@@ -549,6 +578,32 @@ impl Hub {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_strike_save_keeps_the_last_complete_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("strikes.json");
+        let config = Config {
+            strikes: path.to_str().unwrap().to_owned(),
+            ..Config::default()
+        };
+
+        let mut first = Anticheat::new(config.clone());
+        assert_eq!(first.strike(1, Check::Ground), (1, false));
+        let before = std::fs::read(&path).unwrap();
+        let mut restarted = Anticheat::new(config.clone());
+
+        // Refuse publication in the scratch directory without permission or disk-full races.
+        let temporary = dir.path().join(".strikes.json.durable-new");
+        std::fs::create_dir(&temporary).unwrap();
+        assert_eq!(restarted.strike(1, Check::Ground), (2, true));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+
+        std::fs::remove_dir(temporary).unwrap();
+        let mut restarted = Anticheat::new(config);
+        assert_eq!(restarted.strike(1, Check::Ground), (2, true));
+        assert_eq!(read_strikes(&path).0[&uuid_text(1)]["ground"], 0);
+    }
 
     /// The log's lines reach the file in the order flagged, every one of them by the time the
     /// anticheat is dropped (the server stopping), even a flood written just before.
