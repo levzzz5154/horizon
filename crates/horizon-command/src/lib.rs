@@ -1208,6 +1208,8 @@ impl Dispatcher {
     ) -> (Range, Vec<Suggestion>, bool) {
         self.suggestions_within(parse, cursor, reg, reg.permission)
     }
+    /// `CommandDispatcher.getCompletionSuggestions`: an empty merge has range `(0, 0)`,
+    /// even if a child was given a builder at a nonzero offset.
     fn suggestions_within(
         &self,
         parse: &ParseResults,
@@ -1241,16 +1243,6 @@ impl Dispatcher {
             all.extend(builder.out);
         }
         let (range, list) = merge_suggestions(truncated, all);
-        // The reply's range is the builder's, covering the token being typed, even when nothing
-        // is suggested locally: a node that asks the server (`ask_server`, and the mods' own
-        // `tab_complete` answers for the free `id`) brings its completions with the server's
-        // reply, which the chat applies to that token. The empty list's `(0, 0)` would paste
-        // what the server adds at the start of the line.
-        let range = if list.is_empty() {
-            (start, truncated.len())
-        } else {
-            range
-        };
         (range, list, ask)
     }
     fn smart_usage_of(&self, node: usize, optional: bool, deep: bool, level: u8) -> Option<String> {

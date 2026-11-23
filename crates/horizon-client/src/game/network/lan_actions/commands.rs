@@ -311,8 +311,16 @@ impl Game<'_> {
         // Commands.sendCommands prunes the tree a player's client completes from; the answer the
         // server sends follows the same test, so a child literal of a path the sender may not run
         // is not offered either (Bukkit hides it; brigadier alone lists every child).
-        let ((start, end), mut suggestions) =
+        let (range, mut suggestions) =
             d.client_suggestions(&parse, command.len(), &self.ui.registries);
+        // An empty Brigadier result has no replacement range. Mods adding the first
+        // completion still need the range of the token being typed.
+        let (start, end) = if suggestions.is_empty() {
+            let (_, start, _) = parse.context.suggestion_context(command.len());
+            (start.min(command.len()), command.len())
+        } else {
+            range
+        };
         self.native_tab_complete(
             player_uuid,
             &player_name,
@@ -334,8 +342,13 @@ impl Game<'_> {
         let utf16 = |byte: usize| command[..byte.min(command.len())].encode_utf16().count() as i32;
         let mut w = horizon_protocol::buf::Writer::new();
         w.varint(id);
-        w.varint(utf16(start) + skip as i32);
-        w.varint(utf16(end) - utf16(start));
+        let (start, length) = if suggestions.is_empty() {
+            (0, 0)
+        } else {
+            (utf16(start) + skip as i32, utf16(end) - utf16(start))
+        };
+        w.varint(start);
+        w.varint(length);
         w.varint(suggestions.len() as i32);
         for s in &suggestions {
             w.string(&s.text);

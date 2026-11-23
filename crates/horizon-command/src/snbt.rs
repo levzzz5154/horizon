@@ -221,6 +221,19 @@ mod suggestion_tests {
         assert_eq!(suggestions("{\"a"), ["\"", "'", "\\"]);
     }
 
+    #[test]
+    fn a_short_suffix_can_continue_as_a_signed_integer_type() {
+        let mut builder = SuggestionsBuilder::new("1s", 0);
+        suggest(&mut builder);
+        let (range, list) = crate::merge_suggestions(builder.input, builder.out);
+        assert_eq!(range, (2, 2));
+        let texts: Vec<_> = list
+            .iter()
+            .map(|suggestion| suggestion.text.as_str())
+            .collect();
+        assert_eq!(texts, ["b", "B", "i", "I", "l", "L", "s", "S"]);
+    }
+
     /// Candidates must match the text typed at that position: nothing continues `\q`.
     #[test]
     fn candidates_are_filtered_by_the_typed_text() {
@@ -243,6 +256,28 @@ mod error_tests {
             CommandError::tr_at(key, &args, &at),
             "{text}"
         );
+    }
+
+    #[test]
+    fn grammar_errors_keep_the_first_failure_at_the_furthest_cursor() {
+        for (text, literal, cursor) in [
+            ("{", "\"", 1),
+            ("{a:x", "(", 4),
+            ("[", "B", 1),
+            ("[1", ".", 2),
+            ("[I;1.5]", "u|U", 4),
+            ("{a:99999999999}", ".", 14),
+            (r#"{"":1}"#, ".", 5),
+            ("{a:1.2.3}", "e|E", 6),
+            ("{a:--1}", "(", 6),
+        ] {
+            assert_fails(text, "argument.literal.incorrect", &[literal], cursor);
+        }
+    }
+
+    #[test]
+    fn a_later_branch_does_not_replace_a_numeral_error_at_the_same_cursor() {
+        assert_fails("{a:0x}", "snbt.parser.expected_hex_numeral", &[], 5);
     }
 
     #[test]

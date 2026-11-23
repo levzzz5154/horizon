@@ -1529,6 +1529,11 @@ suggestions the server's dispatcher answers as
 input's state and every call. Not compared: the mouse wheel over the
 suggestion list and clipboard keys.
 
+The command parser comparison also checks completion replacement ranges, parse
+errors and their cursors at permission levels 4, 2, and 0. Brigadier's empty
+completion has range `(0, 0)`; a mod's server-side completion hook still
+receives the token range so it can supply the first match.
+
 `horizon_client::creative` is the creative inventory. Its tabs come from
 `creative-inventory.json`, which `VanillaCreativeTabsExporter` writes from
 vanilla's own `CreativeModeTabs.tryRebuildTabContents` over the vanilla data

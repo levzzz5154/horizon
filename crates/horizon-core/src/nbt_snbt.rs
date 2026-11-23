@@ -79,10 +79,19 @@ pub fn snbt_whitespace(value: u32) -> bool {
         | 0x2008..=0x200a | 0x2028..=0x2029 | 0x205f | 0x3000)
 }
 
+struct IntegerLiteral {
+    digits: String,
+    radix: u32,
+    minus: bool,
+    signed: Option<bool>,
+    kind: Option<u8>,
+}
+
 struct Parser<'a> {
     input: Input<'a>,
     cursor: usize,
     depth: usize,
+    literal_failure: Option<(usize, &'static str, &'static [&'static str])>,
     collect_suggestions: bool,
     suggestion_cursor: usize,
     suggestions: Vec<String>,
@@ -93,13 +102,28 @@ impl<'a> Parser<'a> {
             input,
             cursor: 0,
             depth: 0,
+            literal_failure: None,
             collect_suggestions: false,
             suggestion_cursor: 0,
             suggestions: Vec::new(),
         }
     }
     fn parse(mut self) -> Result<(Tag, usize), SnbtError> {
-        let value = self.value()?;
+        let value = self.value().map_err(|error| {
+            // Grammar.parseForCommands uses the first error at the furthest cursor,
+            // including failures from alternatives or optional terms that backtracked.
+            if let Some((cursor, expected, values)) = self.literal_failure
+                && cursor >= error.cursor
+            {
+                return SnbtError {
+                    key: "argument.literal.incorrect",
+                    args: vec![expected.to_owned()],
+                    cursor,
+                    suggestions: values.iter().map(|value| (*value).to_owned()).collect(),
+                };
+            }
+            error
+        })?;
         Ok((value, self.cursor))
     }
     fn error(&self, key: &'static str) -> SnbtError {
@@ -164,6 +188,33 @@ impl<'a> Parser<'a> {
             if !self.suggestions.iter().any(|present| present == value) {
                 self.suggestions.push((*value).to_owned());
             }
+        }
+    }
+    /// A failed terminal in an alternative or optional term still contributes to
+    /// `ErrorCollector.LongestOnly`; keep the first such terminal at the furthest position.
+    fn record_literal(&mut self, cursor: usize, expected: &'static str, values: &'static [&str]) {
+        if self
+            .literal_failure
+            .is_none_or(|(previous, _, _)| cursor > previous)
+        {
+            self.literal_failure = Some((cursor, expected, values));
+        }
+        self.record(cursor, values);
+    }
+    fn eat_alternative(&mut self, expected: &'static str, values: &'static [&str]) -> bool {
+        let start = self.cursor;
+        self.skip();
+        if self.peek().is_some_and(|c| {
+            values
+                .iter()
+                .any(|value| c == u32::from(value.as_bytes()[0]))
+        }) {
+            self.bump();
+            true
+        } else {
+            self.record_literal(self.cursor, expected, values);
+            self.cursor = start;
+            false
         }
     }
     fn skip(&mut self) {
@@ -240,7 +291,31 @@ impl<'a> Parser<'a> {
                 if let Some(value) = self.float()? {
                     Ok(value)
                 } else {
-                    self.integer(None)
+                    let start = self.cursor;
+                    match self.integer_literal() {
+                        Ok(integer) => self.create_integer(integer, None),
+                        Err(error) => {
+                            // The number lookahead does not cut the alternatives:
+                            // the unquoted-or-builtin rule can advance further.
+                            let number_literal_failure = self.literal_failure;
+                            self.cursor = start;
+                            self.word().map_err(|word_error| {
+                                // On a tie, a terminal from the later branch cannot
+                                // replace the earlier numeral error (e.g. a missing hex digit).
+                                if self
+                                    .literal_failure
+                                    .is_some_and(|(cursor, _, _)| cursor <= error.cursor)
+                                {
+                                    self.literal_failure = number_literal_failure;
+                                }
+                                if word_error.cursor > error.cursor {
+                                    word_error
+                                } else {
+                                    error
+                                }
+                            })
+                        }
+                    }
                 }
             }
             _ => self.word(),
@@ -265,7 +340,7 @@ impl<'a> Parser<'a> {
     fn string(&mut self) -> Result<JavaString, SnbtError> {
         self.skip();
         let Some(quote @ (0x22 | 0x27)) = self.peek() else {
-            self.record(self.cursor, &["\"", "'"]);
+            self.record_literal(self.cursor, "\"", &["\"", "'"]);
             return self.unquoted().map(|value| value.as_str().into());
         };
         self.bump();
@@ -369,11 +444,12 @@ impl<'a> Parser<'a> {
         }
         loop {
             let key = self.string()?;
+            self.expect(b':')?;
+            let value = self.value()?;
             if key.0.is_empty() {
                 return Err(self.error("snbt.parser.empty_key"));
             }
-            self.expect(b':')?;
-            values.insert(key, self.value()?);
+            values.insert(key, value);
             if self.eat(b'}') {
                 return Ok(Tag::Compound(values));
             }
@@ -387,17 +463,22 @@ impl<'a> Parser<'a> {
         self.expect(b'[')?;
         let start = self.cursor;
         self.skip();
-        self.record(self.cursor, &["B", "L", "I"]);
         let typed = match self.peek() {
             Some(0x42) => Some(0),
             Some(0x49) => Some(2),
             Some(0x4c) => Some(3),
             _ => None,
         };
-        let typed = typed.filter(|_| {
-            self.bump();
-            self.eat(b';')
-        });
+        let typed = match typed {
+            Some(kind) => {
+                self.bump();
+                self.eat_alternative(";", &[";"]).then_some(kind)
+            }
+            None => {
+                self.record_literal(self.cursor, "B", &["B", "L", "I"]);
+                None
+            }
+        };
         if typed.is_none() {
             self.cursor = start;
         }
@@ -405,7 +486,8 @@ impl<'a> Parser<'a> {
         if !self.eat(b']') {
             loop {
                 values.push(if let Some(kind) = typed {
-                    self.integer(Some(kind))?
+                    let integer = self.integer_literal()?;
+                    self.create_integer(integer, Some(kind))?
                 } else {
                     self.value()?
                 });
@@ -470,7 +552,7 @@ impl<'a> Parser<'a> {
         })
     }
     fn exponent(&mut self, text: &mut String) -> Result<bool, SnbtError> {
-        if !self.eat(b'e') && !self.eat(b'E') {
+        if !self.eat_alternative("e|E", &["e", "E"]) {
             return Ok(false);
         }
         text.push('e');
@@ -491,7 +573,11 @@ impl<'a> Parser<'a> {
         if let Some(whole) = &whole {
             text.push_str(whole);
         }
-        let dot = self.eat(b'.');
+        let dot = if whole.is_some() {
+            self.eat_alternative(".", &["."])
+        } else {
+            self.eat(b'.')
+        };
         if dot {
             text.push('.');
             match self.digits(10)? {
@@ -547,9 +633,9 @@ impl<'a> Parser<'a> {
             })))
         }
     }
-    fn integer(&mut self, array: Option<u8>) -> Result<Tag, SnbtError> {
+    fn integer_literal(&mut self) -> Result<IntegerLiteral, SnbtError> {
         let minus = self.sign();
-        let (mut digits, radix) = if self.eat(b'0') {
+        let (digits, radix) = if self.eat(b'0') {
             if self.eat(b'x') || self.eat(b'X') {
                 (self.required_digits(16)?, 16)
             } else {
@@ -576,7 +662,7 @@ impl<'a> Parser<'a> {
         let suffix_start = self.cursor;
         let prefix = self.lower().filter(|c| matches!(c, b'u' | b's'));
         if prefix.is_none() {
-            self.record(self.cursor, &["u", "U", "s", "S"]);
+            self.record_literal(self.cursor, "u|U", &["u", "U", "s", "S"]);
             self.cursor = suffix_start;
         }
         let mut signed = None;
@@ -586,6 +672,11 @@ impl<'a> Parser<'a> {
             if ty.is_some_and(|ty| matches!(ty, b'b' | b's' | b'i' | b'l')) {
                 signed = Some(prefix == b's');
             } else {
+                self.record_literal(
+                    self.cursor,
+                    "b|B",
+                    &["b", "B", "s", "S", "i", "I", "l", "L"],
+                );
                 self.cursor = suffix_start;
             }
         }
@@ -605,6 +696,23 @@ impl<'a> Parser<'a> {
         } else {
             self.cursor = suffix_cursor;
         }
+        Ok(IntegerLiteral {
+            digits,
+            radix,
+            minus,
+            signed,
+            kind,
+        })
+    }
+
+    fn create_integer(&self, integer: IntegerLiteral, array: Option<u8>) -> Result<Tag, SnbtError> {
+        let IntegerLiteral {
+            mut digits,
+            radix,
+            minus,
+            signed,
+            kind,
+        } = integer;
         let kind = kind.unwrap_or(array.unwrap_or(2));
         if array.is_some_and(|array| kind > array) {
             return Err(self.error("snbt.parser.invalid_array_element_type"));
@@ -640,9 +748,8 @@ impl<'a> Parser<'a> {
         })
     }
     fn word(&mut self) -> Result<Tag, SnbtError> {
-        let start = self.cursor;
         let word = self.unquoted()?;
-        if self.eat(b'(') {
+        if self.eat_alternative("(", &["("]) {
             self.enter()?;
             let result = self.arguments(&word);
             self.depth -= 1;
@@ -654,7 +761,6 @@ impl<'a> Parser<'a> {
             Ok(Tag::Byte(0))
         } else {
             if matches!(word.as_bytes()[0], b'+' | b'-' | b'.' | b'0'..=b'9') {
-                self.cursor = start;
                 return Err(self.error("snbt.parser.invalid_unquoted_start"));
             }
             Ok(Tag::String(word.as_str().into()))
