@@ -99,6 +99,12 @@ Cargo's explicit target keeps those flags off host proc-macros. Multiple version
 of a target dependency are legitimate: uniqueness is required only when selecting
 a named extern or publishing an internals facade, never across the whole SDK.
 
+The client host and its function-replacement patch must use the same copy of
+`mod_vocab`. It owns the section-geometry, block-tint and biome-color resolver
+registries: a patched registration writes the same table the host's mesh workers
+read. `tools/test_native_render_registry.py` builds a real native mod against a
+signed client SDK and exercises those three callbacks in a loaded world.
+
 To rebuild and prove the archive with the launcher's pinned Rust toolchain active:
 
 ```sh
