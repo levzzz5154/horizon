@@ -5,7 +5,7 @@
 use super::Game;
 use horizon_client::{
     block_edit::Run,
-    chunk::ColumnLayout,
+    chunk::{Chunk, ColumnLayout},
     containers::BlockEntity,
     fast_hash::{FxHashMap, FxHashSet},
     world::World,
@@ -103,7 +103,20 @@ impl Game<'_> {
         columns: &[(i32, i32)],
         h: Heightmap,
     ) -> Vec<Option<i32>> {
-        loaded_heights(&self.world, columns, |x, z| self.edit_height(h, x, z))
+        loaded_columns(&self.world, columns)
+            .map(|(x, z, chunk)| chunk.map(|chunk| self.loaded_column_height(chunk, h, x, z)))
+            .collect()
+    }
+
+    pub(super) fn loaded_column_height(&self, chunk: &Chunk, h: Heightmap, x: i32, z: i32) -> i32 {
+        let properties = &self.pack.assets.properties;
+        column_height(
+            chunk,
+            h,
+            (x, z),
+            |s| self.res.facts().is_air(s),
+            |t, s| t.is_opaque(properties.heightmap_state(s)),
+        )
     }
 
     /// Each column's height on `h` (none where its chunk is not loaded) and its blocks from `below` under it to
@@ -154,14 +167,12 @@ impl Game<'_> {
     /// One above the highest block of column (x, z) that counts on heightmap `h`, or the bottom of the column (also
     /// where it is not loaded).
     fn edit_height(&self, h: Heightmap, x: i32, z: i32) -> i32 {
-        let properties = &self.pack.assets.properties;
-        column_height(
-            &self.world,
-            h,
-            (x, z),
-            |s| self.res.facts().is_air(s),
-            |t, s| t.is_opaque(properties.heightmap_state(s)),
-        )
+        self.world
+            .chunks
+            .get_chunk(x >> 4, z >> 4)
+            .map_or(self.world.layout().min_y(), |chunk| {
+                self.loaded_column_height(chunk, h, x, z)
+            })
     }
 }
 
@@ -188,60 +199,53 @@ fn read_size(columns: usize, below: u32, above: u32, height: i32) -> Result<usiz
 }
 
 /// One above the highest block of column `(x, z)` on heightmap `h`, or the
-/// bottom of the column (also where it is not loaded): `air` says which
-/// blocks the world surface passes over, and `counts(kind, state)` which
-/// count on the other heightmaps.
+/// bottom of the chunk: `air` says which blocks the world surface passes over,
+/// and `counts(kind, state)` which count on the other heightmaps.
 fn column_height(
-    world: &World,
+    chunk: &Chunk,
     h: Heightmap,
     (x, z): (i32, i32),
     air: impl Fn(BlockStateId) -> bool,
     counts: impl Fn(HeightmapType, BlockStateId) -> bool,
 ) -> i32 {
     if h == Heightmap::WorldSurface {
-        return world.world_surface(x, z, air);
+        return chunk.world_surface(x, z, |s| air(BlockStateId(s)));
     }
     // (as `rain_height` reads it: both others count only blocks that block motion, so they are at or under it)
-    let top = world.motion_blocking(x, z, |s| counts(HeightmapType::MotionBlocking, s));
+    let top = chunk.motion_blocking(x, z, |s| {
+        counts(HeightmapType::MotionBlocking, BlockStateId(s))
+    });
     let kind = match h {
         Heightmap::MotionBlockingNoLeaves => HeightmapType::MotionBlockingNoLeaves,
         Heightmap::OceanFloor => HeightmapType::OceanFloor,
         _ => return top,
     };
-    let bottom = world
-        .chunks
-        .get(&(x >> 4, z >> 4))
-        .map_or(world.layout().min_y(), |c| c.min_y());
+    let bottom = chunk.min_y();
     let mut y = top;
-    while y > bottom && !counts(kind, world.block(x, y - 1, z)) {
+    while y > bottom && !counts(kind, chunk.block(x, y - 1, z)) {
         y -= 1;
     }
     y
 }
 
-/// `height(x, z)` of each column, none where its chunk is not loaded. (A
-/// chunk is looked up once for a run of columns in it.)
-fn loaded_heights(
-    world: &World,
-    columns: &[(i32, i32)],
-    height: impl Fn(i32, i32) -> i32,
-) -> Vec<Option<i32>> {
-    let mut last: Option<((i32, i32), bool)> = None;
-    columns
-        .iter()
-        .map(|&(x, z)| {
-            let key = (x >> 4, z >> 4);
-            let loaded = match last {
-                Some((k, l)) if k == key => l,
-                _ => {
-                    let l = world.chunks.get(&key).is_some();
-                    last = Some((key, l));
-                    l
-                }
-            };
-            loaded.then(|| height(x, z))
-        })
-        .collect()
+/// The chunk of each column, looking it up only once for a run of columns in it.
+pub(super) fn loaded_columns<'a>(
+    world: &'a World,
+    columns: &'a [(i32, i32)],
+) -> impl Iterator<Item = (i32, i32, Option<&'a Chunk>)> + 'a {
+    let mut last = None;
+    columns.iter().map(move |&(x, z)| {
+        let key = (x >> 4, z >> 4);
+        let chunk = match last {
+            Some((k, c)) if k == key => c,
+            _ => {
+                let c = world.chunks.get_chunk(key.0, key.1);
+                last = Some((key, c));
+                c
+            }
+        };
+        (x, z, chunk)
+    })
 }
 
 /// The blocks of each column from `below` under its base to `above` - 1 over
@@ -720,9 +724,9 @@ mod tests {
         w.set(3, 319, 3, BlockStateId(1)).unwrap();
         w
     }
-    fn height(w: &World, h: Heightmap, x: i32, z: i32) -> i32 {
+    fn height(chunk: &Chunk, h: Heightmap, x: i32, z: i32) -> i32 {
         column_height(
-            w,
+            chunk,
             h,
             (x, z),
             |s| s.0 == 0,
@@ -737,23 +741,23 @@ mod tests {
     #[test]
     fn each_heightmap_has_its_own_height() {
         let w = columns_world();
-        assert_eq!(height(&w, Heightmap::WorldSurface, 1, 1), 65);
-        assert_eq!(height(&w, Heightmap::MotionBlocking, 1, 1), 65);
-        assert_eq!(height(&w, Heightmap::MotionBlockingNoLeaves, 1, 1), 63);
-        assert_eq!(height(&w, Heightmap::OceanFloor, 1, 1), 65);
-        assert_eq!(height(&w, Heightmap::OceanFloor, 2, 2), 63);
-        assert_eq!(height(&w, Heightmap::MotionBlockingNoLeaves, 2, 2), 65);
-        // an empty column, and one not loaded: the bottom
-        assert_eq!(height(&w, Heightmap::OceanFloor, 5, 5), -64);
-        assert_eq!(height(&w, Heightmap::WorldSurface, 100, 100), -64);
+        let chunk = w.chunks.get_chunk(0, 0).unwrap();
+        assert_eq!(height(chunk, Heightmap::WorldSurface, 1, 1), 65);
+        assert_eq!(height(chunk, Heightmap::MotionBlocking, 1, 1), 65);
+        assert_eq!(height(chunk, Heightmap::MotionBlockingNoLeaves, 1, 1), 63);
+        assert_eq!(height(chunk, Heightmap::OceanFloor, 1, 1), 65);
+        assert_eq!(height(chunk, Heightmap::OceanFloor, 2, 2), 63);
+        assert_eq!(height(chunk, Heightmap::MotionBlockingNoLeaves, 2, 2), 65);
+        // An empty column returns its bottom.
+        assert_eq!(height(chunk, Heightmap::OceanFloor, 5, 5), -64);
     }
 
     #[test]
     fn columns_not_loaded_have_no_height() {
         let w = columns_world();
-        let heights = loaded_heights(&w, &[(1, 1), (100, 100), (2, 2), (-1, 0)], |x, z| {
-            height(&w, Heightmap::OceanFloor, x, z)
-        });
+        let heights: Vec<_> = loaded_columns(&w, &[(1, 1), (100, 100), (2, 2), (-1, 0)])
+            .map(|(x, z, c)| c.map(|c| height(c, Heightmap::OceanFloor, x, z)))
+            .collect();
         assert_eq!(heights, [Some(65), None, Some(63), None]);
     }
 

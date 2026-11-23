@@ -203,6 +203,22 @@ pub mod built {
             biome,
         }
     }
+    /// The loaded client surface snapshot, constructed by the game and only read by mods.
+    pub fn surface_column(
+        height: i32,
+        block: crate::BlockState,
+        biome: String,
+        sky_light: u8,
+        block_light: u8,
+    ) -> crate::SurfaceColumn {
+        crate::SurfaceColumn {
+            height,
+            block,
+            biome,
+            sky_light,
+            block_light,
+        }
+    }
     /// The replay this window plays, constructed by the game and only read by mods.
     pub fn replay_state(
         recording: String,
@@ -234,7 +250,16 @@ pub mod built {
         bytes: u64,
     ) -> crate::ExportStatus {
         crate::ExportStatus {
-            request, name, state, frame, frames, width, height, fps_num, fps_den, bytes,
+            request,
+            name,
+            state,
+            frame,
+            frames,
+            width,
+            height,
+            fps_num,
+            fps_den,
+            bytes,
         }
     }
     /// Wrap a slot in the persistent instance group store.
