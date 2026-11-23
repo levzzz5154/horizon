@@ -188,11 +188,13 @@ impl Stars {
             native_build_stars(&mut StarMeshEdit::new(&mut triangles));
         }
         if !triangles.is_empty() {
-            self.vertices = Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Stars vertex buffer"),
-                contents: bytemuck::cast_slice(&triangles),
-                usage: wgpu::BufferUsages::VERTEX,
-            }));
+            self.vertices = Some(
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Stars vertex buffer"),
+                    contents: bytemuck::cast_slice(&triangles),
+                    usage: wgpu::BufferUsages::VERTEX,
+                }),
+            );
         }
         self.count = triangles.len() as u32;
         self.needs_mesh = false;
