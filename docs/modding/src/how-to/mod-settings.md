@@ -49,7 +49,9 @@ and wasm. Bulk paths are relative to your implicit mod root: `tiles/overworld/0.
 `<mod id>/tiles/overworld/0.bin`. The game never scans bulk data as settings or config.
 
 `read`, `write` and `stat` operate on checked `/`-separated paths; traversal (`..`), backslashes and symbolic links
-are refused. Writes replace the whole file atomically, never exposing partial contents. Horizon's own per-file
+in mod-chosen paths are refused. An operator may link the game's configured `config/` directory itself;
+the service opens that directory once and applies the same checks and quotas inside it.
+Writes replace the whole file atomically, never exposing partial contents. Horizon's own per-file
 limits are `DATA_FILE_MAX` (64 MiB) for both bulk areas and `CONFIG_FILE_MAX` (4 MiB) for config files.
 Oversized files and unavailable operations return typed errors, rather than partially writing.
 

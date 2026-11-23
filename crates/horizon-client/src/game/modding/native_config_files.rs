@@ -71,6 +71,19 @@ impl FileRoot {
     fn open(&self) -> Result<Dir, ConfigFileError> {
         Dir::open_ambient_dir(&self.path, cap_std::ambient_authority()).map_err(io)
     }
+
+    fn open_storage(&self) -> Result<Option<Dir>, ConfigFileError> {
+        if self.bulk {
+            return open_child(&self.open()?, self.storage());
+        }
+        // The configured root is chosen by the operator, not the mod.
+        // Follow that root as before, then keep all mod paths below its handle.
+        match Dir::open_ambient_dir(self.path.join("config"), cap_std::ambient_authority()) {
+            Ok(dir) => Ok(Some(dir)),
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(io(e)),
+        }
+    }
 }
 
 impl Game<'_> {
@@ -151,15 +164,14 @@ fn make_child(dir: &Dir, name: &str) -> Result<Dir, ConfigFileError> {
     open_child(dir, name)?.ok_or(ConfigFileError::NotFound)
 }
 
-/// Open every directory without following links. Keeping the parent handle
-/// makes subsequent opens safe even if the directory is renamed or replaced.
+/// Open the configured storage root, then walk mod-chosen names without
+/// following links. Keeping the parent handle also survives a rename.
 fn resolve<'a>(
     root: &FileRoot,
     path: &'a ConfigPath,
 ) -> Result<(Dir, &'a str, Metadata), ConfigFileError> {
     let mod_id = calling_mod(root, path)?;
-    let mut directory =
-        open_child(&root.open()?, root.storage())?.ok_or(ConfigFileError::NotFound)?;
+    let mut directory = root.open_storage()?.ok_or(ConfigFileError::NotFound)?;
     let mut components = components(root.bulk, mod_id, path.as_str()).peekable();
     while let Some(part) = components.next() {
         if components.peek().is_none() {
@@ -342,8 +354,7 @@ fn write_with_quota(
     // Account from disk, not from a cache that misses edits or older saves.
     static WRITE_LOCK: Mutex<()> = Mutex::new(());
     let _write = WRITE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
-    let base = root.open()?;
-    let storage = open_child(&base, root.storage())?;
+    let storage = root.open_storage()?;
     let (parents, name) = file
         .as_str()
         .rsplit_once('/')
@@ -384,7 +395,7 @@ fn write_with_quota(
 
     let mut directory = match parent.or(storage) {
         Some(dir) => dir,
-        None => make_child(&base, root.storage())?,
+        None => make_child(&root.open()?, root.storage())?,
     };
     for part in remaining {
         directory = make_child(&directory, part)?;
@@ -696,6 +707,38 @@ mod tests {
             write_with_quota(root, &state, b"ok", quota).unwrap();
             assert_eq!(read(root, &state).unwrap(), b"ok");
         });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_operator_linked_config_root_is_supported_and_its_bytes_count() {
+        let game = Root::new("linked-config");
+        let configured = Root::new("configured-config");
+        fs::create_dir(configured.0.path.join("fd")).unwrap();
+        let file = configured.0.path.join("fd/state.json");
+        fs::write(&file, b"old").unwrap();
+        std::os::unix::fs::symlink(&configured.0.path, game.0.path.join("config")).unwrap();
+
+        as_mod("fd", || {
+            let root = &game.0;
+            let state = path("fd/state.json");
+            let quota = Quota {
+                bytes: 3,
+                entries: 3,
+            };
+            assert_eq!(read(root, &state).unwrap(), b"old");
+            assert_eq!(stat(root, &state).unwrap().unwrap().len, 3);
+            assert_eq!(
+                list(root, &path("fd"), None, 10).unwrap()[0].name,
+                "state.json"
+            );
+            write_with_quota(root, &state, b"new", quota).unwrap();
+            assert_eq!(
+                write_with_quota(root, &state, b"over", quota),
+                Err(ConfigFileError::TooLarge)
+            );
+        });
+        assert_eq!(fs::read(file).unwrap(), b"new");
     }
 
     #[test]
