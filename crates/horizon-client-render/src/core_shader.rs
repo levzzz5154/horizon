@@ -51,6 +51,13 @@ pub struct Glue<'a> {
     pub vertex_id: &'a str,
 }
 
+/// The engine's colour storage conversion, applied after the pack's fragment stage.
+pub(crate) struct FragmentGlue<'a> {
+    pub prelude: &'a str,
+    /// A GLSL expression of the vanilla colour `hz_color`.
+    pub color: &'a str,
+}
+
 /// A pipeline's two stages, validated.
 #[derive(Debug)]
 pub struct CoreProgram {
@@ -90,14 +97,28 @@ pub fn translate_core_with(
     glue: &Glue,
     provided: &dyn Fn(&str) -> bool,
 ) -> Result<CoreProgram, String> {
+    translate_core_mapped(vertex, fragment, defines, include, glue, provided, None)
+}
+
+pub(crate) fn translate_core_mapped(
+    vertex: &str,
+    fragment: &str,
+    defines: &[&str],
+    include: &dyn Fn(&str) -> Option<String>,
+    glue: &Glue,
+    provided: &dyn Fn(&str) -> bool,
+    fragment_glue: Option<&FragmentGlue<'_>>,
+) -> Result<CoreProgram, String> {
     const CORE: &str = "minecraft:shaders/core/";
     let vertex_text = glsl_fixups::fixups(&strip_comments(&expand(vertex, CORE, include)?));
     let fragment_text = glsl_fixups::fixups(&strip_comments(&expand(fragment, CORE, include)?));
     let mut names = Names::default();
-    let vertex_code = rewrite(&vertex_text, ShaderStage::Vertex, glue, &mut names)
+    let vertex_code = rewrite(&vertex_text, ShaderStage::Vertex, glue, &mut names, None)
         .map_err(|e| format!("vertex shader: {e}"))?;
-    let fragment_code = rewrite(&fragment_text, ShaderStage::Fragment, glue, &mut names)
-        .map_err(|e| format!("fragment shader: {e}"))?;
+    let fragment_code = rewrite(
+        &fragment_text, ShaderStage::Fragment, glue, &mut names, fragment_glue,
+    )
+    .map_err(|e| format!("fragment shader: {e}"))?;
     let vertex = compile(ShaderStage::Vertex, &vertex_code, defines, &names, provided)
         .map_err(|e| format!("vertex shader: {e}"))?;
     let fragment = compile(
@@ -382,6 +403,7 @@ fn rewrite(
     stage: ShaderStage,
     glue: &Glue,
     names: &mut Names,
+    fragment_glue: Option<&FragmentGlue<'_>>,
 ) -> Result<String, String> {
     let vertex = stage == ShaderStage::Vertex;
     let mut out = String::from("#version 450 core\n");
@@ -392,9 +414,14 @@ fn rewrite(
             writeln!(out, "{ty} {name};").unwrap();
         }
     }
+    if let Some(glue) = fragment_glue {
+        out.push_str(glue.prelude);
+        out.push('\n');
+    }
     // Where the pack's own code starts: the glue above it is left as it is.
     let pack_start = out.len();
     let mut outputs: Vec<&str> = Vec::new();
+    let mut color_output = None;
     let explicit: Vec<u32> = if vertex {
         text.lines()
             .flat_map(declaration_lines)
@@ -530,17 +557,35 @@ fn rewrite(
                             outputs.len() - 1
                         }) as u32
                     });
-                    writeln!(
-                        out,
-                        "layout(location = {location}) out {} {};",
-                        decl.ty, decl.name
-                    )
-                    .unwrap();
+                    if location == 0 && fragment_glue.is_some() {
+                        color_output = Some(decl.name);
+                        writeln!(out, "{} {};", decl.ty, decl.name).unwrap();
+                    } else {
+                        writeln!(
+                            out,
+                            "layout(location = {location}) out {} {};",
+                            decl.ty, decl.name
+                        )
+                        .unwrap();
+                    }
                 }
             }
         }
     }
     if !vertex {
+        if let Some(glue) = fragment_glue {
+            let name = color_output.ok_or("no colour output")?;
+            let pack = rename_main(&out[pack_start..]);
+            let mut code = format!("{}{pack}", &out[..pack_start]);
+            writeln!(
+                code,
+                "layout(location=0) out vec4 hz_out;\n\
+                 void main() {{ hz_main(); vec4 hz_color = {name}; hz_out = {}; }}",
+                glue.color,
+            )
+            .unwrap();
+            return Ok(code);
+        }
         return Ok(out);
     }
     // The pack's `gl_VertexID` and 26.3's `gl_VertexIndex` both mean vanilla's vertex number

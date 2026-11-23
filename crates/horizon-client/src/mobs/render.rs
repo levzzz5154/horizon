@@ -1340,6 +1340,10 @@ fn draw_normals(
     let normals = normals.part(p);
     // `skips` is a name lookup: ask once per part, not once per polygon. A part
     // hidden this way still draws its children, so only the polygons are gated.
+    let core = scroll == 0.0
+        && matches!(overlay, 0 | 1 | 5 | 16..=31)
+        && uv[0] < uv[2]
+        && uv[1] < uv[3];
     if !poses.skips(part) {
         for poly in &part.polygons {
             let normal = poly.vertex_normal(normals);
@@ -1349,6 +1353,10 @@ fn draw_normals(
                 // the item path already passed its transformed UV.
                 let glint_uv = if overlay == ARMOR_GLINT {
                     [v[3], v[4]]
+                } else if core {
+                    // Its signed V tags the source rect for the resource-pack model
+                    // pass. Native rendering ignores glint_uv on these materials.
+                    [uv[0], -uv[1]]
                 } else {
                     [0.0, 0.0]
                 };
