@@ -1,4 +1,5 @@
 //! The game's side of the `draw` area (`horizon-mod-api/src/host/draw.rs`).
+use crate::game::native_scene::SceneBlocks;
 use crate::game::{Game, api_values::TryIntoEngine};
 use mod_api::{prelude::*, *};
 
@@ -96,8 +97,29 @@ impl DrawContext for GameDrawContext<'_, '_> {
         view: SceneView,
     ) -> Result<(), mod_api::SceneError> {
         let blocks = crate::game::api_values::aggregates::scene_blocks(&scene.blocks)?;
+        self.game.native_draw_scene(
+            &mut *self.surface,
+            rect,
+            &SceneBlocks::stationary(&blocks),
+            scene,
+            view,
+        )
+    }
+    fn draw_scene_with_sections(
+        &mut self,
+        rect: [f32; 4],
+        scene: &Scene,
+        view: SceneView,
+        sections: &[SceneSection],
+    ) -> Result<(), SceneSectionError> {
+        if sections.is_empty() {
+            return self.draw_scene(rect, scene, view).map_err(Into::into);
+        }
+        let cells = crate::game::api_values::aggregates::scene_blocks(&scene.blocks)?;
+        let blocks = SceneBlocks::posed(&cells, sections)?;
         self.game
-            .native_draw_scene(&mut *self.surface, rect, &blocks, scene, view)
+            .native_draw_scene(&mut *self.surface, rect, &blocks, scene, view)?;
+        Ok(())
     }
     fn push_clip(&mut self, rect: [f32; 4]) -> Result<(), GuiClipRefusal> {
         self.clips.push(self.surface, rect)

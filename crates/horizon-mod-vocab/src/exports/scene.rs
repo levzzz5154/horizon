@@ -4,5 +4,5 @@ pub use client::scene::{
 };
 pub use client::scene::{
     Scene, SceneBlock, SceneBlockEntity, SceneClock, SceneEntity, SceneError, SceneParticle,
-    SceneView,
+    SceneSection, SceneSectionError, SceneView,
 };
