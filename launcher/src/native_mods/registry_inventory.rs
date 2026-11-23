@@ -134,6 +134,7 @@ impl Metadata {
     }
 
     /// Target Rust libraries that more than one staged mod would otherwise link statically.
+    /// `sdk` is the canonical root used to validate the SDK patch paths.
     pub fn shared_libraries(
         &self,
         roots: &[PathBuf],
@@ -183,7 +184,14 @@ impl Metadata {
                 {
                     continue;
                 }
-                if package.source.is_some() || package.manifest_path.starts_with(sdk) {
+                // Cargo's file URLs can spell a patched manifest as a drive path
+                // on Windows even though the validated SDK root is verbatim.
+                if package.source.is_some()
+                    || package
+                        .manifest_path
+                        .canonicalize()
+                        .is_ok_and(|path| path.starts_with(sdk))
+                {
                     let owner = *first.entry(id).or_insert(index);
                     if owner != index {
                         shared.insert(id);
@@ -340,6 +348,72 @@ mod tests {
                 .map(|package| package.name.as_str())
                 .collect::<Vec<_>>(),
             ["native-sys"],
+        );
+    }
+
+    #[test]
+    fn two_mods_share_the_sdk_patch_resolved_by_cargo() {
+        use std::{fs, process::Command};
+
+        let scratch = tempfile::tempdir().unwrap();
+        let sdk = scratch.path().join("sdk");
+        let patch = sdk.join("patched");
+        let stage = scratch.path().join("stage");
+        let mods = ["first", "second"];
+        for name in mods {
+            let dir = stage.join(name);
+            fs::create_dir_all(dir.join("src")).unwrap();
+            fs::write(
+                dir.join("src/lib.rs"),
+                "pub use horizon_test_sdk_patch::Value;",
+            )
+            .unwrap();
+            fs::write(
+                dir.join("Cargo.toml"),
+                format!(
+                    "[package]\nname = '{name}'\nversion = '0.1.0'\nedition = '2024'\n\
+                     [dependencies]\nhorizon-test-sdk-patch = '=0.1.0'\n"
+                ),
+            )
+            .unwrap();
+        }
+        fs::create_dir_all(patch.join("src")).unwrap();
+        fs::write(patch.join("src/lib.rs"), "pub struct Value;").unwrap();
+        fs::write(
+            patch.join("Cargo.toml"),
+            "[package]\nname = 'horizon-test-sdk-patch'\nversion = '0.1.0'\nedition = '2024'\n",
+        )
+        .unwrap();
+        let workspace = toml::toml! {
+            [workspace]
+            resolver = "2"
+            members = ["first", "second"]
+            [patch.crates-io]
+            horizon-test-sdk-patch.path = (patch.canonicalize().unwrap().to_str().unwrap())
+        };
+        fs::write(stage.join("Cargo.toml"), workspace.to_string()).unwrap();
+        let cargo = Command::new(env!("CARGO"))
+            .args(["metadata", "--offline", "--format-version", "1"])
+            .current_dir(&stage)
+            .output()
+            .unwrap();
+        assert!(
+            cargo.status.success(),
+            "{}",
+            String::from_utf8_lossy(&cargo.stderr)
+        );
+        let metadata: Metadata = serde_json::from_slice(&cargo.stdout).unwrap();
+        let roots = mods.map(|name| stage.join(name).join("Cargo.toml"));
+        let (packages, users) = metadata
+            .shared_libraries(&roots, &sdk.canonicalize().unwrap())
+            .unwrap();
+        assert_eq!(users, BTreeSet::from([0, 1]));
+        assert_eq!(
+            packages
+                .iter()
+                .map(|package| (package.name.as_str(), package.source.as_deref()))
+                .collect::<Vec<_>>(),
+            [("horizon-test-sdk-patch", None)]
         );
     }
 
