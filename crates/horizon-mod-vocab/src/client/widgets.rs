@@ -9,8 +9,8 @@
 //! They behave as vanilla's `Button` and `EditBox` do: the game draws them with its own sprites,
 //! label and caret (`DrawContext::widget_button`, `DrawContext::widget_text_field`), so they get
 //! its narration and controller support, and a text field edits with the same core as the
-//! game's own ([`TextEdit`](crate::TextEdit)). Everything else is plain Rust in the mod,
-//! the same in a native and a wasm build.
+//! game's own ([`TextEdit`](crate::TextEdit)). Widget state and editing logic live in the mod.
+//! Only native builds connect the text fields' Copy, Cut and Paste shortcuts to the system clipboard.
 //!
 //! ```
 //! use mod_api::client::widgets::{Button, Outcome, TextField, Widgets};
@@ -498,8 +498,10 @@ impl Widgets {
     /// (`key.keyboard.tab`). Tab and Shift+Tab move the focus in the order added
     /// (`FocusNavigationEvent.TabNavigation`, wrapping round); Enter or Space presses the
     /// focused button; the focused field edits with Backspace, Delete, the arrows, Home and End
-    /// (Ctrl for a word, Shift to select), Ctrl+A/C/V/X through the clipboard, and answers
-    /// Enter with [`Outcome::Submitted`]. Escape and other keys are `Ignored`.
+    /// (Ctrl for a word, Shift to select), Ctrl+A to select all, and answers Enter with
+    /// [`Outcome::Submitted`]. Native mods also support Ctrl+C/V/X through the system
+    /// clipboard. Wasm widgets ignore those clipboard shortcuts. Escape and other keys
+    /// are `Ignored`.
     pub fn key_pressed(&mut self, host: &dyn ClientHost, key: &str, modifiers: u32) -> Outcome {
         let now = host.millis();
         let shift = modifiers & SHIFT != 0;
@@ -537,6 +539,7 @@ impl Widgets {
                 };
                 let handled = match edit_key {
                     Some(edit_key) => field.edit.key(edit_key, ctrl, shift),
+                    #[cfg(not(target_arch = "wasm32"))]
                     None if ctrl => match key {
                         "key.keyboard.c" => {
                             host.set_clipboard_text(&field.edit.selected_text());

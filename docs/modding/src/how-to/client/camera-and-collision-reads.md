@@ -29,13 +29,16 @@ above 8 is `OutOfRange { slot }`, a client with no world or player is `NoWorld`,
 back with `player_selected_slot` on the local player. Native and wasm mods use the same call.
 
 `ClientHost::clipboard_text()` reads the system clipboard (`KeyboardHandler.getClipboard`, empty text when it
-holds none) and `ClientHost::set_clipboard_text(text)` writes it (`setClipboard`; empty text copies nothing). Both
-work only while the game handles a key, mouse or typed-text event, from the window or from the control socket
-(`horizon-ctl key`, `mouse`, `type` and its clicks): a key, mouse or screen hook that fires inside one, such as
-Ctrl+V into a mod's own field. At any other moment (a tick, a frame, a packet) the read is `None` and the write
-is `false` with nothing copied, so no mod reaches the clipboard without the player doing something. Both are
-`None` and `false` on a server, and take `&self`, so a screen hook can call them. Vanilla's `KeyboardHandler`
-has no such rule: Horizon adds it.
+holds none) and `ClientHost::set_clipboard_text(text)` writes it (`setClipboard`; empty text copies nothing).
+For native mods, these still work only while the game handles a key, mouse or typed-text event from the
+window or control socket. At other times or on a server, the read returns `None` and the write returns `false`
+without copying. Vanilla's own clipboard shortcuts are unchanged.
+
+Wasm mods cannot read or write the system clipboard through the host, even during input callbacks. Both methods
+keep their signatures so existing Wasm binaries still link; reads return `None` and writes return `false`
+without copying. Shared text widgets built with the updated SDK still accept typing, selection, navigation and
+deletion but ignore the Copy, Cut and Paste shortcuts in Wasm. Rebuild older widgets to pick up that shortcut
+behavior; the clipboard restriction applies without a rebuild.
 
 ## Camera snapshots and perspective
 

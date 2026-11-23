@@ -19,7 +19,9 @@ Every Horizon mod ships as one `.hmod` file: a zip holding a `horizon-mod.toml` 
 | **WebAssembly mod** | `mod.wasm`, built from the same Rust source | The game runs it in a sandbox with limits on time and memory. No compiler on the player's machine. |
 
 Native and WebAssembly mods are written against the same API, `mod_api` (the `horizon-mod-api` crate),
-with the same hooks, Parts, attachments and `[dependencies]`. The build target is the only difference.
+with the same core hooks, Parts, attachments and `[dependencies]`. A Wasm mod runs in the game's sandbox,
+not in a browser page, and receives only the host capabilities the game grants. Unlike a native mod, it
+does not have [system clipboard access](how-to/client/camera-and-collision-reads.md).
 
 ## Where to start
 

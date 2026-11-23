@@ -80,7 +80,7 @@ fn screen() -> (Widgets, [WidgetId; 4]) {
 }
 
 /// A press focuses the field under it and puts the cursor at the character it is on; typing,
-/// Backspace and the clipboard edit it, each a `Changed`; a press over nothing clears the focus.
+/// Backspace and native clipboard shortcuts edit it; a press over nothing clears the focus.
 #[test]
 fn a_field_takes_clicks_typing_and_the_clipboard() {
     let host = Fake::default();
@@ -106,21 +106,31 @@ fn a_field_takes_clicks_typing_and_the_clipboard() {
         widgets.key_pressed(&host, "key.keyboard.a", CONTROL),
         Outcome::Handled
     );
-    assert_eq!(
-        widgets.key_pressed(&host, "key.keyboard.c", CONTROL),
-        Outcome::Handled
-    );
-    assert_eq!(*host.clipboard.borrow(), "hello");
-    assert_eq!(
-        widgets.key_pressed(&host, "key.keyboard.x", CONTROL),
-        Outcome::Changed(a)
-    );
-    assert_eq!(widgets.text_field(a).unwrap().value(), "");
-    assert_eq!(
-        widgets.key_pressed(&host, "key.keyboard.v", CONTROL),
-        Outcome::Changed(a)
-    );
-    assert_eq!(widgets.text_field(a).unwrap().value(), "hello");
+    assert_eq!(widgets.text_field(a).unwrap().edit.selected(), (0, 5));
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        assert_eq!(
+            widgets.key_pressed(&host, "key.keyboard.c", CONTROL),
+            Outcome::Handled
+        );
+        assert_eq!(*host.clipboard.borrow(), "hello");
+        assert_eq!(
+            widgets.key_pressed(&host, "key.keyboard.x", CONTROL),
+            Outcome::Changed(a)
+        );
+        assert_eq!(widgets.text_field(a).unwrap().value(), "");
+        assert_eq!(
+            widgets.key_pressed(&host, "key.keyboard.v", CONTROL),
+            Outcome::Changed(a)
+        );
+        assert_eq!(widgets.text_field(a).unwrap().value(), "hello");
+    }
+    #[cfg(target_arch = "wasm32")]
+    for key in ["key.keyboard.c", "key.keyboard.x", "key.keyboard.v"] {
+        assert_eq!(widgets.key_pressed(&host, key, CONTROL), Outcome::Ignored);
+        assert_eq!(widgets.text_field(a).unwrap().value(), "hello");
+        assert!(host.clipboard.borrow().is_empty());
+    }
     assert_eq!(
         widgets.key_pressed(&host, "key.keyboard.enter", 0),
         Outcome::Submitted(a)

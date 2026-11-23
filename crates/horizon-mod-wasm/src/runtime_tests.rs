@@ -12,6 +12,39 @@ mod nested_worker;
 mod calls;
 
 #[test]
+fn wasm_clipboard_imports_are_denied_without_a_host() {
+    use crate::boundary::{import_by_name, import_name};
+
+    let read = import_name("ClientHost", "clipboard_text").unwrap();
+    let write = import_name("ClientHost", "set_clipboard_text").unwrap();
+    let mut cx = Cx::default();
+    let mut reply = Writer::new();
+
+    // SAFETY: the context is live and exclusively borrowed. It has no native frame,
+    // so a regression that tries to acquire a clipboard-capable host will fail here.
+    unsafe { serve(import_by_name(read).unwrap(), &mut cx, &[], &mut reply) }.unwrap();
+    assert_eq!(
+        Reader::decode::<Option<String>>(reply.bytes()).unwrap(),
+        None
+    );
+
+    let mut input = Writer::new();
+    input.put("sample");
+    reply.clear();
+    // SAFETY: same live context, and input and reply use separate buffers.
+    unsafe {
+        serve(
+            import_by_name(write).unwrap(),
+            &mut cx,
+            input.bytes(),
+            &mut reply,
+        )
+    }
+    .unwrap();
+    assert!(!Reader::decode::<bool>(reply.bytes()).unwrap());
+}
+
+#[test]
 fn released_queue_empty_fast_path_does_not_wait_for_its_mutex() {
     let releases = Arc::new(Releases::<Id>::default());
     let guard = releases.entries.lock().unwrap();

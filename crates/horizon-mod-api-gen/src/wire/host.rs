@@ -558,6 +558,17 @@ impl Cx {
         .enumerate()
     {
         let is_held = id >= imports.len();
+        // Keep the named imports and their typed replies for existing guests, but never
+        // resolve a native host for these calls. Input dispatch is not clipboard permission.
+        let denied_clipboard = match (m.owner, m.name.as_str()) {
+            ("ClientHost", "clipboard_text") => "None::<String>",
+            ("ClientHost", "set_clipboard_text") => "false",
+            _ => "",
+        };
+        if !denied_clipboard.is_empty() {
+            writeln!(code, "{id} => out.put_owned({denied_clipboard}),").unwrap();
+            continue;
+        }
         if (super::fallible_frame_accessor(m).is_none()
             && ((resource(&m.ret) && !supported_resource(&m.ret))
                 || (has_frame(&m.ret) && !resource(&m.ret))))

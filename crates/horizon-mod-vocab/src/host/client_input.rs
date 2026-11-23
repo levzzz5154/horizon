@@ -85,16 +85,15 @@ pub trait ClientInputClientHost {
     fn modifiers(&self) -> ClientModifiers;
     /// Side: client.
     /// The clipboard's text (`KeyboardHandler.getClipboard`), empty when it holds none,
-    /// while the game handles a key, mouse or typed-text event: a mod's key or screen hook
-    /// pasting into its own field. None at any other moment (a tick, a frame, a packet),
-    /// so no mod reads the clipboard without the player doing something, and None on a
-    /// server.
+    /// while a native mod handles a key, mouse or typed-text event. None at any other
+    /// moment (a tick, a frame, a packet), on a server, or from a Wasm mod, which has
+    /// no system clipboard access even during input callbacks.
     #[access(ClientSetup)]
     fn clipboard_text(&self) -> Option<String>;
     /// Side: client.
     /// Puts `text` on the clipboard (`KeyboardHandler.setClipboard`) on the same terms as
-    /// `native_clipboard_text` reads it. False, with nothing copied, at any other moment or
-    /// on a server; empty text copies nothing, as vanilla's.
+    /// [`Self::clipboard_text`]. False, with nothing copied, when unavailable (including
+    /// for Wasm mods); empty text copies nothing, as vanilla's.
     #[access(ClientSetup)]
     fn set_clipboard_text(&self, text: &str) -> bool;
 }
