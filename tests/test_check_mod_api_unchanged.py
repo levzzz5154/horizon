@@ -334,7 +334,7 @@ class CompareTests(unittest.TestCase):
                     'let mut p1 = crate::__wire_record_858(p1_0);\n let answer = receiver.dragon_fight_won(&host, '
                     '&mut p1); out.put_owned(answer); out.put(&p1.level); }\n')
 
-    def compare_hook_addition(self, head_records, added_arm, edit=lambda text: text):
+    def compare_hook_addition(self, head_records, added_arm, edit=lambda text: text, native_records=None):
         """The gate's status for the base's dispatch against one with `added_arm` and `head_records`."""
         old_hook = {"name": "dimension_transition_screen_draw", "neoforge": "none"}
         new_hook = {"name": "dragon_fight_won", "neoforge": "none"}
@@ -342,6 +342,8 @@ class CompareTests(unittest.TestCase):
                 "wire_guest_generated.rs": self.guest_dispatch((857, 858, 862, 861))}
         head = {"catalog.json": json.dumps({"hooks": [old_hook, new_hook]}),
                 "wire_guest_generated.rs": edit(self.guest_dispatch(head_records, added_arm, added_name=True))}
+        if native_records is not None:
+            head["native-hook-records.json"] = json.dumps(native_records)
         return self.run_compare(base, head, allow_added=True)[0]
 
     def test_an_added_hook_with_a_borrowed_event_passes(self):
@@ -369,6 +371,18 @@ class CompareTests(unittest.TestCase):
         for name, (records, edit) in cases.items():
             with self.subTest(name):
                 self.assertEqual(self.compare_hook_addition(records, None, edit), 1)
+
+    def test_native_part_hook_records_use_generator_provenance_not_global_order(self):
+        provenance = {"dragon_fight_won": [[859, 861]]}
+        self.assertEqual(self.compare_hook_addition((857, 858, 864, 863), None, native_records=provenance), 0)
+        for records, data in (
+                ((857, 859, 864, 863), provenance),
+                ((857, 858, 865, 864), provenance),
+                ((857, 858, 864, 863), {"existing_hook": [[859, 861]]}),
+                ((857, 858, 864, 863), {"dragon_fight_won": [[-1, 861]]}),
+        ):
+            with self.subTest(records=records, provenance=data):
+                self.assertEqual(self.compare_hook_addition(records, None, native_records=data), 1)
 
     def test_an_owned_type_an_existing_hook_gains_beside_an_added_hook_is_not_seen_here(self):
         # Not coverage: dimension_transition_screen_draw's answer going from () to a new owned type takes 858 and
