@@ -4,6 +4,7 @@
 pub const MAX_STAR_VERTICES: usize = 65_535;
 
 /// Why a star mesh replacement was refused. The current mesh is unchanged on refusal.
+// no wire: only returned by the native-only star mesh editor
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum StarMeshRefusal {
@@ -17,11 +18,13 @@ pub enum StarMeshRefusal {
 
 // no wire: this editor borrows the engine's CPU mesh including its allocation.
 /// A native edit of the camera-relative, unrotated star positions.
+// exhaustive: its borrowed field is private, so mods cannot build or destructure it
 pub struct StarMeshEdit<'a> {
     vertices: &'a mut Vec<[f32; 3]>,
 }
 
 impl<'a> StarMeshEdit<'a> {
+    // hidden: wraps the renderer's own CPU mesh for a callback, not part of the mod surface
     #[doc(hidden)]
     pub fn new(vertices: &'a mut Vec<[f32; 3]>) -> Self {
         Self { vertices }
