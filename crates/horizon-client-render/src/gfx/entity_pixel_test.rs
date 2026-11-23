@@ -84,7 +84,9 @@ fn software_frame(
         atlas_size[0],
         atlas_size[1],
         format,
-        wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
+        wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_DST
+            | wgpu::TextureUsages::COPY_SRC,
     );
     queue.write_texture(
         atlas_texture.as_image_copy(),
@@ -315,26 +317,43 @@ fn render_with_core(
         });
     let mut models = core.and_then(|(atlas, _, _)| {
         core_models::World::new(
-            &frame.device, &frame.queue, frame.color.format(), &frame.atlas_texture, atlas,
+            &frame.device,
+            &frame.queue,
+            frame.color.format(),
+            &frame.atlas_texture,
+            atlas,
             (&frame.lightmap, &frame.sampler),
         )
     });
     if let Some(models) = &mut models {
         let (_, posed, linear) = core.unwrap();
         let uniforms = core_models::Uniforms::new(
-            [0; 48], view_proj, Mat4::IDENTITY, [0.0; 4], [1000.0; 6],
-            [glam::Vec3::Y, glam::Vec3::Y], linear,
+            [0; 48],
+            view_proj,
+            Mat4::IDENTITY,
+            [0.0; 4],
+            [1000.0; 6],
+            [glam::Vec3::Y, glam::Vec3::Y],
+            linear,
         );
         let skin = posed.then(|| entity_skin::SkinFrame {
             jobs: vec![entity_skin::SkinJob {
-                dst: 0, count: 4, rect: [0.5, 0.0, 1.0, 1.0],
+                dst: 0,
+                count: 4,
+                rect: [0.5, 0.0, 1.0, 1.0],
                 ..Default::default()
             }],
             vertices: 4,
             ..Default::default()
         });
         let start = if posed { 4 } else { 0 };
-        models.prepare(&frame.queue, &uniforms, skin.as_ref(), start, &vertices[start as usize..]);
+        models.prepare(
+            &frame.queue,
+            &uniforms,
+            skin.as_ref(),
+            start,
+            &vertices[start as usize..],
+        );
     }
     let mut encoder = frame.device.create_command_encoder(&Default::default());
     {
@@ -377,6 +396,7 @@ fn render_with_core(
 /// `ModelFeatureRenderer.prepareModel`: both CPU and posed runs bind the selected
 /// entity image, rather than sampling our 2x1 packing as a sprite-sized texture.
 #[test]
+#[ignore = "daily"]
 fn core_entity_uses_live_material_color_and_preserves_frame_encoding() {
     use horizon_assets::resource_source::{Resource, ResourceSource};
     let vertex = r#"
@@ -416,33 +436,57 @@ void main() {
 }
 "#;
     let base = ResourceSource::indexed(Default::default());
-    let pack = ResourceSource::indexed([
-        ("assets/minecraft/shaders/core/entity.vsh".into(), Resource::bytes(vertex.as_bytes().to_vec())),
-        ("assets/minecraft/shaders/core/entity.fsh".into(), Resource::bytes(fragment.as_bytes().to_vec())),
-    ].into_iter().collect());
+    let pack = ResourceSource::indexed(
+        [
+            (
+                "assets/minecraft/shaders/core/entity.vsh".into(),
+                Resource::bytes(vertex.as_bytes().to_vec()),
+            ),
+            (
+                "assets/minecraft/shaders/core/entity.fsh".into(),
+                Resource::bytes(fragment.as_bytes().to_vec()),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+    );
     let mut atlas = crate::hud::HudAtlas::boot();
     atlas.width = 2;
     atlas.height = 1;
-    atlas.sprites.insert("entity/test/body".into(), crate::hud::Rect {
-        u0: 0.5, v0: 0.0, u1: 1.0, v1: 1.0, w: 1, h: 1,
-    });
+    atlas.sprites.insert(
+        "entity/test/body".into(),
+        crate::hud::Rect {
+            u0: 0.5,
+            v0: 0.0,
+            u1: 1.0,
+            v1: 1.0,
+            w: 1,
+            h: 1,
+        },
+    );
     atlas.model_shaders = core_models::ModelShaders::load(&pack, &base);
-    let vertices = [[-0.75, -0.75], [0.75, -0.75], [0.75, 0.75], [-0.75, 0.75]].map(|[x, y]| Vertex {
-        pos: [x, y, 0.5],
-        uv: [0.75, 0.5],
-        layer: 0,
-        color: u32::from_le_bytes([128, 64, 255, 255]),
-        light: 0xf0f0,
-        normal: [0, 127, 0, 127],
-        glint_uv: [0.5, -0.0],
-    });
+    let vertices =
+        [[-0.75, -0.75], [0.75, -0.75], [0.75, 0.75], [-0.75, 0.75]].map(|[x, y]| Vertex {
+            pos: [x, y, 0.5],
+            uv: [0.75, 0.5],
+            layer: 0,
+            color: u32::from_le_bytes([128, 64, 255, 255]),
+            light: 0xf0f0,
+            normal: [0, 127, 0, 127],
+            glint_uv: [0.5, -0.0],
+        });
     let pixels = [1, 2, 3, 255, 90, 160, 230, 255];
     let check = |core, expected: [u8; 4]| {
-        let out = render_with_core(&vertices, [2, 1], &pixels, Mat4::IDENTITY, false, core).unwrap();
+        let out =
+            render_with_core(&vertices, [2, 1], &pixels, Mat4::IDENTITY, false, core).unwrap();
         let at = ((SIZE / 2 * SIZE + SIZE / 2) * 4) as usize;
         let got = &out[at..at + 4];
         for (got, want) in got.iter().zip(expected) {
-            assert!(got.abs_diff(want) <= 1, "entity center {:?}, expected {expected:?}", &out[at..at + 4]);
+            assert!(
+                got.abs_diff(want) <= 1,
+                "entity center {:?}, expected {expected:?}",
+                &out[at..at + 4]
+            );
         }
     };
     check(None, [23, 30, 230, 255]);

@@ -116,7 +116,11 @@ pub(crate) fn translate_core_mapped(
     let vertex_code = rewrite(&vertex_text, ShaderStage::Vertex, glue, &mut names, None)
         .map_err(|e| format!("vertex shader: {e}"))?;
     let fragment_code = rewrite(
-        &fragment_text, ShaderStage::Fragment, glue, &mut names, fragment_glue,
+        &fragment_text,
+        ShaderStage::Fragment,
+        glue,
+        &mut names,
+        fragment_glue,
     )
     .map_err(|e| format!("fragment shader: {e}"))?;
     let vertex = compile(ShaderStage::Vertex, &vertex_code, defines, &names, provided)

@@ -108,7 +108,12 @@ pub(super) fn build_renderer(
     let block_lights = horizon_client::item_render::gui::items_3d_lights();
     pack.item_renderer.install_core_gui(|sheet| {
         renderer.set_core_model_shaders(
-            atlas, sheet, [[model_lights.0, model_lights.1], [block_lights.0, block_lights.1]],
+            atlas,
+            sheet,
+            [
+                [model_lights.0, model_lights.1],
+                [block_lights.0, block_lights.1],
+            ],
         )
     });
     renderer.set_lines_shader(atlas.lines_shader.as_deref());

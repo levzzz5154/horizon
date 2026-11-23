@@ -5139,14 +5139,24 @@ impl Renderer {
     ) -> std::collections::HashMap<String, crate::hud::Rect> {
         self.core_models = self.hud.atlas_texture.as_ref().and_then(|source| {
             core_models::World::new(
-                &self.device, &self.queue, self.output.frame.format, source, atlas,
+                &self.device,
+                &self.queue,
+                self.output.frame.format,
+                source,
+                atlas,
                 (&self.lightmap_view, &self.lightmap_sampler),
             )
         });
         let gui = self.hud.atlas_texture.as_ref().and_then(|source| {
             core_models::Gui::new(
-                &self.device, &self.queue, self.output.frame.overlay_format,
-                self.hud.pack_model_coverage(), source, atlas, item_sheet, gui_lights,
+                &self.device,
+                &self.queue,
+                self.output.frame.overlay_format,
+                self.hud.pack_model_coverage(),
+                source,
+                atlas,
+                item_sheet,
+                gui_lights,
                 (&self.lightmap_view, &self.lightmap_sampler),
             )
         });
@@ -9704,19 +9714,31 @@ impl Renderer {
             self.prepared_draws.clear();
         }
         if let Some(models) = self.core_models.as_mut()
-            && !pack_entities && !pack_skin && !frame.title && self.prepared_draws.is_empty()
+            && !pack_entities
+            && !pack_skin
+            && !frame.title
+            && self.prepared_draws.is_empty()
         {
             let lights = [
                 glam::Vec3::new(0.2, 1.0, -0.7).normalize(),
-                glam::Vec3::new(-0.2, if frame.nether_lighting { -1.0 } else { 1.0 }, 0.7).normalize(),
+                glam::Vec3::new(-0.2, if frame.nether_lighting { -1.0 } else { 1.0 }, 0.7)
+                    .normalize(),
             ];
             let primary = views.primary();
             let uniforms = core_models::Uniforms::new(
-                pack.globals, jitter * primary.projection * pose, primary.view, fog_color,
-                pack.fog, lights, self.output.frame.linear_light,
+                pack.globals,
+                jitter * primary.projection * pose,
+                primary.view,
+                fog_color,
+                pack.fog,
+                lights,
+                self.output.frame.linear_light,
             );
             models.prepare(
-                &self.queue, &uniforms, skin, posed,
+                &self.queue,
+                &uniforms,
+                skin,
+                posed,
                 &self.entity_batch.combined[..((entity_quads * 4 - posed) as usize)],
             );
         }
@@ -11342,7 +11364,10 @@ impl Renderer {
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
                 if self.prepared_draws.is_empty() {
                     if let Some(models) = self.core_models.as_ref()
-                        && entity_stage.is_none() && !pack_entities && !pack_skin && !frame.title
+                        && entity_stage.is_none()
+                        && !pack_entities
+                        && !pack_skin
+                        && !frame.title
                     {
                         models.draw(&mut pass, &self.entity_pipeline, &self.entity_group);
                     } else {

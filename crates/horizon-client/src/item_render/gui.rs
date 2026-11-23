@@ -379,7 +379,12 @@ fn draw_now(
         millis: time * 1000.0,
     });
     draw_quads_with(
-        &quads, lights, batch, rect, glint.as_ref(), cit,
+        &quads,
+        lights,
+        batch,
+        rect,
+        glint.as_ref(),
+        cit,
         renderer.core_gui_enabled().then_some(block_light),
     );
 }
@@ -429,7 +434,9 @@ fn draw_quads_with(
                 continue;
             }
             if let Some(block_light) = pack_light
-                && cit.is_none() && q.foil == Foil::None && q.gui_glint_uv.is_some()
+                && cit.is_none()
+                && q.foil == Foil::None
+                && q.gui_glint_uv.is_some()
             {
                 let [a, red, green, blue] = q.color.to_be_bytes();
                 let tint = crate::hud::rgba(red, green, blue, a);
@@ -438,7 +445,9 @@ fn draw_quads_with(
                     batch.item_model_quad(
                         corners.map(|v| [v.p.x, v.p.y, v.z]),
                         corners.map(|v| v.glint_uv),
-                        q.normal.to_array(), tint, block_light,
+                        q.normal.to_array(),
+                        tint,
+                        block_light,
                     );
                 }
             } else {

@@ -1340,10 +1340,8 @@ fn draw_normals(
     let normals = normals.part(p);
     // `skips` is a name lookup: ask once per part, not once per polygon. A part
     // hidden this way still draws its children, so only the polygons are gated.
-    let core = scroll == 0.0
-        && matches!(overlay, 0 | 1 | 5 | 16..=31)
-        && uv[0] < uv[2]
-        && uv[1] < uv[3];
+    let core =
+        scroll == 0.0 && matches!(overlay, 0 | 1 | 5 | 16..=31) && uv[0] < uv[2] && uv[1] < uv[3];
     if !poses.skips(part) {
         for poly in &part.polygons {
             let normal = poly.vertex_normal(normals);

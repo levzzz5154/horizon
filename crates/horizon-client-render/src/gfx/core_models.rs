@@ -8,8 +8,12 @@ use glam::{Mat4, Vec3};
 use wgpu::util::DeviceExt as _;
 
 const INPUTS: &[(&str, &str)] = &[
-    ("Position", "vec3"), ("Color", "vec4"), ("UV0", "vec2"),
-    ("UV1", "ivec2"), ("UV2", "ivec2"), ("Normal", "vec3"),
+    ("Position", "vec3"),
+    ("Color", "vec4"),
+    ("UV0", "vec2"),
+    ("UV1", "ivec2"),
+    ("UV2", "ivec2"),
+    ("Normal", "vec3"),
 ];
 
 /// `GuiItemAtlas.drawToSlot`: the complete tint, posed normal and full-bright light coordinates.
@@ -66,8 +70,22 @@ impl ModelShaders {
     pub(crate) fn load(root: &ResourceSource, defaults: &ResourceSource) -> Self {
         Self {
             item: load(root, defaults, "item", &["ALPHA_CUTOUT 0.1"], &ITEM, None),
-            entity: load(root, defaults, "entity", &["ALPHA_CUTOUT 0.1", "PER_FACE_LIGHTING"], &ENTITY, Some(&WORLD_COLOR)),
-            entity_cull: load(root, defaults, "entity", &["ALPHA_CUTOUT 0.1"], &ENTITY, Some(&WORLD_COLOR)),
+            entity: load(
+                root,
+                defaults,
+                "entity",
+                &["ALPHA_CUTOUT 0.1", "PER_FACE_LIGHTING"],
+                &ENTITY,
+                Some(&WORLD_COLOR),
+            ),
+            entity_cull: load(
+                root,
+                defaults,
+                "entity",
+                &["ALPHA_CUTOUT 0.1"],
+                &ENTITY,
+                Some(&WORLD_COLOR),
+            ),
         }
     }
 }
@@ -104,7 +122,15 @@ fn load(
         let (ns, path) = id.split_once(':')?;
         read(&format!("assets/{ns}/{path}"))
     };
-    match translate_core_mapped(&vertex, &fragment, defines, &include, glue, &|n| n == "Lighting", output) {
+    match translate_core_mapped(
+        &vertex,
+        &fragment,
+        defines,
+        &include,
+        glue,
+        &|n| n == "Lighting",
+        output,
+    ) {
         Ok(program) => Some(program),
         Err(error) => {
             log::warn!("resource pack core/{name} ({defines:?}) is not used: {error}");
@@ -163,19 +189,37 @@ fn uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
 }
 
 fn material_sampler(device: &wgpu::Device, flags: TextureFlags) -> wgpu::Sampler {
-    let address = if flags.clamp { wgpu::AddressMode::ClampToEdge } else { wgpu::AddressMode::Repeat };
-    let filter = if flags.blur { wgpu::FilterMode::Linear } else { wgpu::FilterMode::Nearest };
+    let address = if flags.clamp {
+        wgpu::AddressMode::ClampToEdge
+    } else {
+        wgpu::AddressMode::Repeat
+    };
+    let filter = if flags.blur {
+        wgpu::FilterMode::Linear
+    } else {
+        wgpu::FilterMode::Nearest
+    };
     device.create_sampler(&wgpu::SamplerDescriptor {
-        address_mode_u: address, address_mode_v: address,
-        min_filter: filter, mag_filter: filter,
+        address_mode_u: address,
+        address_mode_v: address,
+        min_filter: filter,
+        mag_filter: filter,
         ..Default::default()
     })
 }
 
-pub(crate) fn texture(device: &wgpu::Device, label: &str, [width, height]: [u32; 2]) -> wgpu::Texture {
+pub(crate) fn texture(
+    device: &wgpu::Device,
+    label: &str,
+    [width, height]: [u32; 2],
+) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
-        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -189,11 +233,22 @@ pub(crate) fn texture(device: &wgpu::Device, label: &str, [width, height]: [u32;
 fn overlay(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
     let t = texture(device, "Core model overlay", [16, 16]);
     let pixels: [[u8; 4]; 256] = std::array::from_fn(|i| {
-        if i < 128 { crate::overlay::HURT_TEXEL } else { [255, 255, 255, crate::overlay::white_alpha((i % 16) as u32)] }
+        if i < 128 {
+            crate::overlay::HURT_TEXEL
+        } else {
+            [255, 255, 255, crate::overlay::white_alpha((i % 16) as u32)]
+        }
     });
-    queue.write_texture(t.as_image_copy(), bytemuck::cast_slice(&pixels),
-        wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(64), rows_per_image: None },
-        t.size());
+    queue.write_texture(
+        t.as_image_copy(),
+        bytemuck::cast_slice(&pixels),
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(64),
+            rows_per_image: None,
+        },
+        t.size(),
+    );
     t.create_view(&Default::default())
 }
 
@@ -207,84 +262,188 @@ pub(crate) struct Resources {
 }
 
 impl Resources {
-    pub(crate) fn new(device: &wgpu::Device, queue: &wgpu::Queue, program: &CoreProgram, world: bool) -> Self {
-        let lighting = program.other.iter().position(|n| n == "Lighting").map(other_binding);
+    pub(crate) fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        program: &CoreProgram,
+        world: bool,
+    ) -> Self {
+        let lighting = program
+            .other
+            .iter()
+            .position(|n| n == "Lighting")
+            .map(other_binding);
         let mut entries: Vec<_> = (0..4).chain(lighting).map(uniform_entry).collect();
-        if world { entries.extend([uniform_entry(10), uniform_entry(11)]); }
+        if world {
+            entries.extend([uniform_entry(10), uniform_entry(11)]);
+        }
         for (_, binding) in crate::core_shader::SAMPLERS {
             entries.extend([
                 wgpu::BindGroupLayoutEntry {
-                    binding, visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None,
+                    binding,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
-                    binding: binding + 1, visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None,
+                    binding: binding + 1,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
                 },
             ]);
         }
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("Core model bindings"), entries: &entries });
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Core model bindings"),
+            entries: &entries,
+        });
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Core model uniforms"),
-            size: if world { (WORDS * 4) as u64 } else { GUI_LIGHT_STRIDE * 2 },
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false,
+            size: if world {
+                (WORDS * 4) as u64
+            } else {
+                GUI_LIGHT_STRIDE * 2
+            },
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
-        Self { layout, uniform, lighting, world, overlay: overlay(device, queue), nearest: device.create_sampler(&Default::default()) }
+        Self {
+            layout,
+            uniform,
+            lighting,
+            world,
+            overlay: overlay(device, queue),
+            nearest: device.create_sampler(&Default::default()),
+        }
     }
 
-    pub(crate) fn group(&self, device: &wgpu::Device, diffuse: &wgpu::TextureView, sampler: &wgpu::Sampler,
-        lightmap: (&wgpu::TextureView, &wgpu::Sampler), bounds: Option<[f32; 4]>, base: u64) -> wgpu::BindGroup {
-        let block = |binding, i: usize| wgpu::BindGroupEntry { binding, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-            buffer: &self.uniform, offset: base + OFFSETS[i], size: wgpu::BufferSize::new(SIZES[i]),
-        }) };
+    pub(crate) fn group(
+        &self,
+        device: &wgpu::Device,
+        diffuse: &wgpu::TextureView,
+        sampler: &wgpu::Sampler,
+        lightmap: (&wgpu::TextureView, &wgpu::Sampler),
+        bounds: Option<[f32; 4]>,
+        base: u64,
+    ) -> wgpu::BindGroup {
+        let block = |binding, i: usize| wgpu::BindGroupEntry {
+            binding,
+            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                buffer: &self.uniform,
+                offset: base + OFFSETS[i],
+                size: wgpu::BufferSize::new(SIZES[i]),
+            }),
+        };
         let mut entries: Vec<_> = (0..4).map(|i| block(i as u32, i)).collect();
-        if let Some(binding) = self.lighting { entries.push(block(binding, 4)); }
-        let bounds = bounds.map(|rect| device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Core model texture bounds"), contents: bytemuck::bytes_of(&rect), usage: wgpu::BufferUsages::UNIFORM,
-        }));
+        if let Some(binding) = self.lighting {
+            entries.push(block(binding, 4));
+        }
+        let bounds = bounds.map(|rect| {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Core model texture bounds"),
+                contents: bytemuck::bytes_of(&rect),
+                usage: wgpu::BufferUsages::UNIFORM,
+            })
+        });
         if self.world {
             entries.push(block(10, 5));
-            entries.push(wgpu::BindGroupEntry { binding: 11, resource: bounds.as_ref().unwrap().as_entire_binding() });
+            entries.push(wgpu::BindGroupEntry {
+                binding: 11,
+                resource: bounds.as_ref().unwrap().as_entire_binding(),
+            });
         }
         for ((_, binding), (view, sampler)) in crate::core_shader::SAMPLERS.into_iter().zip([
-            (diffuse, sampler), (&self.overlay, &self.nearest), lightmap,
+            (diffuse, sampler),
+            (&self.overlay, &self.nearest),
+            lightmap,
         ]) {
-            entries.push(wgpu::BindGroupEntry { binding, resource: wgpu::BindingResource::TextureView(view) });
-            entries.push(wgpu::BindGroupEntry { binding: binding + 1, resource: wgpu::BindingResource::Sampler(sampler) });
+            entries.push(wgpu::BindGroupEntry {
+                binding,
+                resource: wgpu::BindingResource::TextureView(view),
+            });
+            entries.push(wgpu::BindGroupEntry {
+                binding: binding + 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            });
         }
-        device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("Core model material"), layout: &self.layout, entries: &entries })
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Core model material"),
+            layout: &self.layout,
+            entries: &entries,
+        })
     }
 
-    pub(crate) fn pipeline(&self, device: &wgpu::Device, program: &CoreProgram, format: wgpu::TextureFormat,
-        buffer: wgpu::VertexBufferLayout<'_>, cull: bool, coverage: bool) -> Option<super::hud_coverage::Pipeline> {
+    pub(crate) fn pipeline(
+        &self,
+        device: &wgpu::Device,
+        program: &CoreProgram,
+        format: wgpu::TextureFormat,
+        buffer: wgpu::VertexBufferLayout<'_>,
+        cull: bool,
+        coverage: bool,
+    ) -> Option<super::hud_coverage::Pipeline> {
         let label = Some("Resource pack core model program");
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let module = |source: &naga::Module| device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label, source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(source.clone())),
-        });
+        let module = |source: &naga::Module| {
+            device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label,
+                source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(source.clone())),
+            })
+        };
         let vertex = module(&program.vertex);
         let fragment = module(&program.fragment);
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label, bind_group_layouts: &[Some(&self.layout)], ..Default::default()
+            label,
+            bind_group_layouts: &[Some(&self.layout)],
+            ..Default::default()
         });
         let desc = wgpu::RenderPipelineDescriptor {
-            label, layout: Some(&layout),
-            vertex: wgpu::VertexState { module: &vertex, entry_point: Some("main"), compilation_options: Default::default(), buffers: &[Some(buffer)] },
-            primitive: wgpu::PrimitiveState { cull_mode: cull.then_some(wgpu::Face::Back), ..Default::default() },
+            label,
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &vertex,
+                entry_point: Some("main"),
+                compilation_options: Default::default(),
+                buffers: &[Some(buffer)],
+            },
+            primitive: wgpu::PrimitiveState {
+                cull_mode: cull.then_some(wgpu::Face::Back),
+                ..Default::default()
+            },
             depth_stencil: self.world.then_some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: Some(true), depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
-                stencil: Default::default(), bias: wgpu::DepthBiasState { constant: 128, ..Default::default() },
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+                stencil: Default::default(),
+                bias: wgpu::DepthBiasState {
+                    constant: 128,
+                    ..Default::default()
+                },
             }),
             multisample: Default::default(),
             fragment: Some(wgpu::FragmentState {
-                module: &fragment, entry_point: Some("main"), compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState { format, blend: Some(wgpu::BlendState::ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })],
+                module: &fragment,
+                entry_point: Some("main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
             }),
-            multiview_mask: None, cache: None,
+            multiview_mask: None,
+            cache: None,
         };
-        let result = super::hud_coverage::Pipeline::new(device, &desc,
-            wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(program.fragment.clone())), coverage);
+        let result = super::hud_coverage::Pipeline::new(
+            device,
+            &desc,
+            wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(program.fragment.clone())),
+            coverage,
+        );
         if let Some(error) = pollster::block_on(scope.pop()) {
             log::warn!("resource pack model pipeline is not used: {error}");
             return None;
@@ -293,14 +452,18 @@ impl Resources {
     }
 }
 
-fn key([u, v]: [f32; 2]) -> [u32; 2] { [u.to_bits(), v.to_bits()] }
+fn key([u, v]: [f32; 2]) -> [u32; 2] {
+    [u.to_bits(), v.to_bits()]
+}
 
 struct Variant {
     resources: Resources,
     pipeline: super::hud_coverage::Pipeline,
 }
 
-struct Material { groups: [Option<wgpu::BindGroup>; 2] }
+struct Material {
+    groups: [Option<wgpu::BindGroup>; 2],
+}
 
 pub(super) struct World {
     variants: [Option<Variant>; 2],
@@ -326,37 +489,73 @@ impl World {
         let variants = std::array::from_fn(|i| {
             let program = [&shaders.entity, &shaders.entity_cull][i].as_ref()?;
             let resources = Resources::new(device, queue, program, true);
-            let pipeline = resources.pipeline(device, program, format, wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<super::Vertex>() as u64, step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &super::ENTITY_ATTRIBUTES,
-            }, i != 0, false)?;
-            Some(Variant { resources, pipeline })
+            let pipeline = resources.pipeline(
+                device,
+                program,
+                format,
+                wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<super::Vertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &super::ENTITY_ATTRIBUTES,
+                },
+                i != 0,
+                false,
+            )?;
+            Some(Variant {
+                resources,
+                pipeline,
+            })
         });
-        if variants.iter().all(Option::is_none) { return None; }
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Core entity textures") });
+        if variants.iter().all(Option::is_none) {
+            return None;
+        }
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Core entity textures"),
+        });
         let mut materials = HashMap::new();
         for (name, &rect) in &atlas.sprites {
             let path = name.split_once(':').map_or(name.as_str(), |(_, p)| p);
-            if !(path.starts_with("entity/") || path.starts_with("skins/")) { continue; }
+            if !(path.starts_with("entity/") || path.starts_with("skins/")) {
+                continue;
+            }
             let size = (atlas.width, atlas.height);
             let (w, h) = rect.texels(size);
-            if w == 0 || h == 0 { continue; }
+            if w == 0 || h == 0 {
+                continue;
+            }
             let t = texture(device, "Core entity material", [w, h]);
             copy_sprite(&mut encoder, source, rect, &t, [0, 0]);
             let view = t.create_view(&Default::default());
-            let sampler = material_sampler(device, atlas.flags.get(name).copied().unwrap_or_default());
+            let sampler =
+                material_sampler(device, atlas.flags.get(name).copied().unwrap_or_default());
             let bounds = [rect.u0, rect.v0, rect.u1 - rect.u0, rect.v1 - rect.v0];
-            let groups = variants.each_ref().map(|variant| variant.as_ref().map(|v| v.resources.group(
-                device, &view, &sampler, lightmap, Some(bounds), 0,
-            )));
+            let groups = variants.each_ref().map(|variant| {
+                variant.as_ref().map(|v| {
+                    v.resources
+                        .group(device, &view, &sampler, lightmap, Some(bounds), 0)
+                })
+            });
             materials.insert(key([rect.u0, rect.v0]), Material { groups });
         }
         queue.submit([encoder.finish()]);
-        Some(Self { variants, materials, runs: Vec::new() })
+        Some(Self {
+            variants,
+            materials,
+            runs: Vec::new(),
+        })
     }
 
-    pub(super) fn prepare(&mut self, queue: &wgpu::Queue, uniforms: &Uniforms, skin: Option<&super::entity_skin::SkinFrame>, posed: u32, cpu: &[super::Vertex]) {
-        for variant in self.variants.iter().flatten() { queue.write_buffer(&variant.resources.uniform, 0, uniforms.bytes()); }
+    pub(super) fn prepare(
+        &mut self,
+        queue: &wgpu::Queue,
+        uniforms: &Uniforms,
+        skin: Option<&super::entity_skin::SkinFrame>,
+        posed: u32,
+        cpu: &[super::Vertex],
+    ) {
+        for variant in self.variants.iter().flatten() {
+            queue.write_buffer(&variant.resources.uniform, 0, uniforms.bytes());
+        }
         self.runs.clear();
         let lookup = |uv, cull: bool| {
             let index = usize::from(cull);
@@ -366,22 +565,36 @@ impl World {
         };
         if let Some(skin) = skin.filter(|_| posed != 0) {
             for job in &skin.jobs {
-                let material = (job.mode == super::entity_skin::SkinJob::MODEL && ordinary(job.overlay))
-                    .then(|| lookup([job.rect[0], job.rect[1]], job.cull != 0)).flatten();
-                push_run(&mut self.runs, job.dst / 4..(job.dst + job.count) / 4, material);
+                let material = (job.mode == super::entity_skin::SkinJob::MODEL
+                    && ordinary(job.overlay))
+                .then(|| lookup([job.rect[0], job.rect[1]], job.cull != 0))
+                .flatten();
+                push_run(
+                    &mut self.runs,
+                    job.dst / 4..(job.dst + job.count) / 4,
+                    material,
+                );
             }
         }
         for (i, quad) in cpu.chunks_exact(4).enumerate() {
             let v = &quad[0];
             let [u, tagged_v] = v.glint_uv;
-            let material = (tagged_v.is_sign_negative() && ordinary(v.layer) && v.normal[3].unsigned_abs() >= 126)
-                .then(|| lookup([u, -tagged_v], v.normal[3] == -126)).flatten();
+            let material = (tagged_v.is_sign_negative()
+                && ordinary(v.layer)
+                && v.normal[3].unsigned_abs() >= 126)
+                .then(|| lookup([u, -tagged_v], v.normal[3] == -126))
+                .flatten();
             let q = posed / 4 + i as u32;
             push_run(&mut self.runs, q..q + 1, material);
         }
     }
 
-    pub(super) fn draw(&self, pass: &mut wgpu::RenderPass<'_>, native: &wgpu::RenderPipeline, group: &wgpu::BindGroup) {
+    pub(super) fn draw(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        native: &wgpu::RenderPipeline,
+        group: &wgpu::BindGroup,
+    ) {
         for (quads, material) in &self.runs {
             match material {
                 Some((key, i)) => {
@@ -400,19 +613,41 @@ impl World {
 
 fn push_run<K: Eq>(runs: &mut Vec<(Range<u32>, K)>, range: Range<u32>, key: K) {
     match runs.last_mut() {
-        Some((before, current)) if *current == key && before.end == range.start => before.end = range.end,
+        Some((before, current)) if *current == key && before.end == range.start => {
+            before.end = range.end
+        }
         _ => runs.push((range, key)),
     }
 }
 
-pub(crate) fn copy_sprite(encoder: &mut wgpu::CommandEncoder, source: &wgpu::Texture, rect: Rect, dest: &wgpu::Texture, [x, y]: [u32; 2]) {
+pub(crate) fn copy_sprite(
+    encoder: &mut wgpu::CommandEncoder,
+    source: &wgpu::Texture,
+    rect: Rect,
+    dest: &wgpu::Texture,
+    [x, y]: [u32; 2],
+) {
     let size = (source.width(), source.height());
     let (width, height) = rect.texels(size);
-    let origin = wgpu::Origin3d { x: (rect.u0 * size.0 as f32).round() as u32, y: (rect.v0 * size.1 as f32).round() as u32, z: 0 };
+    let origin = wgpu::Origin3d {
+        x: (rect.u0 * size.0 as f32).round() as u32,
+        y: (rect.v0 * size.1 as f32).round() as u32,
+        z: 0,
+    };
     encoder.copy_texture_to_texture(
-        wgpu::TexelCopyTextureInfo { origin, ..source.as_image_copy() },
-        wgpu::TexelCopyTextureInfo { origin: wgpu::Origin3d { x, y, z: 0 }, ..dest.as_image_copy() },
-        wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        wgpu::TexelCopyTextureInfo {
+            origin,
+            ..source.as_image_copy()
+        },
+        wgpu::TexelCopyTextureInfo {
+            origin: wgpu::Origin3d { x, y, z: 0 },
+            ..dest.as_image_copy()
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
     );
 }
 
@@ -457,12 +692,27 @@ impl Gui {
             attributes: &wgpu::vertex_attr_array![0=>Float32x2,1=>Float32x2,2=>Unorm8x4,3=>Float32,4=>Float32x2],
         }, false, coverage)?;
         let sheet = texture(device, "Core item sheet", size);
-        let sampler = material_sampler(device, TextureFlags { clamp: true, blur: false });
+        let sampler = material_sampler(
+            device,
+            TextureFlags {
+                clamp: true,
+                blur: false,
+            },
+        );
         let view = sheet.create_view(&Default::default());
-        let groups = std::array::from_fn(|i| resources.group(
-            device, &view, &sampler, lightmap, None, i as u64 * GUI_LIGHT_STRIDE,
-        ));
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Copy core item sheet") });
+        let groups = std::array::from_fn(|i| {
+            resources.group(
+                device,
+                &view,
+                &sampler,
+                lightmap,
+                None,
+                i as u64 * GUI_LIGHT_STRIDE,
+            )
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Copy core item sheet"),
+        });
         let mut accepted = HashMap::new();
         let mut animated = Vec::new();
         let mut occupied = std::collections::HashSet::new();
@@ -472,45 +722,109 @@ impl Gui {
             } else {
                 atlas.sprites.get(name)
             };
-            let Some(&from) = from else { continue; };
-            let dst = [(to.u0 * size[0] as f32).round() as u32, (to.v0 * size[1] as f32).round() as u32];
+            let Some(&from) = from else {
+                continue;
+            };
+            let dst = [
+                (to.u0 * size[0] as f32).round() as u32,
+                (to.v0 * size[1] as f32).round() as u32,
+            ];
             if (name != "missingno" && to.u0 == missing.u0 && to.v0 == missing.v0)
                 || from.texels((atlas.width, atlas.height)) != to.texels((size[0], size[1]))
                 || !occupied.insert(dst)
-            { continue; }
+            {
+                continue;
+            }
             copy_sprite(&mut encoder, source, from, &sheet, dst);
-            if atlas.sprite_animations.iter().any(|(r, _)| r.u0 == from.u0 && r.v0 == from.v0) {
+            if atlas
+                .sprite_animations
+                .iter()
+                .any(|(r, _)| r.u0 == from.u0 && r.v0 == from.v0)
+            {
                 animated.push((from, dst));
             }
             accepted.insert(name.clone(), to);
         }
         queue.submit([encoder.finish()]);
-        Some((Self { variant: Variant { resources, pipeline }, groups, lights, sheet, animated }, accepted))
+        Some((
+            Self {
+                variant: Variant {
+                    resources,
+                    pipeline,
+                },
+                groups,
+                lights,
+                sheet,
+                animated,
+            },
+            accepted,
+        ))
     }
 
     pub(crate) fn animate(&self, encoder: &mut wgpu::CommandEncoder, source: &wgpu::Texture) {
-        for &(from, to) in &self.animated { copy_sprite(encoder, source, from, &self.sheet, to); }
+        for &(from, to) in &self.animated {
+            copy_sprite(encoder, source, from, &self.sheet, to);
+        }
     }
 
-    pub(crate) fn prepare(&self, uploads: &mut super::upload::Uploads, encoder: &mut wgpu::CommandEncoder,
-        batch: &crate::hud::HudBatch, size: [u32; 2], scale: f32) {
-        if !batch.blends.iter().any(|(_, b)| matches!(b, crate::hud::Blend::ItemModel(_))) { return; }
+    pub(crate) fn prepare(
+        &self,
+        uploads: &mut super::upload::Uploads,
+        encoder: &mut wgpu::CommandEncoder,
+        batch: &crate::hud::HudBatch,
+        size: [u32; 2],
+        scale: f32,
+    ) {
+        if !batch
+            .blends
+            .iter()
+            .any(|(_, b)| matches!(b, crate::hud::Blend::ItemModel(_)))
+        {
+            return;
+        }
         let mut globals = [0; 48];
         for (at, value) in [
-            (12, batch.glint_alpha), (28, batch.game_time), (32, size[0] as f32), (36, size[1] as f32),
+            (12, batch.glint_alpha),
+            (28, batch.game_time),
+            (32, size[0] as f32),
+            (36, size[1] as f32),
         ] {
             globals[at..at + 4].copy_from_slice(&value.to_ne_bytes());
         }
         let projection = Mat4::orthographic_rh(
-            0.0, size[0] as f32 / scale, size[1] as f32 / scale, 0.0, -1000.0, 1000.0,
+            0.0,
+            size[0] as f32 / scale,
+            size[1] as f32 / scale,
+            0.0,
+            -1000.0,
+            1000.0,
         );
         for (i, lights) in self.lights.into_iter().enumerate() {
-            let uniforms = Uniforms::new(globals, projection, Mat4::IDENTITY, [0.0; 4], [f32::MAX; 6], lights, false);
-            uploads.buffer(encoder, &self.variant.resources.uniform, i as u64 * GUI_LIGHT_STRIDE, uniforms.bytes());
+            let uniforms = Uniforms::new(
+                globals,
+                projection,
+                Mat4::IDENTITY,
+                [0.0; 4],
+                [f32::MAX; 6],
+                lights,
+                false,
+            );
+            uploads.buffer(
+                encoder,
+                &self.variant.resources.uniform,
+                i as u64 * GUI_LIGHT_STRIDE,
+                uniforms.bytes(),
+            );
         }
     }
 
-    pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass<'_>, range: Range<u32>, block_light: bool, coverage: bool) {
+    pub(crate) fn draw(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        range: Range<u32>,
+        block_light: bool,
+        coverage: bool,
+    ) {
         pass.set_pipeline(self.variant.pipeline.get(coverage));
         pass.set_bind_group(0, &self.groups[usize::from(block_light)], &[]);
         pass.draw(range, 0..1);
@@ -526,9 +840,10 @@ mod tests {
     const INCLUDE: &str = "assets/minecraft/shaders/include/tint.glsl";
 
     fn indexed(entries: &[(&str, &str)]) -> std::collections::BTreeMap<String, Resource> {
-        entries.iter().map(|(path, text)| {
-            ((*path).into(), Resource::bytes(text.as_bytes().to_vec()))
-        }).collect()
+        entries
+            .iter()
+            .map(|(path, text)| ((*path).into(), Resource::bytes(text.as_bytes().to_vec())))
+            .collect()
     }
 
     #[test]
@@ -537,8 +852,10 @@ mod tests {
         let stock = "out vec4 fragColor;\nvoid main() { fragColor = vec4(1.0); }";
         let pack = "#include <minecraft:tint.glsl>\nout vec4 fragColor;\nvoid main() { fragColor = tint; }";
         let include = "const vec4 tint = vec4(0.2, 0.4, 0.6, 1.0);";
-        let base = ResourceSource::indexed(indexed(&[(VSH, vertex), (FSH, stock), (INCLUDE, include)]));
-        let resolved = |entries: &[(&str, &str)]| ResourceSource::layered(indexed(entries), base.clone());
+        let base =
+            ResourceSource::indexed(indexed(&[(VSH, vertex), (FSH, stock), (INCLUDE, include)]));
+        let resolved =
+            |entries: &[(&str, &str)]| ResourceSource::layered(indexed(entries), base.clone());
         assert!(ModelShaders::load(&base, &base).item.is_none());
         let complete = resolved(&[(VSH, vertex), (FSH, pack), (INCLUDE, include)]);
         assert!(ModelShaders::load(&complete, &complete).item.is_some());

@@ -456,11 +456,14 @@ fn submit_quads(
         .glint_atlas
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let gui_core = display == DisplayContext::Gui && foil == Foil::None
-        && renderer.core_gui_enabled();
-    let core_atlas = gui_core.then(|| renderer.core_gui_atlas.lock().unwrap_or_else(
-        std::sync::PoisonError::into_inner,
-    ));
+    let gui_core =
+        display == DisplayContext::Gui && foil == Foil::None && renderer.core_gui_enabled();
+    let core_atlas = gui_core.then(|| {
+        renderer
+            .core_gui_atlas
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    });
     let mut normals = FaceNormals::new(m);
     // Quads of one layer mostly share a sprite: look its rect and its
     // translucency up once.
@@ -748,15 +751,23 @@ impl ItemRenderer {
         Ok(())
     }
 
-    pub(crate) fn install_core_gui(
+    /// Install the GPU-side GUI item material atlas derived from the baked item sprites.
+    pub fn install_core_gui(
         &self,
         install: impl FnOnce(&HashMap<String, Rect>) -> HashMap<String, Rect>,
     ) {
-        let atlas = self.glint_atlas.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let atlas = self
+            .glint_atlas
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let installed = install(&atlas);
         let enabled = !installed.is_empty();
-        *self.core_gui_atlas.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = installed;
-        self.core_gui.store(enabled, std::sync::atomic::Ordering::Relaxed);
+        *self
+            .core_gui_atlas
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = installed;
+        self.core_gui
+            .store(enabled, std::sync::atomic::Ordering::Relaxed);
     }
 
     fn core_gui_enabled(&self) -> bool {
