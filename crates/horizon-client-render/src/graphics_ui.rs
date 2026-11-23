@@ -1738,7 +1738,8 @@ mod tests {
         ] {
             assert!(all.iter().any(|(_, i)| *i == Item::Vanilla(opt)), "{opt:?}");
         }
-        for page in Page::ALL {
+        // The benchmark is an optional live sheet, not a collection of settings.
+        for page in Page::ALL.into_iter().filter(|page| *page != Page::Benchmark) {
             assert!(all.iter().any(|(p, _)| *p == page), "{page:?} is empty");
         }
         for (_, groups) in rows() {
@@ -1798,6 +1799,13 @@ mod tests {
         let size = (427.0, 240.0);
         let mut s = Settings::default();
         let mut ui = ui();
+        ui.screen.benchmark = Some(
+            BenchmarkView {
+                can_start: true,
+                ..BenchmarkView::default()
+            }
+            .into(),
+        );
         let cols = Columns::of(size.0, size.1);
         assert!((cols.bottom - cols.top) / style::ROW >= 5.0);
         let [x, y, w, h] = cols.page(Page::ALL.len() - 1);
@@ -1812,7 +1820,11 @@ mod tests {
             false,
             false,
         );
-        assert_eq!(ui.current_page(&s, size), Some(Page::Hdr));
+        assert_eq!(ui.current_page(&s, size), Some(Page::Benchmark));
+        assert!(ui.listed(&s, size).contains(&(
+            Page::Benchmark,
+            Item::Benchmark(BenchmarkRow::Action(BenchmarkAction::Quick)),
+        )));
     }
 
     #[test]
@@ -1854,7 +1866,8 @@ mod tests {
             [general(Item::Vanilla(Opt::FovEffects))]
         );
         ui.set_search("hdr");
-        let [x, y, w, h] = cols.page(Page::ALL.len() - 1);
+        let hdr = Page::ALL.iter().position(|page| *page == Page::Hdr).unwrap();
+        let [x, y, w, h] = cols.page(hdr);
         press(&mut ui, &mut s, (x + w / 2.0, y + h / 2.0));
         assert_eq!(ui.current_page(&s, SIZE), Some(Page::Hdr));
         let [x, y, ..] = cols.clear();
