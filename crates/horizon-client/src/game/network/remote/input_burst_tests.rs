@@ -130,3 +130,50 @@ fn a_full_queue_refuses_the_entry_and_the_call_returns() {
         assert!(game.hotbar_presses.entries().is_empty());
     });
 }
+
+/// Pressing Q in creative multiplayer sends only the drop `player_action` and does not emit a
+/// surplus `set_creative_mode_slot` during the end-of-tick creative diff (`remote_send_state`)
+/// or `send_creative_slots`.
+#[test]
+#[ignore = "daily"]
+fn creative_drop_does_not_emit_surplus_set_creative_mode_slot() {
+    with_pressing_game(|game, packets, _| {
+        game.set_mode_id(1);
+        game.creative = true;
+        game.selected = 2;
+        game.inventory[2] = Some(ItemStack::new("minecraft:stone", 5));
+        game.remote_synced();
+        game.remote_drop(false);
+        game.remote_send_state(0);
+        game.send_creative_slots();
+        let sent_packets = sent(packets);
+        assert!(
+            sent_packets.iter().any(|p| p == "minecraft:player_action"),
+            "expected drop player_action: {sent_packets:?}"
+        );
+        assert!(
+            !sent_packets
+                .iter()
+                .any(|p| p == "minecraft:set_creative_mode_slot"),
+            "creative drop must not emit SetCreativeModeSlot: {sent_packets:?}"
+        );
+        assert_eq!(game.inventory[2].as_ref().map(|s| s.count), Some(4));
+
+        // Dropping the whole stack also omits SetCreativeModeSlot.
+        game.remote_drop(true);
+        game.remote_send_state(1);
+        game.send_creative_slots();
+        let sent_packets = sent(packets);
+        assert!(
+            sent_packets.iter().any(|p| p == "minecraft:player_action"),
+            "expected drop-all player_action: {sent_packets:?}"
+        );
+        assert!(
+            !sent_packets
+                .iter()
+                .any(|p| p == "minecraft:set_creative_mode_slot"),
+            "creative drop-all must not emit SetCreativeModeSlot: {sent_packets:?}"
+        );
+        assert!(game.inventory[2].is_none());
+    });
+}

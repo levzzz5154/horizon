@@ -337,6 +337,16 @@ impl Game<'_> {
         self.remote_send_carried();
         let dropped =
             horizon_client::items::take_held_drop(&mut self.inventory[self.selected], all, false);
+        if dropped.is_some()
+            && self.creative
+            && let Some(r) = self.remote.as_mut()
+            && let Some(slot) = r.synced.get_mut(self.selected)
+        {
+            // The drop action already tells the server to update this slot; keep it
+            // marked synced so the end-of-tick creative diff does not emit a surplus
+            // SetCreativeModeSlot after movement.
+            *slot = self.inventory[self.selected].clone();
+        }
         self.send_action(if all { 4 } else { 5 });
         if dropped.is_some() {
             self.swing_hand(Hand::Main, SwingAnimation::DEFAULT);
