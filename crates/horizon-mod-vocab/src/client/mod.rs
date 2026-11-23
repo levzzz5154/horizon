@@ -58,6 +58,7 @@ pub(crate) mod posed_parts;
 pub(crate) mod render_pipeline;
 pub(crate) mod replay;
 pub(crate) mod scene;
+pub(crate) mod screen_action;
 pub(crate) mod screenshot;
 pub(crate) mod skull_models;
 pub(crate) mod special_model_renderers;

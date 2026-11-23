@@ -40,6 +40,24 @@ the sign's block position and whether its front side is being edited. It returns
 editor open, or outside a world. A close of the sign editor always sends the sign update, however it
 closes; there is no close that skips it, because the vanilla client never omits that packet.
 
+## Controller and keyboard navigation
+
+Use `Hooks::screen_action_pre` on a mod-owned screen or a replaced game screen. `event.screen`
+identifies the current screen. `event.input.action` reports a direction, tab-order step, activation,
+back, stick scroll, or page change. `event.input.source` distinguishes controller from keyboard
+without exposing hardware button numbers. Return `Flow::Cancel` when your mod handles the action;
+the built-in screen does not act on it. An unhandled action keeps its normal behavior and timing.
+
+Register the buttons with `DrawContext::widget_button` during rendering and let direction and Tab
+actions continue. Controller and keyboard focus use those same registered targets. When `Activate`
+arrives, compare `event.input.focused` with the rectangle you passed to `widget_button`, run your
+button's action, and cancel. A replacement with its own focus model can instead consume the
+navigation actions and maintain its selection. Controller input is not delivered to the mouse hooks.
+
+The action hook follows the ready title and in-world screens; the startup loader, protected prompts,
+and the on-screen keyboard keep their own input. Controller repeats and scroll speed use the
+player's settings.
+
 ## Quit Game
 
 A native client mod with its own Quit Game confirmation can call `host.request_client_quit()`

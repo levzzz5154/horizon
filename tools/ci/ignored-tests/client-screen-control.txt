@@ -6,3 +6,4 @@ horizon-client game::native_client_screens::client_screen_tests::opening_the_inv
 horizon-client game::native_client_screens::client_screen_tests::opening_the_inventory_riding_a_horse_sends_the_player_command lib daily resources
 horizon-client game::native_client_screens::client_screen_tests::the_sign_editor_reports_its_sign_and_closing_sends_the_update lib daily resources
 horizon-client game::native_client_screens::client_screen_tests::no_sign_editor_reports_no_sign lib daily resources
+horizon-client game::pad_menu::screen_action_tests::controller_and_keyboard_act_on_the_same_mod_widgets_without_moving_hidden_controls lib daily resources # HORIZON_TEST_RESOURCES and a GPU window required.

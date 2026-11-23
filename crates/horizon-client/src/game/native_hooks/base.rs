@@ -4672,8 +4672,8 @@ impl Game<'_> {
     /// false while another screen is (or another mod's), over the title
     /// screen, a book, a sign editor, a dialog or a prompt, while the world
     /// loads, and anywhere but the window's own client (the server thread, a
-    /// dedicated server). A gamepad can close it (B, Start) but not click on
-    /// it: its clicks don't reach the mouse hooks.
+    /// dedicated server). Controller activation reaches `screen_action_pre`; it does not fire
+    /// the mouse hooks.
     pub(in crate::game) fn mod_screen_open(&mut self, mod_id: &str) -> bool {
         // What `screen_hooks_open` would refuse over the world: the mod's
         // screen would be up with no hook to draw or click it.

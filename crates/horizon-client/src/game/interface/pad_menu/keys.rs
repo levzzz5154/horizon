@@ -11,6 +11,7 @@ use horizon_client::{
     screen_narrator::InputType,
     widgets::{self, Kind, Target},
 };
+use mod_api::{ScreenAction, ScreenActionSource};
 use winit::{
     event::{DeviceId, ElementState, MouseButton, WindowEvent},
     keyboard::KeyCode,
@@ -81,12 +82,34 @@ impl Game<'_> {
         {
             return false;
         }
-        let Some(nav) = key_focus::nav_of(key, self.has_shift_down()) else {
+        let nav = key_focus::nav_of(key, self.has_shift_down());
+        if nav.is_none() && key != KeyCode::Escape {
             return false;
-        };
+        }
         if !self.key_focus_screen() || self.key_focus_blocked() {
             return false;
         }
+        let action = match nav {
+            Some(key_focus::Nav::Tab { forward }) => Some(ScreenAction::FocusNext { forward }),
+            Some(key_focus::Nav::Arrow(button)) => super::navigation_action(button),
+            Some(key_focus::Nav::Select) => Some(ScreenAction::Activate),
+            None if key == KeyCode::Escape => Some(ScreenAction::Back),
+            None => None,
+        };
+        if action.is_some_and(|action| {
+            self.screen_action_canceled(action, ScreenActionSource::Keyboard, || {
+                self.pad
+                    .menu
+                    .focus
+                    .filter(|_| self.pad_focus_mode())
+                    .map(|target| target.rect)
+            })
+        }) {
+            return true;
+        }
+        let Some(nav) = nav else {
+            return false;
+        };
         let targets = self.key_targets();
         if targets.is_empty() {
             return false;

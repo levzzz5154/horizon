@@ -32,6 +32,12 @@ use horizon_client::{
     widgets::{self, Kind, Target},
 };
 use horizon_client_input::snap;
+use mod_api::{ScreenAction, ScreenActionSource, ScreenDirection};
+
+#[cfg(test)]
+#[path = "pad_menu/screen_action_tests.rs"]
+mod screen_action_tests;
+
 use std::time::Instant;
 use winit::{
     dpi::PhysicalPosition,
@@ -48,6 +54,16 @@ const SCROLL_TRIES: u8 = 4;
 const SAME_RECT: f32 = 0.5;
 /// Frames after a scroll that may still have been drawn before it: their rectangles are stale.
 const STALE_FRAMES: u64 = 1;
+
+fn navigation_action(button: Button) -> Option<ScreenAction> {
+    Some(ScreenAction::Navigate(match button {
+        Button::DPadUp => ScreenDirection::Up,
+        Button::DPadDown => ScreenDirection::Down,
+        Button::DPadLeft => ScreenDirection::Left,
+        Button::DPadRight => ScreenDirection::Right,
+        _ => return None,
+    }))
+}
 
 /// Whether the frames drawn since `pad_reveal` scrolled a row, at frame `revealed`, may still
 /// show the list where it was.
@@ -647,6 +663,16 @@ impl Game<'_> {
         self.pad_pointer_button(event_loop, right, false);
     }
 
+    fn pad_screen_action_canceled(&self, action: ScreenAction) -> bool {
+        self.screen_action_canceled(action, ScreenActionSource::Controller, || {
+            self.pad
+                .menu
+                .focus
+                .filter(|_| self.pad_focus_mode())
+                .map(|target| target.rect)
+        })
+    }
+
     /// The wheel event being handled only scrolls (`MenuCursor::stick_scroll`).
     pub(super) fn pad_stick_scroll(&self) -> bool {
         self.pad.menu.stick_scroll || self.pad.menu.step_scroll
@@ -666,6 +692,9 @@ impl Game<'_> {
         targets: &[Target],
         [x, y]: [f32; 2],
     ) {
+        if !self.pad_binding() && self.pad_screen_action_canceled(ScreenAction::Scroll { x, y }) {
+            return;
+        }
         if focus_mode && y != 0.0 && self.pad.menu.stick_scrolled.is_none() {
             let amount = self
                 .pad
@@ -859,6 +888,19 @@ impl Game<'_> {
             self.pad.menu.slider_hold = None;
             return Ok(());
         }
+        let action = match button {
+            Button::South => Some(ScreenAction::Activate),
+            Button::East | Button::Start => Some(ScreenAction::Back),
+            Button::LeftBumper | Button::RightBumper => Some(ScreenAction::Page {
+                forward: button == Button::RightBumper,
+            }),
+            _ => None,
+        };
+        if !self.pad_binding()
+            && action.is_some_and(|action| self.pad_screen_action_canceled(action))
+        {
+            return Ok(());
+        }
         if let Some((action, target)) = self.pad_action_target(button) {
             // The button may change a slider's value, which the pad's own position doesn't know.
             self.pad.menu.nudge = None;
@@ -1024,6 +1066,9 @@ impl Game<'_> {
         }
         // A slider's step is a click, which a waiting key row would bind.
         if self.pad_binding() {
+            return;
+        }
+        if navigation_action(button).is_some_and(|action| self.pad_screen_action_canceled(action)) {
             return;
         }
         // Splitscreen Setup with a player held: the stick cycles it as the D-pad does.
