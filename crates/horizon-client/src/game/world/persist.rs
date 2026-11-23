@@ -1024,6 +1024,7 @@ impl Game<'_> {
     ) {
         self.next_entity += 1;
         if let Some(mut a) = entity_nbt::armor_stand_from_nbt(&tag, self.next_entity) {
+            let uuid = with_constructor_uuid(uuid);
             a.live
                 .retain_supplier(&self.motion.attributes, "minecraft:armor_stand");
             if let Some(state) = transferred {
