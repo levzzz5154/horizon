@@ -627,6 +627,7 @@ impl Game<'_> {
         let outcome = if self.player_place_canceled(&ctx) {
             PlaceOutcome::Failed
         } else {
+            self.sculk_prepare();
             self.with_level(|b, level, ticks| b.place_block(level, ticks, &ctx))
         };
         let PlaceOutcome::Placed { pos, state } = outcome else {
@@ -646,7 +647,11 @@ impl Game<'_> {
         let state = self.lectern_placed(target, state, &stack, game_master)?;
         let state = self.apply_item_block_state(target, state, &stack)?;
         let key = (target[0], target[1], target[2]);
+        // `LevelChunk.setBlockState`: finish watched sculk writes before
+        // `BlockItem.updateCustomBlockEntityTag` reads the new entity. The
+        // next sculk tick must not replace the entity after it takes the item data.
         if !self.world.block_entities.stateful_entity(state.0)
+            && !self.sculk_place_entity(state)
             && let Some(entity) = self.new_block_entity_for_state(state)
         {
             self.world.block_entities.insert(key, entity);

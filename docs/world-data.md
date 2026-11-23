@@ -82,6 +82,11 @@ vanilla's integer narrowing and floating-point conversion. Unknown types and
 malformed entries return errors; vanilla's logging/partial-result paths are not
 reproduced. Scheduler integration and its separate suite.
 
+Sculk sensors, calibrated sensors and shriekers can carry saved fields in an
+item's `block_entity_data`. Placement initializes the block entity before
+applying that data and the remaining item components, so the next tick keeps
+the carried values instead of replacing them with placement defaults.
+
 ## Validation
 
 `tools/test_world_parity.py` (NBT, palettes, regions, block-state registry, resident sections), `test_tick_parity.py`
