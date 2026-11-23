@@ -22,6 +22,65 @@ impl Game<'_> {
         f: impl FnOnce(&mut Self) -> R,
     ) -> Result<R, TurnRefused> {
         let swap = self.enter_guest_at(gi, conn, self.dim)?;
+        Ok(self.run_guest_turn(conn, swap, f))
+    }
+
+    /// Like [`Self::as_guest`], switching to the guest's current level (`g.dimension`) for the
+    /// duration of `f` and restoring the outer level afterwards (even on unwind).
+    /// Returns `None` if the guest is missing, already active in a nested turn, or its level
+    /// cannot be entered.
+    pub(in crate::game) fn as_guest_in_own_level<R>(
+        &mut self,
+        conn: u32,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> Option<R> {
+        let gi = self.guest_index(conn)?;
+        let back = self.dim;
+        let theirs = self
+            .lan
+            .as_ref()?
+            .hub
+            .guests
+            .get(gi)
+            .filter(|g| g.conn == conn)
+            .map(|g| Dim::from_id(&g.dimension))?;
+        if theirs != back
+            && let Err(e) = self.enter_level(theirs)
+        {
+            log::error!("could not open {}: {e}", theirs.id());
+            return None;
+        }
+        let swap = match self.enter_guest_at(gi, conn, back) {
+            Ok(swap) => swap,
+            Err(_) => {
+                if self.dim != back
+                    && let Err(e) = self.enter_level(back)
+                {
+                    log::error!("could not reopen {}: {e}", back.id());
+                }
+                return None;
+            }
+        };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.run_guest_turn(conn, swap, f)
+        }));
+        if self.dim != back
+            && let Err(e) = self.enter_level(back)
+        {
+            log::error!("could not reopen {}: {e}", back.id());
+        }
+        match result {
+            Ok(result) => Some(result),
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
+
+    fn run_guest_turn<R>(
+        &mut self,
+        conn: u32,
+        swap: GuestSwap,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             crate::game::dedicated::crash_fixture("guest", || {
                 self.lan
@@ -37,7 +96,7 @@ impl Game<'_> {
         // Commit the guest's progress and restore the outer player before propagating a panic.
         self.leave_guest(swap);
         match result {
-            Ok(result) => Ok(result),
+            Ok(result) => result,
             Err(payload) => {
                 // The record now holds what the turn did before the panic; the restore above
                 // also hid the turn from `lan_acting`, so crash teardown is told here.

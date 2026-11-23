@@ -169,3 +169,48 @@ fn a_dead_player_is_given_nothing() {
         assert_eq!(game.dropped.len(), before);
     });
 }
+
+/// Writing to a player in another level runs in that player's own level, so overflow from
+/// `give_stack` drops into their current dimension rather than the hook's level.
+#[test]
+#[ignore = "daily"]
+fn giving_to_a_player_in_another_level_drops_overflow_in_their_level() {
+    with_guests(|game| {
+        game.enter_level(super::Dim::Nether).unwrap();
+        game.enter_level(super::Dim::Overworld).unwrap();
+        let b = game.players().server_players()[1];
+        let rock = r#"{id:"minecraft:stone",count:10,components:{"minecraft:custom_name":"Rock"}}"#;
+        let named = api_item(game, rock).unwrap();
+        let engine = game.item_from_snbt(rock).unwrap();
+        game.lan
+            .as_mut()
+            .unwrap()
+            .hub
+            .update_guest(13, |g| {
+                g.dimension = "minecraft:the_nether".to_owned();
+                let dirt = Some(horizon_client::items::ItemStack::new("minecraft:dirt", 64));
+                g.inventory.iter_mut().for_each(|s| *s = dirt.clone());
+            })
+            .unwrap();
+        let overworld_before = game.dropped.len();
+        assert_eq!(game.dim, super::Dim::Overworld);
+        assert_eq!(b.give_stack(game, named), Ok(()));
+        assert_eq!(game.dim, super::Dim::Overworld);
+        assert_eq!(
+            game.dropped.len(),
+            overworld_before,
+            "overflow must not drop in the overworld"
+        );
+        game.enter_level(super::Dim::Nether).unwrap();
+        let dropped = game
+            .dropped
+            .last()
+            .expect("overflow dropped in the player's nether level");
+        assert_eq!(dropped.stack.count, 10);
+        assert_eq!(dropped.stack.extra, engine.extra);
+        assert_eq!(
+            dropped.target,
+            Some(horizon_client::lan::playerdata::uuid_ints(13))
+        );
+    });
+}

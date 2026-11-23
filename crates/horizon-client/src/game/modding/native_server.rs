@@ -1986,7 +1986,7 @@ impl Game<'_> {
             f(self);
             return true;
         };
-        self.as_guest(conn, f).is_some()
+        self.as_guest_in_own_level(conn, f).is_some()
     }
 
     /// Runs `f` with the player `uuid`'s state in place: theirs already when
