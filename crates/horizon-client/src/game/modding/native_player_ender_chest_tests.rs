@@ -177,8 +177,8 @@ fn a_write_while_the_local_ender_chest_is_open_survives_closing_it() {
     });
 }
 
-/// An ender chest opened by one guest is heard with that guest's UUID and position; a chest is
-/// not heard.
+/// Only an ender chest reports a menu owner, although both chests open the same screen.
+/// Only a successful ender chest open is heard by the post hook.
 #[test]
 #[ignore = "daily"]
 fn an_ender_chest_open_is_heard_and_a_chest_open_is_not() {
@@ -201,23 +201,114 @@ fn an_ender_chest_open_is_heard_and_a_chest_open_is_not() {
             );
         }
         let guest_uuid = game.lan.as_ref().unwrap().hub.guest(12).unwrap().uuid;
-        let seen = Arc::new(Mutex::new(Vec::<(u128, [i32; 3])>::new()));
-        struct Enders(Arc<Mutex<Vec<(u128, [i32; 3])>>>);
+        type Open = (u128, String, Option<[i32; 3]>, Option<String>);
+        #[derive(Default)]
+        struct Seen {
+            opening: Vec<Open>,
+            opened: Vec<(u128, [i32; 3])>,
+        }
+        struct Enders(Arc<Mutex<Seen>>);
         #[mod_api::__subscriptions]
         impl mod_api::Hooks for Enders {
-            fn ender_chest_opened(&self, _: &mut dyn mod_api::ServerHost, event: &mut mod_api::EnderChestOpenedEvent) {
-                self.0.lock().unwrap().push((event.player, event.pos));
+            fn container_opening(
+                &self,
+                _: &mut dyn mod_api::ServerHost,
+                event: &mut mod_api::ContainerOpeningEvent<'_>,
+            ) -> mod_api::Flow {
+                let mut seen = self.0.lock().unwrap();
+                let owner = event.menu_owner.map(str::to_owned);
+                // Veto the second ender chest attempt, with the regular chest still open.
+                let repeat = owner.is_some() && seen.opening.iter().any(|open| open.3.is_some());
+                seen.opening
+                    .push((event.player, event.kind.to_owned(), event.pos, owner));
+                if repeat {
+                    mod_api::Flow::Cancel
+                } else {
+                    mod_api::Flow::Continue
+                }
+            }
+
+            fn ender_chest_opened(
+                &self,
+                _: &mut dyn mod_api::ServerHost,
+                event: &mut mod_api::EnderChestOpenedEvent,
+            ) {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .opened
+                    .push((event.player, event.pos));
             }
         }
-        let listener = Enders(seen.clone());
+        struct StopLegacy;
+        #[mod_api::__subscriptions]
+        impl mod_api::Hooks for StopLegacy {
+            fn container_opened(
+                &self,
+                _: &mut dyn mod_api::ServerHost,
+                _: &mut mod_api::ContainerOpenedEvent<'_>,
+            ) -> mod_api::Flow {
+                mod_api::Flow::Cancel
+            }
+        }
+        let seen = Arc::new(Mutex::new(Seen::default()));
+        let window = |game: &super::Game<'_>, pos| {
+            let guest = game.lan.as_ref().unwrap().hub.guest(12).unwrap();
+            let menu = guest.menu.as_ref().unwrap();
+            assert_eq!(menu.pos, Some(pos));
+            assert_eq!(&*menu.registry_id, "minecraft:generic_9x3");
+            menu.window
+        };
+        let ender_key = (ender[0], ender[1], ender[2]);
+        let chest_key = (chest[0], chest[1], chest[2]);
         mod_platform::testing::with_mods(
-            vec![mod_api::ModEntry::new("enders", Box::new(listener))].into(),
+            vec![mod_api::ModEntry::new(
+                "enders",
+                Box::new(Enders(seen.clone())),
+            )]
+            .into(),
             || {
-                game.open_block_menu(12, (ender[0], ender[1], ender[2]));
-                game.guest_close_all(12);
-                game.open_block_menu(12, (chest[0], chest[1], chest[2]));
+                assert!(game.lan_open_container(12, ender_key));
+                let ender_window = window(game, ender_key);
+                assert!(game.lan_open_container(12, chest_key));
+                let chest_window = window(game, chest_key);
+                assert_ne!(chest_window, ender_window);
+                assert!(game.lan_open_container(12, ender_key));
+                assert_eq!(window(game, chest_key), chest_window);
             },
         );
-        assert_eq!(*seen.lock().unwrap(), vec![(guest_uuid, ender)]);
+        let chest_window = window(game, chest_key);
+        mod_platform::testing::with_mods(
+            vec![
+                mod_api::ModEntry::new("enders", Box::new(Enders(seen.clone()))),
+                mod_api::ModEntry::new("stop_legacy", Box::new(StopLegacy)),
+            ]
+            .into(),
+            || {
+                assert!(game.lan_open_container(12, ender_key));
+                assert_eq!(window(game, chest_key), chest_window);
+            },
+        );
+        let seen = seen.lock().unwrap();
+        let generic = "minecraft:generic_9x3";
+        assert_eq!(
+            seen.opening,
+            vec![
+                (
+                    guest_uuid,
+                    generic.into(),
+                    Some(ender),
+                    Some("guest12".into())
+                ),
+                (guest_uuid, generic.into(), Some(chest), None),
+                (
+                    guest_uuid,
+                    generic.into(),
+                    Some(ender),
+                    Some("guest12".into())
+                ),
+            ]
+        );
+        assert_eq!(seen.opened, vec![(guest_uuid, ender)]);
     });
 }

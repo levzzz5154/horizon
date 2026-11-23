@@ -31,7 +31,7 @@ impl Game<'_> {
             return;
         };
         let columns = super::mount_menu::mount_columns(&self.mobs[index]);
-        if !self.guest_may_open(conn, "minecraft:horse_inventory", None) {
+        if !self.guest_may_open(conn, "minecraft:horse_inventory", None, false) {
             return;
         }
         // ServerPlayer.openMenu closes the menu that was open.

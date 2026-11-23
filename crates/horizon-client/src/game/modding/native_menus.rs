@@ -146,7 +146,7 @@ impl Game<'_> {
             return Err(OpenMenuError::PlayerUnavailable);
         }
         // The mods may stop the menu, as for a block's.
-        if !self.guest_may_open(conn, &id, pos) {
+        if !self.guest_may_open(conn, &id, pos, false) {
             return Ok(None);
         }
         self.close_for_open(conn, replace);

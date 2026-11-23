@@ -274,6 +274,16 @@ if let Some(window) = window {
 
 A vanilla menu and a menu no mod backed never take this path: their slots keep the backing they had.
 
+## Identify an ender chest menu
+
+On the server, `container_opening` reports `menu_owner: Option<&str>`. This is the acting player's name when
+the menu uses their own ender chest inventory, and `None` otherwise. A regular chest can have the same menu
+type (`minecraft:generic_9x3`), so check `menu_owner`, not the menu type or the block at `pos`.
+
+The original `container_opened` hook runs first and keeps its payload. If it vetoes the open,
+`container_opening` is skipped. A veto from either hook leaves the previous menu open. To observe a
+successful ender chest open instead of an attempt, use `ender_chest_opened`.
+
 ## A workstation with no block
 
 An item that carries a crafting table or an anvil ("workbench on a stick") opens the vanilla workstation menu with
@@ -288,7 +298,7 @@ inventory (main slots, armour, off hand) holds one of the items in `keep`, which
 opens station screens from the menu type alone.
 
 The menu replaces the one the player had open. The call returns the window id, `Ok(None)` when a mod cancelled the
-open (`container_opened`), or an `OpenStationError`: `NotStation` for any other menu type,
+open (`container_opened` or `container_opening`), or an `OpenStationError`: `NotStation` for any other menu type,
 `PlayerUnavailable`, `TooManyInputs`, or `Stack(StackWriteError)` for an input the game refuses.
 
 Before its inputs go back to the inventory on closing (the player closed it, it was no longer valid, another menu

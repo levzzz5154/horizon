@@ -92,7 +92,7 @@ impl Game<'_> {
             mob.extra.trade.get_or_insert_default().offers = state.session.offers.clone();
         }
         let title = self.merchant_display_name(&state);
-        if !self.guest_may_open(conn, "minecraft:merchant", None) {
+        if !self.guest_may_open(conn, "minecraft:merchant", None, false) {
             self.merchant_closed(&mut state);
             return;
         }

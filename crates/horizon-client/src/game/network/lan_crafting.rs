@@ -1080,7 +1080,7 @@ impl Game<'_> {
         pos: [i32; 3],
         grid: Vec<Option<ItemStack>>,
     ) -> Option<i32> {
-        if !self.guest_may_open(conn, "minecraft:crafting", Some(pos)) {
+        if !self.guest_may_open(conn, "minecraft:crafting", Some(pos), false) {
             return None;
         }
         // ServerPlayer.openMenu closes the menu that was open.

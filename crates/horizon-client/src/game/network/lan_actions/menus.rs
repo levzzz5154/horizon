@@ -1,14 +1,14 @@
 use super::*;
 
 impl Game<'_> {
-    /// Whether the mods let the guest open the menu `kind` (`native_container_opened`),
-    /// heard with the guest's state swapped in. Asked before the menu that
-    /// was open closes.
+    /// Whether the mods let the guest open the menu `kind`. Both opening hooks
+    /// run with the guest's state swapped in, before the previous menu closes.
     pub(in crate::game) fn guest_may_open(
         &mut self,
         conn: u32,
         kind: &str,
         pos: Option<[i32; 3]>,
+        is_ender: bool,
     ) -> bool {
         let Some(guest) = self.lan.as_ref().and_then(|host| host.hub.guest(conn)) else {
             return true;
@@ -18,8 +18,13 @@ impl Game<'_> {
         }
         let (uuid, name) = (guest.uuid, guest.name.clone());
         let mut cancel = false;
-        let mut hook =
-            |game: &mut Self| game.native_container_opened(uuid, &name, kind, pos, &mut cancel);
+        let mut hook = |game: &mut Self| {
+            game.native_container_opened(uuid, &name, kind, pos, &mut cancel);
+            if !cancel {
+                let menu_owner = is_ender.then_some(name.as_str());
+                game.native_container_opening(uuid, &name, kind, pos, menu_owner, &mut cancel);
+            }
+        };
         // The guest whose turn it is is in place already.
         if self.lan_acting == Some(conn) {
             hook(self);
@@ -211,7 +216,12 @@ impl Game<'_> {
             return MenuOpen::Refused;
         }
         // The mods may stop the menu; the click is spent.
-        if !self.guest_may_open(conn, menu, Some([pos.0, pos.1, pos.2])) {
+        if !self.guest_may_open(
+            conn,
+            menu,
+            Some([pos.0, pos.1, pos.2]),
+            matches!(slots, Slots::Ender),
+        ) {
             return MenuOpen::Cancelled;
         }
         let mut cancel = false;
@@ -335,7 +345,7 @@ impl Game<'_> {
                 }),
             );
         }
-        if spectator_pending || !self.guest_may_open(conn, menu, None) {
+        if spectator_pending || !self.guest_may_open(conn, menu, None, false) {
             let viewed = self.lan.as_ref().is_some_and(|host| {
                 host.hub
                     .guests
