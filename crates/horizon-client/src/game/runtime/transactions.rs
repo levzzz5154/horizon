@@ -262,14 +262,16 @@ pub(super) enum After {
     FluidEffects(Box<super::world_fluids::FluidEffects>),
     /// `BlockEntity.setChanged`.
     Changed(Pos),
+    /// A water-cauldron holder's new update tag, not sent until its contents commit.
+    CauldronData(Pos),
     /// A provider's answer changed here (`level_invalidate_capabilities`): the capability
     /// generation moves on.
     Capabilities(Pos),
 
     /// `ServerLevel.destroyBlockProgress`: breaker id, position, stage. Sent once, at the root commit.
     BreakProgress(i32, [i32; 3], i32),
-    /// The block's new state, set with its updates (`Level.setBlock`, `UPDATE_ALL`).
-    Block(Pos),
+    /// The block's new state, set with its updates (`Level.setBlock`).
+    Block(Pos, i32),
     /// Save, remesh and resend a changed biome column.
     Biome((i32, i32)),
     /// Deferred interaction effects, replayed in the same root-commit order.
@@ -910,14 +912,42 @@ impl Game<'_> {
     /// state, and set with its updates at the root commit; otherwise at once
     /// (`Level.setBlock`).
     pub(super) fn journal_set_block(&mut self, pos: [i32; 3], state: BlockStateId) -> bool {
+        self.journal_set_block_with_flags(pos, state, horizon_world::level::flags::UPDATE_ALL)
+    }
+
+    pub(super) fn journal_set_block_with_flags(
+        &mut self,
+        pos: [i32; 3],
+        state: BlockStateId,
+        flags: i32,
+    ) -> bool {
         let Some(level) = self.transactions.last_mut() else {
-            return self.level_set(pos, state).is_ok();
+            return self.level_set_with_flags(pos, state, flags).is_ok();
         };
         let key = (pos[0], pos[1], pos[2]);
         let old = self.world.block(pos[0], pos[1], pos[2]);
+        if !self.world.set_stored(pos[0], pos[1], pos[2], state) {
+            return false;
+        }
         level.blocks.entry(key).or_insert(old);
-        level.after.push(After::Block(key));
-        self.world.set_stored(pos[0], pos[1], pos[2], state)
+        level.after.push(After::Block(key, flags));
+        use horizon_client::block_entity_types::{WATER_CAULDRON, type_for};
+        if old != state && type_for(WATER_CAULDRON).is_some() {
+            let facts = self.res.facts();
+            let was = facts.get(old).name.as_ref();
+            let now = facts.get(state).name.as_ref();
+            if was == "minecraft:cauldron" && now == WATER_CAULDRON {
+                self.journal_block_entity(key);
+                if let Some(entity) = self.new_block_entity_for_state(state) {
+                    self.world.block_entities.insert(key, entity);
+                }
+            } else if was == WATER_CAULDRON && now != WATER_CAULDRON {
+                self.journal_remove_block_entity(key);
+                self.world.block_names.remove(&key);
+                self.world.forget_block_entity_source(key);
+            }
+        }
+        true
     }
     /// Keep the original cell without publishing the tentative write.
     pub(in crate::game) fn journal_biome(&mut self, pos: [i32; 3], old: u16) {
@@ -959,6 +989,7 @@ impl Game<'_> {
             After::Composter(effects) => self.commit_composter_effects(effects),
             After::FluidWrite(written) => self.commit_fluid_write(*written),
             After::FluidEffects(effects) => self.commit_fluid_effects(*effects),
+            After::CauldronData(pos) => self.mark_block_entity_updated(pos),
             After::Changed(pos) => self.container_changed(pos),
             After::Capabilities(pos) => self.world.capability_generations.invalidate(pos),
 
@@ -992,7 +1023,7 @@ impl Game<'_> {
                 } => self.audio.play(sound, Some(at), volume, pitch),
             },
             // Only reached through a root commit, which sets the block itself.
-            After::Block(_) => {}
+            After::Block(..) => {}
             After::Drop(pos, stack) => {
                 self.spawn_item(stack, pos.map(|p| f64::from(p) + 0.5), [0.0; 3], 10);
             }
@@ -1047,11 +1078,13 @@ impl Game<'_> {
     fn root_commit(&mut self, level: Level) {
         let mut told = std::collections::HashSet::new();
         let mut biome_columns = std::collections::HashSet::new();
+        let mut cauldron_data = std::collections::HashSet::new();
         for after in level.after {
             match after {
                 // Each storage tells the world once, after every write.
                 After::Changed(pos) if !told.insert(Ok(pos)) => {}
-                After::Block(pos) => {
+                After::CauldronData(pos) if !cauldron_data.insert(pos) => {}
+                After::Block(pos, flags) => {
                     if !told.insert(Err(pos)) {
                         continue;
                     }
@@ -1069,7 +1102,7 @@ impl Game<'_> {
                     if now != was {
                         // The stored state back, so the one real write sees the change.
                         self.world.set_stored(pos.0, pos.1, pos.2, was);
-                        let _ = self.level_set([pos.0, pos.1, pos.2], now);
+                        let _ = self.level_set_with_flags([pos.0, pos.1, pos.2], now, flags);
                     }
                 }
                 After::Biome(key) if !biome_columns.insert(key) => {}
@@ -1149,6 +1182,9 @@ impl Game<'_> {
                 // One this transaction removed comes back.
                 (Some(_), None) if level.removed_block_entities.contains(&pos) => {
                     self.restore_removed_block_entity(pos, &kept);
+                }
+                (None, Some(_)) => {
+                    self.world.block_entities.remove(&pos);
                 }
                 _ => {}
             }

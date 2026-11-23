@@ -6,6 +6,7 @@
 //! network threads ([`io_pool`]): they forward decoded packets to the game
 //! thread, frame, compress and encrypt what the game queues, and keep the
 //! keep-alive schedule on their own so a long tick never times a client out.
+mod cauldron_wire;
 mod payloads;
 use super::config_payloads::ConfigIo;
 use super::{
@@ -276,6 +277,8 @@ impl Undrained {
 #[derive(Clone)]
 pub struct PlayerSender {
     payload_transport: Arc<Transport>,
+    /// This guest has not matched the content registry that declares this optional type.
+    hidden_cauldron_kind: Option<i32>,
     /// What the player's network thread has handed the hub and the hub hasn't taken yet.
     pub undrained: Arc<Undrained>,
     /// The bytes of the bodies sent and not framed yet.
@@ -369,6 +372,7 @@ impl PlayerSender {
             to: To::Channel(tx),
             wire: None,
             payload_transport: Transport::empty(),
+            hidden_cauldron_kind: None,
             datapack_offer: None,
             announced: Arc::default(),
             viewed_levels: Default::default(),
@@ -397,6 +401,7 @@ impl PlayerSender {
         let inspect = outbox.clone();
         let sender = Self {
             payload_transport: transport,
+            hidden_cauldron_kind: None,
             undrained: Arc::default(),
             pending,
             held: Arc::default(),
@@ -428,6 +433,7 @@ impl PlayerSender {
             to: To::Disabled,
             wire: None,
             payload_transport: Transport::empty(),
+            hidden_cauldron_kind: None,
             datapack_offer: None,
             announced: Arc::default(),
             viewed_levels: Default::default(),
@@ -529,6 +535,9 @@ impl PlayerSender {
         if matches!(self.to, To::Disabled) {
             return;
         }
+        let Some(body) = cauldron_wire::project(body, self.hidden_cauldron_kind) else {
+            return;
+        };
         if !self.reserve_body(io_pool::charge(body.retained())) {
             self.close();
             return;
@@ -573,7 +582,9 @@ impl PlayerSender {
         }
         let mut held = self.held();
         for body in bodies {
-            let body = body.into();
+            let Some(body) = cauldron_wire::project(body.into(), self.hidden_cauldron_kind) else {
+                continue;
+            };
             if !self.reserve_body(io_pool::charge(body.retained())) {
                 self.close();
                 return;
@@ -1421,6 +1432,7 @@ fn forward(
 
 struct Parts {
     payload_transport: Arc<Transport>,
+    hidden_cauldron_kind: Option<i32>,
     uuid: u128,
     name: String,
     properties: Vec<login::Property>,
@@ -1836,9 +1848,16 @@ fn login_and_configure(
     payload_transport.finish_configuration()?;
     let channels = std::mem::take(&mut c.channels);
     c.finish()?;
+    let hidden_cauldron_kind = if brand == "horizon" && sync.content_identity.is_some() {
+        None // the identity challenge had to pass before configuration could finish
+    } else {
+        use crate::block_entity_types::{WATER_CAULDRON, type_for};
+        type_for(WATER_CAULDRON).and_then(|kind| sync.id("minecraft:block_entity_type", kind))
+    };
     Ok(Some(Parts {
         channels,
         payload_transport,
+        hidden_cauldron_kind,
         uuid,
         name: name.to_owned(),
         properties,
@@ -2252,6 +2271,7 @@ fn play(
         to: To::Pool(outbox.clone(), watch.clone()),
         wire: Some(c.reader.counters.clone()),
         payload_transport: parts.payload_transport.clone(),
+        hidden_cauldron_kind: parts.hidden_cauldron_kind,
         datapack_offer: parts.datapack_offer.map(Into::into),
         announced: parts.channels.announced.clone().unwrap_or_default(),
         viewed_levels: parts.channels.viewed_levels.answer(),
@@ -4310,6 +4330,7 @@ mod outgoing_budget_tests {
                 .unwrap();
         PlayerSender {
             payload_transport: Transport::empty(),
+            hidden_cauldron_kind: None,
             undrained: Arc::default(),
             pending,
             held: Arc::default(),
