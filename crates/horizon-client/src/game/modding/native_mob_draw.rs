@@ -18,7 +18,7 @@ use horizon_client::{
     mesher::Vertex,
     mobs::{Mob, Species, anim, render, villager},
 };
-use mod_api::{EntityRenderState, HiddenParts, HookId, PosedParts};
+use mod_api::{EntityRenderState, FirstPersonBody, HiddenParts, HookId, PosedParts};
 use std::cell::RefCell;
 
 /// What the frame's entity pass decided about the mods' render hooks: whether any mod listens to
@@ -137,6 +137,29 @@ pub(super) fn mob_pose(at: DVec3, body_yaw: f32) -> Mat4 {
 }
 
 impl Game<'_> {
+    /// Ask before the local player's span is classified as world-visible or shadow-only.
+    pub(super) fn first_person_body(&self, partial: f32) -> Option<FirstPersonBody> {
+        if self.own_body_in_view()
+            || self.spectator()
+            || !mod_api::__private::listened(HookId::RenderFirstPersonBody)
+            || !self
+                .player
+                .as_ref()
+                .is_some_and(|p| !p.health.dead_or_dying())
+        {
+            return None;
+        }
+        let mob = self.player_model.as_ref()?;
+        let player =
+            entity_render_state(mob, render_id(mob.id, true, self.own_entity_id()), partial);
+        let mut body = FirstPersonBody::default();
+        self.native_render_first_person_body(&player, self.riding.is_some(), &mut body);
+        if !body.offset.into_iter().all(f32::is_finite) {
+            body.offset = [0.0; 3];
+        }
+        body.show.then_some(body)
+    }
+
     /// Whether a mod listens to the render hook pair this frame (asked once, when the frame's
     /// entity pass began): with none, nothing is posed or built for the hooks per entity.
     pub(super) fn mob_render_listened(&self) -> bool {
@@ -171,9 +194,9 @@ impl Game<'_> {
         partial: f32,
         camera: DVec3,
         light: u32,
+        mut hidden: HiddenParts,
         out: &mut Vec<Vertex>,
     ) -> Option<HiddenParts> {
-        let mut hidden = HiddenParts::default();
         if !listened {
             return Some(hidden);
         }

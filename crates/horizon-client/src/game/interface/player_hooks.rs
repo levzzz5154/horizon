@@ -435,14 +435,15 @@ impl Game<'_> {
         draw.bounds
     }
 
-    /// What crates draw on the window's own model `m` (its vertices to `out`): in the world in
-    /// third person (`Pass::World`), or in the inventory's picture of it (`Pass::Picture`).
-    /// `camera`: the world view's camera, or the picture's.
+    /// What crates draw on the window's own model `m`: the world body (`Pass::World`) or
+    /// its inventory picture (`Pass::Picture`). `offset` translates all submitted vertices.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn own_layers_geometry(
         &self,
         m: &Mob,
         pass: Pass,
         camera: glam::DVec3,
+        offset: glam::Vec3,
         alpha: f32,
         light: u32,
         out: &mut Vec<Vertex>,
@@ -455,6 +456,9 @@ impl Game<'_> {
             return;
         }
         let model = model(m, Kind::Own, self.remote.as_ref().map(|r| r.profile()));
+        let start = out.len();
+        let see_through_start =
+            (offset != glam::Vec3::ZERO).then(|| SEE_THROUGH.with_borrow(Vec::len));
         let mut draw = DrawPlayer {
             game: self,
             m,
@@ -470,6 +474,17 @@ impl Game<'_> {
             poses: Poses::pooled(),
         };
         engine::player_layers(&model, &mut draw);
+        if let Some(see_through_start) = see_through_start {
+            // A layer can submit camera-relative particles or its own model matrix, not
+            // just draw on one of the player's bones. Translate both output streams.
+            let translate = |vertices: &mut [Vertex]| {
+                for v in vertices {
+                    v.pos = (glam::Vec3::from_array(v.pos) + offset).to_array();
+                }
+            };
+            translate(&mut out[start..]);
+            SEE_THROUGH.with_borrow_mut(|vertices| translate(&mut vertices[see_through_start..]));
+        }
     }
 
     /// After every player (`game.rs`): what crates draw around the window's own model in first

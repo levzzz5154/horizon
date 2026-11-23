@@ -787,19 +787,29 @@ impl Game<'_> {
     pub(super) fn own_body_visible(&self) -> bool {
         body_visible(self.own_invisible(), self.own_team())
     }
-    /// The player's model for the entity pass in third person.
+    /// The local player's model for the world entity pass (or the shadow-only pass).
     pub(super) fn player_model_geometry(
         &self,
         camera: glam::DVec3,
         alpha: f64,
+        first_person: Option<&mod_api::FirstPersonBody>,
         out: &mut Vec<horizon_client_render::render_geometry::Vertex>,
     ) {
-        if !self.player_model_shown() {
+        use mod_api::FirstPersonBodyLayer as Layer;
+
+        if first_person.is_none() && !self.player_model_shown() {
             return;
         }
         let Some(m) = self.player_model.as_ref() else {
             return;
         };
+        let offset =
+            first_person.map_or(glam::Vec3::ZERO, |body| glam::Vec3::from_array(body.offset));
+        let world_camera = camera;
+        // These helpers work in camera-relative world space. Moving their origin together
+        // translates all model, equipment and hook meshes without changing the simulation.
+        let camera = world_camera - offset.as_dvec3();
+        let shows = |layer| first_person.is_none_or(|body| !body.layer_hidden(layer));
         let eye = self
             .player
             .as_ref()
@@ -820,16 +830,35 @@ impl Game<'_> {
             local: true,
         };
         let listened = self.mob_render_listened();
-        let pre = self.mod_render_pre(m, Some(who), listened, alpha as f32, camera, packed, out);
+        let pre = self.mod_render_pre(
+            m,
+            Some(who),
+            listened,
+            alpha as f32,
+            camera,
+            packed,
+            first_person.map_or_else(Default::default, |body| body.hidden),
+            out,
+        );
         let Some(hidden) = pre else {
             return;
         };
         // The mods' layers' posed parts, kept from the draw below while they want them.
-        let (mut parts, layers) = (None, self.mod_layers(m));
+        let mut parts = None;
+        let layers = if shows(Layer::CustomLayers) {
+            self.mod_layers(m)
+        } else {
+            None
+        };
+        let armor = if shows(Layer::Helmet) {
+            self.player_armor_layers()
+        } else {
+            self.player_armor_layers_without_helmet()
+        };
         // A spectator still draws its own model in third person: the poses'
         // visibility (set by player_model_visibility) hides body parts, and
         // translucent_body marks the body OIT for the ghostly look. Only first
-        // person and dead players skip it.
+        // person without opt-in and dead players skip the world draw.
         if body || self.spectator() {
             horizon_client::mobs::render::render_with_hidden(
                 m,
@@ -839,7 +868,7 @@ impl Game<'_> {
                 packed,
                 self.res.mob_data(),
                 &Default::default(),
-                &self.player_armor_layers(),
+                &armor,
                 hidden,
                 (listened || layers.is_some()).then_some(&mut parts),
                 out,
@@ -853,7 +882,7 @@ impl Game<'_> {
                 packed,
                 self.res.mob_data(),
                 &Default::default(),
-                &self.player_armor_layers(),
+                &armor,
                 (listened || layers.is_some()).then_some(&mut parts),
                 out,
             );
@@ -865,23 +894,42 @@ impl Game<'_> {
             if !self.own_invisible() {
                 self.player_cape_geometry(m, chest, camera, alpha as f32, packed, out);
             }
-            self.player_ears_geometry(
-                m,
-                &self.own_profile_name(),
-                camera,
-                alpha as f32,
-                packed,
-                out,
-            );
-            let world = horizon_hooks::players::Pass::World;
-            self.own_layers_geometry(m, world, camera, alpha as f32, packed, out);
-            self.player_elytra_geometry(m, chest, camera, alpha as f32, packed, out);
+            if shows(Layer::Ears) {
+                self.player_ears_geometry(m, &name, camera, alpha as f32, packed, out);
+            }
+            if shows(Layer::Cosmetics) {
+                self.own_layers_geometry(
+                    m,
+                    horizon_hooks::players::Pass::World,
+                    world_camera,
+                    offset,
+                    alpha as f32,
+                    packed,
+                    out,
+                );
+            }
+            if shows(Layer::Elytra) {
+                self.player_elytra_geometry(m, chest, camera, alpha as f32, packed, out);
+            }
             self.spin_attack_geometry(m, camera, alpha as f32, packed, out);
             self.shoulder_parrots_geometry(m, camera, alpha as f32, packed, out);
-            self.stuck_in_body_geometry(m, self.own_entity_id(), camera, alpha as f32, packed, out);
-            self.held_item_geometry(m, camera, alpha, packed, true, None, out);
+            if shows(Layer::StuckItems) {
+                self.stuck_in_body_geometry(
+                    m,
+                    self.own_entity_id(),
+                    camera,
+                    alpha as f32,
+                    packed,
+                    out,
+                );
+            }
+            if shows(Layer::HeldItems) {
+                self.held_item_geometry(m, camera, alpha, packed, true, None, out);
+            }
             // CustomHeadLayer: a pumpkin, skull or other head item.
-            self.head_item_geometry(m, camera, alpha, packed, true, out);
+            if shows(Layer::HeadItem) {
+                self.head_item_geometry(m, camera, alpha, packed, true, out);
+            }
             // Mods' layers (`register_entity_layers`), over vanilla's.
             self.mod_layer_geometry(
                 m,
@@ -908,13 +956,17 @@ impl Game<'_> {
             // still draws its outline.
             if !body {
                 let mut silhouette = Vec::new();
-                horizon_client::mobs::render::render(
+                horizon_client::mobs::render::render_with_hidden(
                     m,
                     alpha as f32,
                     camera,
                     &lookup,
                     packed,
                     self.res.mob_data(),
+                    &Default::default(),
+                    &[],
+                    first_person.map_or_else(Default::default, |_| hidden),
+                    None,
                     &mut silhouette,
                 );
                 self.mark_outline(&silhouette, color);
@@ -1014,7 +1066,15 @@ impl Game<'_> {
             &mut verts,
         );
         let picture = horizon_hooks::players::Pass::Picture;
-        self.own_layers_geometry(&m, picture, camera, 1.0, 240 | 240 << 8, &mut verts);
+        self.own_layers_geometry(
+            &m,
+            picture,
+            camera,
+            glam::Vec3::ZERO,
+            1.0,
+            240 | 240 << 8,
+            &mut verts,
+        );
         // `WingsLayer` draws through `RenderTypes.armorCutoutNoCull`: the
         // wings' faces show from both sides (the elytra texture is empty on
         // the face that looks at the body).
