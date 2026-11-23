@@ -37,3 +37,5 @@ horizon_client_render::ui::NINE_SLICE  #13220
 horizon_client_render::ui::draw_sprite  #13220
 horizon_client_render::ui::nine_slice_metadata  #13220
 horizon_client::game::interactions::Game<'_>::interaction_hit  #15412
+horizon_client::game::dedicated::LEGACY_PRESET_NAMES  #19722
+horizon_client::game::dedicated::parse_identifier  #19722
