@@ -225,6 +225,9 @@ updates and chunk entries use forward datafixes for banner patterns, skull profi
 text and nested inventory stacks, retaining opaque fields and the original tag identity.
 The legacy registry and item context is acquired only for translations that read it,
 not for movement, keepalives or other packets that do not use that data.
+The reader and writer share a connection-local registry snapshot. Registry sync
+publishes a new snapshot, so later item translations see the new names while
+an in-flight translation keeps the names it started with.
 Independent vanilla fixtures cover these conversions; they do not establish full rendered parity. Static banners,
 enchantments, paintings, instruments and the original wolf coat use vanilla names.
 Old recipes, trades, horse equipment, attribute/effect metadata and particles are

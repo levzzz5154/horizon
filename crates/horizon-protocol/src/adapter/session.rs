@@ -8,7 +8,7 @@
 use std::{
     collections::{HashMap, VecDeque},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, RwLock,
         atomic::{AtomicBool, AtomicU8, Ordering},
     },
 };
@@ -52,7 +52,7 @@ pub struct Session {
     pub(super) trim_patterns: Mutex<HashMap<i32, i32>>,
     pub(super) legacy_recipes: Mutex<translate::v1_21_1::recipes::Recipes>,
     pub(super) legacy_boats: Mutex<HashMap<i32, translate::v1_21_1::boats::Boat>>,
-    pub(super) legacy_registries: Mutex<Arc<super::ids::LegacyRegistries>>,
+    pub(super) legacy_registries: RwLock<Arc<super::ids::LegacyRegistries>>,
     pub(super) legacy_metadata: Mutex<translate::v1_20_3::Metadata>,
     pub(super) legacy_items: Arc<Mutex<crate::item::v1_20_3::Cache>>,
     pub(super) legacy_resource_packs: Mutex<translate::v1_20_2::ResourcePacks>,
@@ -82,7 +82,7 @@ impl Session {
             trim_patterns: Mutex::new(HashMap::new()),
             legacy_recipes: Mutex::new(translate::v1_21_1::recipes::Recipes::default()),
             legacy_boats: Mutex::new(HashMap::new()),
-            legacy_registries: Mutex::new(Arc::new(super::legacy::registries(version))),
+            legacy_registries: RwLock::new(Arc::new(super::legacy::registries(version))),
             legacy_metadata: Mutex::new(Default::default()),
             legacy_items: Arc::new(Mutex::new(Default::default())),
             legacy_resource_packs: Mutex::new(Default::default()),
@@ -126,9 +126,10 @@ impl Session {
     }
 
     pub(super) fn legacy_registry_context(&self) -> Option<super::ids::LegacyRegistryGuard> {
-        self.version
-            .at_most(ServerVersion::V1_20_3)
-            .then(|| super::ids::legacy_registries(self.legacy_registries.lock().unwrap().clone()))
+        self.version.at_most(ServerVersion::V1_20_3).then(|| {
+            let registries = self.legacy_registries.read().unwrap().clone();
+            super::ids::legacy_registries(registries)
+        })
     }
 
     /// The old item codec both resolves names and remembers original NBT for this connection.
@@ -340,6 +341,86 @@ mod tests {
         assert_eq!(output.remaining(), 0);
     }
 
+    #[test]
+    fn legacy_creative_write_observes_both_registry_publications() {
+        use crate::{
+            item::{Component, Stack, component},
+            packets::play,
+        };
+        use horizon_core::nbt::Tag;
+        use std::{sync::mpsc::sync_channel, thread};
+
+        let version = ServerVersion::V1_20_3;
+        let session = &Session::new(version);
+        session.set_reading(State::Configuration);
+        // The two codec directions advance independently during reconfiguration.
+        session.set_writing(State::Play);
+
+        let old_horn = crate::adapter::v1_20_3_ids::OLD_ITEM_NAMES
+            .iter()
+            .position(|name| *name == "minecraft:goat_horn")
+            .unwrap() as i32;
+        let mut horn = Stack::new(version.ids().unwrap().item.up(old_horn).unwrap(), 1);
+        horn.added
+            .push((component::INSTRUMENT, Component::Instrument(0)));
+        let creative = play::Serverbound::SetCreativeModeSlot(play::SetCreativeModeSlot {
+            slot: 36,
+            item: Some(horn),
+        })
+        .encode();
+        let check_instrument = |name: &str| {
+            let output = session.serverbound(&creative).unwrap().unwrap();
+            let mut r = Reader::new(&output);
+            let wire_id = version
+                .serverbound_id(State::Play, ids::play::serverbound::SET_CREATIVE_MODE_SLOT)
+                .unwrap();
+            assert_eq!(r.varint().unwrap(), wire_id);
+            assert_eq!(r.i16().unwrap(), 36);
+            assert!(r.bool().unwrap());
+            assert_eq!(r.varint().unwrap(), old_horn);
+            assert_eq!(r.i8().unwrap(), 1);
+            assert_eq!(
+                r.nbt().unwrap().get("instrument"),
+                Some(&Tag::String(name.into()))
+            );
+            assert_eq!(r.remaining(), 0);
+        };
+
+        let registry = "minecraft:instrument";
+        let provisional = "horizon_wire:provisional_horn";
+        let mut config = Writer::new();
+        config.nbt(&Tag::compound([(
+            registry,
+            Tag::compound([
+                ("type", Tag::String(registry.into())),
+                (
+                    "value",
+                    Tag::List(vec![Tag::compound([
+                        ("name", Tag::String(provisional.into())),
+                        ("id", Tag::Int(0)),
+                        ("element", Tag::compound([] as [(&str, Tag); 0])),
+                    ])]),
+                ),
+            ]),
+        )]));
+
+        thread::scope(|scope| {
+            let (published, first_read) = sync_channel(0);
+            let (converted, finish) = sync_channel(0);
+            let publisher = scope.spawn(move || {
+                session.clientbound(5, config.data).unwrap().unwrap();
+                published.send(()).unwrap();
+                finish.recv().unwrap();
+                session.clientbound(2, Vec::new()).unwrap().unwrap();
+            });
+            first_read.recv().unwrap();
+            check_instrument(provisional);
+            converted.send(()).unwrap();
+            publisher.join().unwrap();
+            check_instrument("minecraft:ponder_goat_horn");
+        });
+    }
+
     fn old_login(version: ServerVersion) -> Vec<u8> {
         let mut w = Writer::new();
         w.i32(42);
@@ -397,7 +478,7 @@ mod tests {
                 }
                 assert_eq!(s.login_requires_authentication(), authenticated);
                 if version == ServerVersion::V1_20_3 {
-                    Arc::make_mut(&mut s.legacy_registries.lock().unwrap()).insert(
+                    Arc::make_mut(&mut s.legacy_registries.write().unwrap()).insert(
                         "minecraft:dimension_type".into(),
                         crate::registry::Ids::from_names(vec!["minecraft:overworld".into()]),
                     );
