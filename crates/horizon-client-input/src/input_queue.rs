@@ -125,6 +125,65 @@ impl ClickQueue {
     }
 }
 
+/// The number of hotbar slots (`keyHotbarSlots[0..9]`).
+pub const HOTBAR_SLOTS: usize = 9;
+
+/// Click counts for the nine hotbar number keys (`keyHotbarSlots[0..9]`).
+///
+/// Mirrors vanilla `Minecraft.handleKeybinds`: each tick visits slots `0..9` in ascending order
+/// and calls `consumeClick()` at most once per key, leaving additional clicks for later ticks.
+#[derive(Clone, Copy, Debug)]
+pub struct HotbarQueue {
+    slots: [ClickQueue; HOTBAR_SLOTS],
+}
+
+impl HotbarQueue {
+    pub const fn new(limits: QueueLimits) -> Self {
+        let per_slot = QueueLimits {
+            per_tick: 1,
+            ..limits
+        };
+        Self {
+            slots: [ClickQueue::new(per_slot); HOTBAR_SLOTS],
+        }
+    }
+    /// Queue one click for hotbar slot `slot` (`0..9`); out-of-range slots are ignored.
+    pub fn push(&mut self, slot: usize) {
+        if let Some(queue) = self.slots.get_mut(slot) {
+            queue.press();
+        }
+    }
+    /// Slots clicked this tick in ascending slot order (`0..9`), consuming at most one click per
+    /// key; additional clicks stay queued for subsequent ticks.
+    pub fn take_tick(&mut self) -> Vec<usize> {
+        let mut selected = Vec::new();
+        for (slot, queue) in self.slots.iter_mut().enumerate() {
+            if queue.take_tick() > 0 {
+                selected.push(slot);
+            }
+        }
+        selected
+    }
+    /// Drop every queued click across all nine slots (`KeyMapping.releaseAll`).
+    pub fn clear(&mut self) {
+        for queue in &mut self.slots {
+            queue.clear();
+        }
+    }
+    /// Queued clicks for `slot` (`0` if out of range).
+    pub fn count(&self, slot: usize) -> u32 {
+        self.slots.get(slot).map_or(0, ClickQueue::count)
+    }
+    /// Total queued clicks across all nine slots.
+    pub fn total(&self) -> usize {
+        self.slots.iter().map(|q| q.count() as usize).sum()
+    }
+    /// Whether no hotbar clicks are queued.
+    pub fn is_empty(&self) -> bool {
+        self.slots.iter().all(|q| q.count() == 0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,5 +231,22 @@ mod tests {
         huge.press();
         huge.press();
         assert_eq!(huge.count(), u32::MAX);
+    }
+
+    /// Hotbar number keys process slots 0..9 in ascending order (regardless of press order) and
+    /// consume at most one click per key each tick, leaving extra clicks for later ticks.
+    #[test]
+    fn hotbar_queue_processes_ascending_once_per_key_per_tick() {
+        let mut hotbar = HotbarQueue::new(SMALL);
+        hotbar.push(6);
+        hotbar.push(1);
+        hotbar.push(1);
+        hotbar.push(4);
+        hotbar.push(9); // out of range: ignored
+        assert_eq!(hotbar.total(), 4);
+        assert_eq!(hotbar.take_tick(), [1, 4, 6]);
+        assert_eq!(hotbar.take_tick(), [1]);
+        assert!(hotbar.is_empty());
+        assert_eq!(hotbar.take_tick(), Vec::<usize>::new());
     }
 }

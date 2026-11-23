@@ -1858,7 +1858,7 @@ struct Game<'a> {
     tick_mob: Option<Option<(usize, f64, [f64; 3])>>,
     /// Number keys since the last tick (`keyHotbarSlots[i].consumeClick`):
     /// `Minecraft.handleKeybinds` selects them after the tick's pick.
-    hotbar_presses: horizon_client::input_queue::InputQueue<usize>,
+    hotbar_presses: horizon_client::input_queue::HotbarQueue,
     /// `Player.entityInteractionRange` and `blockInteractionRange`, refreshed
     /// each tick from the attribute (a server's reach modifier, creative's
     /// +2): the pick helpers' `&self` reach.
@@ -11284,7 +11284,7 @@ impl<'a> Game<'a> {
             forced_hit: None,
             tick_hit: Default::default(),
             tick_mob: None,
-            hotbar_presses: horizon_client::input_queue::InputQueue::new(hand::HOTBAR_PRESSES),
+            hotbar_presses: horizon_client::input_queue::HotbarQueue::new(hand::HOTBAR_PRESSES),
             entity_reach: 3.0,
             block_reach: 4.5,
             client_targeting: Default::default(),

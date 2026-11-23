@@ -17,12 +17,12 @@ use horizon_client::{
 /// (`CLICK_QUEUES`).
 pub(super) const ATTACK_CLICKS: ClickQueue = click_queue(Button::Attack);
 pub(super) const USE_CLICKS: ClickQueue = click_queue(Button::Use);
-/// The bounds of `Game::hotbar_presses`: each selection from the queue takes 64 number keys, oldest
-/// first, and 1024 wait at most. A player presses a few a tick.
+/// The bounds of each slot in `Game::hotbar_presses`: each tick consumes at most one click per
+/// key in ascending slot order (`0..9`), and each slot holds 1024 clicks at most.
 pub(super) const HOTBAR_PRESSES: QueueLimits = QueueLimits {
     name: "number keys",
     max_len: 1024,
-    per_tick: 64,
+    per_tick: 1,
 };
 use horizon_core::geometry::{Aabb, Vec3};
 
