@@ -66,6 +66,7 @@ pub struct CachedCollisionRegistry<'r> {
     canonical_identities: bool,
     contexts: HashMap<BlockStateId, [Option<usize>; 9]>,
     outline_edges: HashMap<usize, Vec<[f64; 6]>>,
+    scaffolding_collision: std::collections::HashSet<BlockStateId>,
 }
 impl<'r> CachedCollisionRegistry<'r> {
     pub fn registry(&self) -> &'r BlockRegistry {
@@ -283,6 +284,18 @@ impl<'r> CachedCollisionRegistry<'r> {
                 }
             }
         }
+        let mut scaffolding_collision = std::collections::HashSet::new();
+        if let Some(states) = tag.get("scaffolding_collision") {
+            let Tag::IntArray(states) = states else {
+                return Err(invalid("scaffolding_collision is not an int array"));
+            };
+            for &state in states {
+                if state < 0 || state as usize >= registry.len() {
+                    return Err(invalid("scaffolding_collision state outside registry"));
+                }
+                scaffolding_collision.insert(BlockStateId(state as u32));
+            }
+        }
         Ok(Self {
             registry,
             shapes,
@@ -291,7 +304,12 @@ impl<'r> CachedCollisionRegistry<'r> {
             canonical_identities,
             contexts,
             outline_edges,
+            scaffolding_collision,
         })
+    }
+    /// Whether `state` is a declared mod block using scaffolding-style collision.
+    pub fn is_scaffolding_collision(&self, state: BlockStateId) -> bool {
+        self.scaffolding_collision.contains(&state)
     }
     pub fn has_context_shapes(&self, state: BlockStateId) -> bool {
         self.contexts.contains_key(&state)

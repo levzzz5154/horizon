@@ -503,6 +503,8 @@ struct BlockFile {
     sign_text_glow: Option<bool>,
     #[serde(default)]
     base_block: Option<String>,
+    #[serde(default)]
+    scaffolding_collision: bool,
     #[serde(default = "yes")]
     item: bool,
     #[serde(default)]
@@ -584,6 +586,9 @@ pub struct Block {
     pub sign_text_glow: Option<bool>,
     /// The block farmland turns into; the template's base when unset.
     pub base_block: Option<String>,
+    /// Whether this block uses scaffolding-style collision (stand on top, climb up, descend
+    /// through like vanilla scaffolding).
+    pub scaffolding_collision: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1358,6 +1363,7 @@ impl Content {
                 sign_text_color: file.sign_text_color,
                 sign_text_glow: file.sign_text_glow,
                 base_block: file.base_block,
+                scaffolding_collision: file.scaffolding_collision,
             };
             check_block(&block).map_err(|e| format!("{name}: {e}"))?;
             if block.item {
@@ -2398,6 +2404,7 @@ capabilities = ["registries"]
                 sign_text_color: None,
                 sign_text_glow: None,
                 base_block: None,
+                scaffolding_collision: false,
             }]
         );
         assert_eq!(content.items[0].id, "ruby:ruby");
@@ -3979,6 +3986,18 @@ mod context_shape_tests {
         block.collision_context_shapes.clear();
         block.interaction_shapes = Some(bad);
         assert!(check_block(&block).is_err());
+    }
+
+    #[test]
+    fn block_file_parses_scaffolding_collision_flag() {
+        let plain: BlockFile =
+            serde_json::from_str(r#"{"template":"minecraft:iron_block"}"#).unwrap();
+        assert!(!plain.scaffolding_collision);
+        let scaffold: BlockFile = serde_json::from_str(
+            r#"{"template":"minecraft:iron_block","scaffolding_collision":true}"#,
+        )
+        .unwrap();
+        assert!(scaffold.scaffolding_collision);
     }
 }
 

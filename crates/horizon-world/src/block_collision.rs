@@ -104,6 +104,11 @@ impl<'r> BlockCollisionRegistry<'r> {
             });
             if let Some(rule) = ScaffoldingCollision::from_state(state)? {
                 contextual.insert(id, ContextualRule::Scaffolding(rule));
+            } else if cached.is_scaffolding_collision(id) {
+                contextual.insert(
+                    id,
+                    ContextualRule::Scaffolding(ScaffoldingCollision::supported()),
+                );
             } else if let Some(rule) = LiquidCollision::from_state(state)? {
                 contextual.insert(id, ContextualRule::Liquid(rule));
             } else if state.name == "minecraft:powder_snow" {
@@ -259,6 +264,16 @@ pub struct ScaffoldingCollision {
     bottom: bool,
 }
 impl ScaffoldingCollision {
+    /// Supported scaffolding collision (`supported = true, bottom = false`) for declared mod
+    /// blocks that opt into scaffolding-style collision without vanilla `distance`/`bottom`
+    /// properties.
+    pub const fn supported() -> Self {
+        Self {
+            supported: true,
+            bottom: false,
+        }
+    }
+
     pub fn from_state(state: &crate::chunk::BlockState) -> io::Result<Option<Self>> {
         if state.name != "minecraft:scaffolding" {
             return Ok(None);
@@ -311,5 +326,38 @@ impl ScaffoldingCollision {
             }
         }
         VoxelShape::empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::collision_context::CollisionContext;
+    use horizon_core::position::BlockPos;
+
+    #[test]
+    fn supported_scaffolding_collision_supports_from_above_and_opens_when_descending() {
+        let rule = ScaffoldingCollision::supported();
+        let pos = BlockPos::new(0, 64, 0);
+        let standing_above = CollisionContext::position(65.0);
+        assert!(
+            !rule.shape(&standing_above, pos).is_empty(),
+            "standing above non-descending should be supported"
+        );
+        let descending = standing_above.with_descending(true);
+        assert!(
+            rule.shape(&descending, pos).is_empty(),
+            "descending from above should pass through"
+        );
+        let inside = CollisionContext::position(64.2);
+        assert!(
+            rule.shape(&inside, pos).is_empty(),
+            "climbing inside should have empty collision"
+        );
+        assert!(
+            rule.shape(&CollisionContext::placement(None), pos)
+                .is_empty(),
+            "placement context should have empty collision"
+        );
     }
 }

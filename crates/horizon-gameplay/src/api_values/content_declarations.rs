@@ -178,6 +178,7 @@ impl TryIntoEngine<()> for mod_api::Block {
             sign_text_color: self.sign_text_color.clone(),
             sign_text_glow: self.sign_text_glow,
             base_block: self.base_block.clone(),
+            scaffolding_collision: self.scaffolding_collision,
         })
     }
 }

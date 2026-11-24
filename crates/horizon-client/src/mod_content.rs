@@ -1871,7 +1871,9 @@ impl<'a> Plan<'a> {
                         row.set("outline", J::Arr(boxes));
                         row.set("outline_edges", J::Arr(shape_edges(shape)));
                     }
-                    if let Some(shapes) = b.collision_shapes.as_ref().or(b.shapes.as_ref()) {
+                    if b.decl.scaffolding_collision {
+                        row.set("full_collision", J::Bool(false));
+                    } else if let Some(shapes) = b.collision_shapes.as_ref().or(b.shapes.as_ref()) {
                         let shape = &shapes[state_index];
                         row.set(
                             "full_collision",
@@ -2379,6 +2381,19 @@ impl<'a> Plan<'a> {
         }
         if !contexts.is_empty() {
             root.insert("context_shapes".into(), Tag::List(contexts));
+        }
+        if collision {
+            let mut scaffolding = Vec::new();
+            for block in &self.blocks {
+                if block.decl.scaffolding_collision {
+                    for offset in 0..block.order.len() {
+                        scaffolding.push((block.rename.first as usize + offset) as i32);
+                    }
+                }
+            }
+            if !scaffolding.is_empty() {
+                root.insert("scaffolding_collision".into(), Tag::IntArray(scaffolding));
+            }
         }
         let Some(Tag::IntArray(mapping)) = root.get_mut(&JavaString::from("cached_shapes")) else {
             return Err("collision table has no mapping".into());

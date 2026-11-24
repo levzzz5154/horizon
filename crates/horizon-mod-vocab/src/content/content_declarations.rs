@@ -262,6 +262,9 @@ pub struct Block {
     /// The block farmland turns into: one of this mod's (a bare name is this mod's) or a
     /// vanilla one (`minecraft:<path>`); the template's base when unset.
     pub base_block: Option<String>,
+    /// Whether this block uses scaffolding-style collision (stand on top when above and not
+    /// descending; climb up and descend through like vanilla scaffolding).
+    pub scaffolding_collision: bool,
 }
 
 /// Rarity in a load-time content declaration.
@@ -334,6 +337,7 @@ impl Default for Block {
             sign_text_color: None,
             sign_text_glow: None,
             base_block: None,
+            scaffolding_collision: false,
         }
     }
 }
