@@ -1079,6 +1079,12 @@ impl Game<'_> {
         let mut told = std::collections::HashSet::new();
         let mut biome_columns = std::collections::HashSet::new();
         let mut cauldron_data = std::collections::HashSet::new();
+        let mut block_flags: std::collections::HashMap<Pos, i32> = std::collections::HashMap::new();
+        for after in &level.after {
+            if let After::Block(pos, flags) = *after {
+                *block_flags.entry(pos).or_insert(0) |= flags;
+            }
+        }
         for after in level.after {
             match after {
                 // Each storage tells the world once, after every write.
@@ -1088,6 +1094,7 @@ impl Game<'_> {
                     if !told.insert(Err(pos)) {
                         continue;
                     }
+                    let flags = block_flags.get(&pos).copied().unwrap_or(flags);
                     let now = self.world.block(pos.0, pos.1, pos.2);
                     let was = level.blocks[&pos];
                     // A block entity the transaction removed comes back where a later write
