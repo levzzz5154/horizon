@@ -12998,6 +12998,13 @@ impl Renderer {
                     Some((_, depth)) => (depth, self.world_post.size().unwrap_or(size)),
                     None => (self.depth.as_ref().expect(WINDOW_DEPTH), size),
                 };
+                let look = pack_uniforms::world_look(
+                    frame,
+                    (self.pack_post.as_ref())
+                        .and_then(|p| p.1.as_ref())
+                        .map(|p| p.sun_path_rotation())
+                        .or_else(|| self.external.as_ref().map(|p| p.sun_path_rotation())),
+                );
                 native_render::world_drawn(&mut native_render::WorldDrawn {
                     device: &self.device,
                     queue: &self.queue,
@@ -13023,6 +13030,7 @@ impl Renderer {
                         nearest: &self.sprite_nearest,
                         filtered: &self.sprite_sampler,
                     },
+                    look,
                 });
             }
         }
