@@ -60,6 +60,7 @@ impl Game {
     fn active_editor_overlay(&self) -> Option<()> { None }
     fn studio_mouse_dragged(&mut self, _: f32) -> bool { false }
     fn screen_mouse_hooks_input(&self) -> bool { !self.pad_synthetic_input() }
+    fn container_mouse_input_pre(&mut self, _: &ScreenMousePost) -> bool { false }
     fn screen_view_now(&self) -> Option<View> { self.open.then_some(View { mouse: self.cursor }) }
     fn native_screen_mouse_dragged_pre(&self, view: &View, button: i32, delta: [f32; 2], modifiers: u32, canceled: &mut bool) {
         assert_eq!(modifiers, 5);
