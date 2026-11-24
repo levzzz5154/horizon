@@ -730,14 +730,16 @@ impl Game<'_> {
         }
     }
     /// `LivingEntity.hurtArmor` -> `LivingEntity.doHurtEquipment`, from the hit
-    /// `MobEvent::ArmorHurt` reported. Only `Horse` overrides `hurtArmor` for a
-    /// mob, and its override asks for the BODY slot alone, so the body piece is
-    /// the only one this wears: it loses `max(1, damage / 4)` durability,
+    /// `MobEvent::ArmorHurt` reported. `Horse` and `Wolf` override `hurtArmor`,
+    /// and both ask for the BODY slot alone, so the body piece is the only one
+    /// this wears: it loses `max(1, damage / 4)` durability,
     /// Unbreaking applied, and at its maximum the slot empties and the break
     /// event goes out (`LivingEntity.entityEventForEquipmentBreak`: 65 for the
     /// body — 49 to 52 are the four armour slots, which only a player's own
     /// pieces reach). A fire hit leaves a fire-resistant piece alone
-    /// (`ItemStack.canBeHurtBy`).
+    /// (`ItemStack.canBeHurtBy`). A wolf's wolf armour wears inside the hit
+    /// (`wolf::wear_body`) instead, so that a hit the same tick breaks it cannot
+    /// absorb the next one.
     fn hurt_mob_armor(&mut self, id: u32, damage: f32, source: &HurtSource<'_>) {
         use horizon_core::equipment_slot::EquipmentSlot;
         if damage <= 0.0 {
@@ -2225,9 +2227,18 @@ impl Game<'_> {
             match e {
                 MobEvent::ForPlayer { conn, event } => {
                     let mut event = *event;
+                    // An alert carries its player itself rather than running as a guest.
+                    if let MobEvent::SetTarget {
+                        target: Who::Player,
+                        player,
+                        ..
+                    } = &mut event
+                    {
+                        *player = conn;
+                        self.handle_mob_events(vec![event])?;
                     // Projectiles are spawned in the world rather than run
                     // as a guest, but must retain the selected guest target.
-                    if let Some(conn) = conn
+                    } else if let Some(conn) = conn
                         && let MobEvent::Projectile(p) = &mut event
                         && let ProjectileKind::ShulkerBullet { target, .. } = &mut p.kind
                         && *target == Some(Who::Player)
@@ -2271,6 +2282,12 @@ impl Game<'_> {
                     amount,
                     source,
                 } => self.hurt_mob_armor(mob, amount, &source),
+                MobEvent::EquipmentBroke {
+                    mob,
+                    slot,
+                    stack,
+                    at,
+                } => self.mob_equipment_broke(mob, slot, &stack, at),
                 MobEvent::GliderWear { mob, slot } => self.wear_mob_glider(mob, slot),
                 MobEvent::EntityEvent { mob, event, at } => {
                     // Ravager.roar (event 69 ends it): with the raw mob_griefing rule (not
@@ -2860,12 +2877,15 @@ impl Game<'_> {
                         );
                     }
                 }
-                MobEvent::SetTarget { mob, target } => {
-                    let player = self
-                        .lan
-                        .as_ref()
-                        .and_then(|host| host.mob_players.get(&mob).copied())
-                        .or(self.lan_acting);
+                MobEvent::SetTarget {
+                    mob,
+                    target,
+                    player,
+                } => {
+                    // `alertOther(other, lastHurtByMob)` hands over the attacker itself: a
+                    // player target is the one the alerting mob saw when it sent this, not
+                    // the receiver's nearest, nor whom an earlier alert in the batch rebound
+                    // the alerting mob to.
                     self.set_event_ai_target(mob, Some(target), player);
                 }
                 MobEvent::PiglinAlertTarget(alert) => self.piglin_alert_target(alert),

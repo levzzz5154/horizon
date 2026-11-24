@@ -6533,6 +6533,9 @@ impl Game<'_> {
         self.world = world;
         self.inventory = inventory;
         self.save = self.with_profession_save_snapshot(save);
+        if let Some(tables) = self.save.tables.get() {
+            tables.install_component_item_tags(&self.ui.registries.item_tags);
+        }
         // MinecraftServer.prepareLevels: the saved tickets come back.
         self.tickets = if self.options.execution_role.is_client() {
             Default::default()
@@ -8731,7 +8734,10 @@ impl Game<'_> {
         };
         self.view_frustum =
             self.world_view_frustum(camera, [fov_degrees, yaw, pitch], bob * spin, depth_far);
-        let billboard_frustum = if self.settings.horizon.taa {
+        // The world is jittered by the player's TAA or by a pack's `[frame] jitter`.
+        let jittered =
+            self.settings.horizon.taa || self.renderer.as_ref().is_some_and(|r| r.pack_jitters());
+        let billboard_frustum = if jittered {
             self.renderer.as_ref().map(|r| {
                 r.camera_frustum_with_jitter(fov_degrees, yaw, pitch, bob * spin, depth_far)
             })

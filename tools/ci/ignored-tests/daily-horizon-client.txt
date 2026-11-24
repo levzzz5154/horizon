@@ -5,6 +5,7 @@ horizon-client game::api_values::loot_values::query_tests::queried_ability_parts
 horizon-client game::api_values::read_stack_tests::read_consumers_forward_nonresident_stacks_and_mutants lib daily slow
 horizon-client game::big_dripleaf_tests::a_leaf_stays_flat_under_an_entity_that_cannot_tilt_it lib daily resources
 horizon-client game::big_dripleaf_tests::a_leaf_tilts_under_a_mob_an_item_a_boat_a_minecart_and_a_trident lib daily resources
+horizon-client game::boats::tests::a_boat_landing_on_a_pool_floor_scans_up_to_the_water_surface lib daily resources
 horizon-client game::commands::modprofile::tests::modprofile_state_and_report_side_effects lib daily child-process
 horizon-client game::commands::profiles::save_all_command_tests::a_failed_save_fails_at_the_source_only lib daily resources
 horizon-client game::commands::profiles::save_all_command_tests::a_guests_save_all_reaches_the_other_operators lib daily resources
@@ -22,6 +23,11 @@ horizon-client game::crafting_recipe_kind_tests::unregistered_serializer_failed_
 horizon-client game::dedicated::tests::console_logging_survives_closed_stdout lib daily child-process
 horizon-client game::dispenser::decision_tests::crown_is_prepared_once_for_three_and_eight_dispenser_candidates lib daily resources
 horizon-client game::dragon::tests::a_fireballs_breath_cloud_starts_at_its_hit_position lib daily resources
+horizon-client game::end_crystal_room_tests::a_dragon_over_the_cell_refuses_the_crystal_and_its_flight_frees_it lib daily resources
+horizon-client game::end_crystal_room_tests::a_dropped_item_in_the_cell_refuses_the_crystal lib daily resources
+horizon-client game::end_crystal_room_tests::a_refused_crystal_ends_the_click_before_the_off_hand lib daily resources
+horizon-client game::end_crystal_room_tests::a_removed_mob_in_the_cell_does_not_refuse_the_crystal lib daily resources
+horizon-client game::end_crystal_room_tests::the_clicking_client_ends_the_click_where_the_crystal_is_refused lib daily resources
 horizon-client game::entity_sections::tests::a_real_mob_tick_tells_inside_each_position_write lib daily resources
 horizon-client game::equip_answers::tests::an_unpreparable_listening_stack_refuses_instead_of_using_the_data_answer lib daily resources
 horizon-client game::equip_answers::tests::local_shift_click_prepares_once_and_preserves_a_refused_helmet lib daily resources
@@ -55,6 +61,10 @@ horizon-client game::ghasts::ghastling_hatch_tests::hatched_ghastling_spawns_non
 horizon-client game::gui_clips::dispatch_tests::a_hook_call_clips_what_its_mod_draws_and_closes_what_it_leaves_open lib daily resources
 horizon-client game::gui_entity::tests::a_screen_draws_a_mob_by_type_once_and_refuses_what_it_cant_draw lib daily game-boot
 horizon-client game::initial_spawn_tests::a_spawn_search_follows_the_level_seed lib daily resources
+horizon-client game::item_entities::give_fake_item_tests::give_that_fits_draws_from_the_players_random lib daily resources
+horizon-client game::item_entities::give_fake_item_tests::give_that_fits_spawns_a_fake_item_that_is_never_picked_up lib daily resources
+horizon-client game::item_entities::item_rain_fire_tests::rain_puts_a_burning_item_out_with_the_hiss lib daily resources
+horizon-client game::item_entities::item_rain_fire_tests::rain_puts_out_what_a_fire_block_ignites_in_the_same_tick lib daily resources
 horizon-client game::item_entities::orb_pickup_tests::a_player_picks_a_random_orb_not_the_first lib daily resources
 horizon-client game::lan_actions::admin_feedback::tests::a_level_zero_operator_hears_another_operators_command lib daily resources
 horizon-client game::lan_actions::admin_feedback::tests::a_level_zero_splitscreen_seat_hears_no_admin_line lib daily resources
@@ -201,6 +211,7 @@ horizon-client game::persist::completion_tests::nosave_riders_transfer_live_with
 horizon-client game::persist::completion_tests::registered_nosave_riders_are_live_but_not_serialized_or_vehicles lib daily resources
 horizon-client game::persist::completion_tests::valid_nonmob_rider_is_live_and_merge_does_not_adopt_passengers lib daily resources
 horizon-client game::persist::lookup_order_tests::orbs_keep_their_section_entry_order_after_reload lib daily resources
+horizon-client game::piglins::tests::an_alerted_zombified_piglin_targets_the_attacker_not_its_nearest_player lib daily resources
 horizon-client game::rectangular_recipe_remainder_tests::rectangular_recipe_for_preserves_two_custom_remainder_cells lib daily resources
 horizon-client game::remote::interaction_event_tests::mapping_press_tests::a_callback_click_survives_until_the_next_tick lib daily resources
 horizon-client game::remote::interaction_event_tests::mapping_press_tests::a_screen_drops_the_clicks_and_holds_nothing lib daily resources

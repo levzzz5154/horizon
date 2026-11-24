@@ -2078,6 +2078,8 @@ pub struct Renderer {
     hdr_driver: Option<String>,
     /// Whether the Look setting is Horizon's, kept for the HDR output made when HDR turns on.
     hdr_lighting_setting: bool,
+    /// Player's hardware ray tracing setting (`Graphics::ray_tracing`).
+    ray_tracing_mode: crate::graphics::RayTracingMode,
     /// The shader pack's post-processing, and the dimension (legacy id) it was loaded for.
     pack_post: Option<(i32, Option<pack_post::PackPost>)>,
     /// A `shaders/` pack whose pipelines build on a thread of their own (`load_shader_pack`).
@@ -2791,7 +2793,13 @@ impl Renderer {
             }
             None => {
                 let _step = crate::spans::startup::step("renderer.open_device");
-                open_device(&window, offscreen, api, request.needs(layers)).await?
+                open_device(
+                    &window,
+                    offscreen,
+                    api,
+                    request.needs(layers, settings.ray_tracing),
+                )
+                .await?
             }
         };
         // A device that is already lost, one `previous` handed over included, makes every
@@ -4984,7 +4992,7 @@ impl Renderer {
             last_wait: std::time::Duration::ZERO,
             last_encode: std::time::Duration::ZERO,
             window,
-            ray_scene: rt::scene::RayScene::forced(&device),
+            ray_scene: rt::scene::RayScene::forced(&device, settings.ray_tracing),
             looks_layout: None,
             device,
             reuse,
@@ -5217,6 +5225,7 @@ impl Renderer {
             entity_atlas: atlas_view.clone(),
             hdr: None,
             hdr_lighting_setting: true,
+            ray_tracing_mode: settings.ray_tracing,
             emission_stats,
             output_caps,
             output_rejected: None,
@@ -5358,17 +5367,22 @@ impl Renderer {
         self.core_lines =
             program.and_then(|program| core_lines::CoreLines::new(&self.device, format, program));
     }
-    /// The resource packs' `core/sky` and `core/stars` (`HudAtlas::sky_shader`,
-    /// `stars_shader`), or the built-in sky and stars.
+    /// The resource packs' sky disc, stars, and sunrise/sunset programs, or the built-in sky.
     pub fn set_sky_shaders(
         &mut self,
         disc: Option<&crate::core_shader::CoreProgram>,
         stars: Option<&crate::core_shader::CoreProgram>,
+        sunrise: Option<&crate::core_shader::CoreProgram>,
     ) {
         // As `set_lines_shader`: not on a frame of linear light.
         let keep = !self.output.frame.linear_light;
-        let (disc, stars) = (disc.filter(|_| keep), stars.filter(|_| keep));
-        self.core_sky = core_sky::CoreSky::new(&self.device, self.output.frame.format, disc, stars);
+        self.core_sky = core_sky::CoreSky::new(
+            &self.device,
+            self.output.frame.format,
+            disc.filter(|_| keep),
+            stars.filter(|_| keep),
+            sunrise.filter(|_| keep),
+        );
     }
     /// A resource pack's `core/lightmap` (`HudAtlas::lightmap_shader`), which draws the
     /// lightmap texture in place of the CPU-built vanilla formula.
@@ -7017,6 +7031,29 @@ impl Renderer {
             hdr.look = on;
         }
     }
+    /// Applies the player's `rayTracing` setting (`Graphics::ray_tracing`), dropping or building
+    /// `RayScene` immediately when the device supports hardware ray queries.
+    pub fn set_ray_tracing(&mut self, mode: crate::graphics::RayTracingMode) {
+        if self.ray_tracing_mode == mode {
+            return;
+        }
+        self.ray_tracing_mode = mode;
+        let traces = self.executor.is_some_and(|c| c.ray_scene);
+        let had = self.ray_scene.is_some();
+        rt::scene::follow(
+            &mut self.ray_scene,
+            &self.device,
+            rt::query::wanted(rt::query::switch_with(mode), traces),
+        );
+        // The pack's trace groups hold the dropped scene's buffers: they go with it, so a later
+        // scene, whose generations start over, never draws with them.
+        if had
+            && self.ray_scene.is_none()
+            && let Some(native) = &mut self.external
+        {
+            native.bind_scene(&self.device, None, glam::DVec3::ZERO);
+        }
+    }
     /// Measures which pixels of each block sprite may shine (`hdr_stats`), at the current
     /// masks. Only with HDR output on: nothing else reads them.
     pub fn measure_emission(&mut self) {
@@ -7227,6 +7264,13 @@ impl Renderer {
         if let Some((_, Some(post))) = &mut self.pack_post {
             post.reset_history(&self.device);
         }
+        // `[frame] jitter` advances TAA's Halton phase: a restarted pack starts it again.
+        self.world_post.reset_temporal_sequence();
+    }
+    /// Whether the running Horizon pack moves the world by TAA's offset under its own post
+    /// chain (`[frame] jitter`), the player's TAA on or off.
+    pub fn pack_jitters(&self) -> bool {
+        self.executor.is_some_and(|c| c.jitter)
     }
     /// The running shader pack's kind: `iris` (a `shaders/` pack) or `native` (one of
     /// Horizon's own).
@@ -8835,9 +8879,12 @@ impl Renderer {
             hdr_gain,
             hdr_settings,
         ));
+        // A pack that resolves its own world may still ask for TAA's offset (`[frame] jitter`).
+        let pack_jitter = !frame.title && self.executor.is_some_and(|c| c.jitter);
         let jitter = self.world_post.jitter(
             [self.config.width, self.config.height],
             taa,
+            pack_jitter,
             view_proj,
             frame.camera,
         );
@@ -9096,18 +9143,15 @@ impl Renderer {
         if let Some(pipeline) = self.external.as_mut().filter(|_| !frame.title) {
             pipeline.begin_frame(&state);
         }
-        let shadow_view = self
-            .pack_post
-            .as_ref()
-            .and_then(|p| p.1.as_ref())
-            .filter(|_| !frame.title)
-            .and_then(|p| p.shadow_view(frame))
-            .or_else(|| {
-                self.external
-                    .as_ref()
-                    .filter(|_| !frame.title)?
-                    .shadow_request(&state)
-            });
+        let shadow_view = if frame.title {
+            None
+        } else {
+            self.pack_post
+                .as_ref()
+                .and_then(|p| p.1.as_ref())
+                .and_then(|p| external::ExternalPipeline::shadow_request(p, &state))
+                .or_else(|| self.external.as_ref()?.shadow_request(&state))
+        };
         let pack_terrain = !frame.title
             && self
                 .pack_post
@@ -10034,7 +10078,24 @@ impl Renderer {
                     fog,
                 )
             });
-            core.prepare(&mut self.uploads, &mut encoder, &sky, stars.as_deref());
+            let sunrise_color = frame.sky.sunrise_color;
+            let sunrise = (core.draws_sunrise() && sunrise_color[3] > 0.001).then(|| {
+                core_sky::uniforms(
+                    block,
+                    projection,
+                    core_sky::sunrise_model_view(view.view, frame.sky.sun_angle, sunrise_color[3]),
+                    sunrise_color,
+                    fog_color,
+                    fog,
+                )
+            });
+            core.prepare(
+                &mut self.uploads,
+                &mut encoder,
+                &sky,
+                stars.as_deref(),
+                sunrise.as_deref(),
+            );
         }
         let skin = frame.skin.filter(|skin| match &mut self.entity_skin {
             Some(skinner) => skinner.register(&self.device, &mut self.uploads, &mut encoder, skin),
@@ -11132,13 +11193,8 @@ impl Renderer {
                 let mut fog_ends = globals.fog_ends;
                 fog_ends[3] = plane;
                 // Water samples the mirror at its jittered screen position: the mirror takes the
-                // world's jitter, while TAA runs.
-                let mirrored = view::mirror_view_projection(view_proj, plane);
-                let mirrored = if taa && self.world_post.taa {
-                    jitter * mirrored
-                } else {
-                    mirrored
-                };
+                // world's jitter (TAA's or the pack's; identity while the world is still).
+                let mirrored = jitter * view::mirror_view_projection(view_proj, plane);
                 let mirror_globals = Globals {
                     view_proj: mirrored.to_cols_array_2d(),
                     inverse_view,
@@ -12033,6 +12089,15 @@ impl Renderer {
                 pack_frame(&mut pass);
                 pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
             }
+            // `[entity] surface`: the stage's entities write the surface target too, over the
+            // material stage's solid terrain or into a cleared one. The mods' prepared draws
+            // are Horizon's own pipeline throughout, which writes the colour alone.
+            let entity_surface = entity_stage.and_then(|e| e.surface);
+            let prepared = !self.prepared_draws.is_empty();
+            if let Some(target) = entity_surface {
+                drop(pass);
+                pass = terrain_pass(&mut encoder, target, surface.is_none());
+            }
             if static_entity_quads > 0 {
                 pass.stage(self.own_timing.as_mut(), "static block entities");
                 external::set_entity_pipeline(
@@ -12061,12 +12126,16 @@ impl Renderer {
                 }
                 pass.set_bind_group(0, &self.group, &[]);
             }
+            if entity_surface.is_some() && prepared {
+                drop(pass);
+                pass = plain_pass(&mut encoder);
+            }
             pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
-            if entity_quads > 0 || !self.prepared_draws.is_empty() {
+            if entity_quads > 0 || prepared {
                 pass.stage(self.own_timing.as_mut(), "entities");
                 external::set_entity_pipeline(
                     &mut pass,
-                    entity_stage,
+                    entity_stage.filter(|e| !prepared || e.surface.is_none()),
                     &self.entity_pipeline,
                     false,
                 );
@@ -12089,6 +12158,11 @@ impl Renderer {
                     );
                 }
                 pass.set_bind_group(0, &self.group, &[]);
+                pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+            }
+            if entity_surface.is_some() && !prepared {
+                drop(pass);
+                pass = plain_pass(&mut encoder);
                 pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
             }
             if entity_stage.is_some() {
