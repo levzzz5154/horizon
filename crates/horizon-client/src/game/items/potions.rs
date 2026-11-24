@@ -57,11 +57,11 @@ impl CloudSettings {
 #[derive(Clone, Debug)]
 pub(super) struct ThrownPotion {
     /// Its entity id once a server's clients track it (0 until then).
-    id: u32,
+    pub(in crate::game) id: u32,
     stack: ItemStack,
     /// The position before the last tick, for drawing between ticks.
-    previous: Vec3,
-    position: Vec3,
+    pub(in crate::game) previous: Vec3,
+    pub(in crate::game) position: Vec3,
     velocity: Vec3,
     age: u32,
     /// `Projectile.getOwner`'s display name: the player who threw it (none
@@ -1117,6 +1117,12 @@ impl Game<'_> {
                     if cancel {
                         return;
                     }
+                    horizon_client::hunger::native_living_heal_cause(
+                        &self.loop_context,
+                        player.entity_id as u32,
+                        "magic",
+                        amount,
+                    );
                 }
                 EffectAction::Heal(amount)
             }

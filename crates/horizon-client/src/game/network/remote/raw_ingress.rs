@@ -215,7 +215,7 @@ impl Game<'_> {
                         remote.quiet_commands = false;
                         remote.custom_books = false;
                     }
-                    self.clear_lod();
+                    self.clear_lod_for_world_entry();
                     if let Some(remote) = &self.remote {
                         remote.session.reset_far_terrain();
                     }
@@ -294,7 +294,10 @@ impl Game<'_> {
                     self.reset_book_view();
                     log::info!(
                         "Horizon: disconnected: {}",
-                        horizon_client::logging::one_line(&reason)
+                        horizon_client::logging::one_line(&horizon_client::net::logged_reason(
+                            &reason,
+                            key.as_deref()
+                        ))
                     );
                     // ClientboundTransferPacket left a target: connect there
                     // instead of showing the disconnect, the stored cookies
