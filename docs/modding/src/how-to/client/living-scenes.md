@@ -141,6 +141,32 @@ game's Particles option applies, as it does in the world. Scenes make no sound.
 At most four living scenes animate in one frame. A fifth still draws its blocks and
 its last state, but its clock does not advance, and the call returns `TooManyScenes`.
 
+## Lines and solid quads
+
+`DrawContext::draw_scene_with_overlays` draws annotations with the same camera and clip
+rectangle as the scene. Positions are in scene blocks; line widths are in GUI pixels.
+Colours are packed ARGB.
+
+```rust
+use mod_api::{SceneDepth, SceneOverlay};
+
+let overlays = [
+    SceneOverlay::line([0.0, 1.0, 0.0], [1.0, 1.0, 0.0], 2.0, 0xFFFF_FFFF, SceneDepth::Tested),
+    SceneOverlay::quad(
+        [[0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [1.0, 1.0, 1.0], [0.0, 1.0, 1.0]],
+        0x8020_80FF,
+        SceneDepth::ThroughWalls,
+    ),
+];
+draw.draw_scene_with_overlays(rect, &scene, view, &overlays)?;
+```
+
+`Tested` hides an annotation behind nearer scene geometry. `ThroughWalls` ignores the
+scene depth. Both draw after the scene, in list order, without writing depth; overlapping
+annotations do not hide one another via depth testing. Invalid geometry or more than
+`SCENE_MAX_OVERLAYS` entries refuses the whole draw with a `SceneOverlayError`. Ordinary
+scene errors are carried as `SceneOverlayError::Scene`.
+
 ## Textured faces
 
 Use `DrawContext::draw_scene_with_quads` to put a sprite on a scene-local face, for
