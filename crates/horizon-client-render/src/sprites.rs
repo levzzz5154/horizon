@@ -335,6 +335,8 @@ pub struct Sprites {
     ready_bytes: usize,
     /// Retained colour frames and animation data, independent of the resampled array.
     native_bytes: usize,
+    /// Per-layer charge currently attributed to `native_bytes` (parallel to `native`).
+    native_charges: Vec<usize>,
     memory: SpriteMemory,
     /// Textures past [`max_layers`] that the missing texture stands in for
     /// ([`Sprites::plan_within_capacity`]).
@@ -381,14 +383,50 @@ pub fn set_labpbr_maps(on: bool) {
 pub fn labpbr_maps() -> bool {
     LABPBR_MAPS.load(std::sync::atomic::Ordering::Relaxed)
 }
+/// The LabPBR maps' budget in bytes from the `pbrBudgetMiB` setting (0 follows the block
+/// textures' budget), for resources loaded from now on.
+static PBR_BUDGET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// The LabPBR maps' budget from the `pbrBudgetMiB` setting, so a pack's colours and its maps
+/// can be sized apart; 0 gives the maps their share of the block textures' budget again.
+pub fn set_pbr_budget(mib: u32) {
+    PBR_BUDGET.store(u64::from(mib) << 20, std::sync::atomic::Ordering::Relaxed);
+}
 /// Budget for either complete normal or specular image set: a quarter of the block textures'
 /// budget, so raising `textureBudgetMiB` sharpens a pack's LabPBR maps along with its colours.
 fn map_bytes(texture_budget: u64) -> u64 {
     texture_budget / 4
 }
-/// [`map_bytes`] for the budget the next resource load keeps to.
+/// The budget the next resource load keeps a map set to: `pbrBudgetMiB` when set, else
+/// [`map_bytes`] of the block textures' budget.
 fn max_map_bytes() -> u64 {
-    map_bytes(TEXTURE_BUDGET.load(std::sync::atomic::Ordering::Relaxed))
+    map_budget(
+        TEXTURE_BUDGET.load(std::sync::atomic::Ordering::Relaxed),
+        PBR_BUDGET.load(std::sync::atomic::Ordering::Relaxed),
+    )
+}
+/// The side a sheet's LabPBR maps are laid out at, from its largest map and its colours' side,
+/// for given budgets in bytes (`pbr_budget` 0 for unset). An explicit `pbrBudgetMiB` may keep
+/// maps sharper than the colours; without it the maps never exceed them.
+fn pbr_side(
+    largest_map: u32,
+    colour_side: u32,
+    layers: u64,
+    texture_budget: u64,
+    pbr_budget: u64,
+) -> u32 {
+    let cap = if pbr_budget == 0 {
+        largest_map.min(colour_side)
+    } else {
+        largest_map
+    };
+    side_within(cap, layers, map_budget(texture_budget, pbr_budget))
+}
+/// [`max_map_bytes`] for given budgets: `pbr_budget` in bytes, 0 for unset.
+fn map_budget(texture_budget: u64, pbr_budget: u64) -> u64 {
+    match pbr_budget {
+        0 => map_bytes(texture_budget),
+        bytes => bytes,
+    }
 }
 /// Fewer layers than any game has (vanilla's are about 1300): what a map is kept at while
 /// loading assumes at least these many share the array.
@@ -701,7 +739,13 @@ impl Sprites {
         self.specular.clear();
         let largest_map = self.pbr.iter().flatten().flatten().map(|m| m.0).max();
         self.pbr_size = largest_map.map_or(SPRITE_SIZE, |l| {
-            side_within(l.min(size), layers, max_map_bytes())
+            pbr_side(
+                l,
+                size,
+                layers,
+                TEXTURE_BUDGET.load(std::sync::atomic::Ordering::Relaxed),
+                PBR_BUDGET.load(std::sync::atomic::Ordering::Relaxed),
+            )
         });
         if largest_map.is_some() {
             let pbr_size = self.pbr_size;
@@ -837,6 +881,7 @@ impl Sprites {
         self.translucent.push(false);
         self.mips.push(crate::mipmap::Settings::default());
         self.native.push((SPRITE_SIZE, Arc::new(vec![frame]), 0));
+        self.native_charges.push(0);
         Ok(layer)
     }
     /// Whether one more layer would pass [`max_layers`] (keeping room for the shared missing
@@ -942,7 +987,7 @@ impl Sprites {
                 };
                 let mut reserved = 0;
                 let decoded =
-                    Self::decode(&self.source, name, None, self.memory.sheet, |_, peak| {
+                    Self::decode(&self.source, name, None, self.memory.sheet, |_, peak, _| {
                         if used
                             .try_update(Ordering::Relaxed, Ordering::Relaxed, |bytes| {
                                 bytes.checked_add(peak).filter(|&n| n <= self.memory.ready)
@@ -1012,9 +1057,15 @@ impl Sprites {
         if let Some(decoded) = self.take_ready(name) {
             return Ok(decoded);
         }
-        Self::decode(&self.source, name, png, self.memory.sheet, |retained, _| {
-            retained <= self.memory.native - self.native_bytes
-        })
+        let can_alias = !self.still.is_empty() && !self.apart.contains(name);
+        let remaining = self.memory.native - self.native_bytes;
+        Self::decode(
+            &self.source,
+            name,
+            png,
+            self.memory.sheet,
+            |retained, _, may_alias| retained <= remaining || (may_alias && can_alias),
+        )
     }
     /// The tiles of the texture `name` (`ns:path`) cut into a `columns` x `rows` grid, row by
     /// row from the top left: a Fusion connecting texture's sheet. Each tile is its own layer
@@ -1117,6 +1168,8 @@ impl Sprites {
     fn show_as(&mut self, layer: u32, source: u32) {
         self.still.retain(|_, l| *l != layer);
         let (l, s) = (layer as usize, source as usize);
+        let old_frames = Arc::clone(&self.native[l].1);
+        let old_charge = std::mem::take(&mut self.native_charges[l]);
         self.native[l] = self.native[s].clone();
         match self.shapes.get(&source).copied() {
             Some(shape) => self.shapes.insert(layer, shape),
@@ -1127,6 +1180,22 @@ impl Sprites {
         self.mips[l] = self.mips[s];
         self.pbr[l] = self.pbr[s].clone();
         self.animations.retain(|a| a.layer != layer);
+        if old_charge > 0 {
+            if let Some(other) = self
+                .native
+                .iter()
+                .position(|(_, frames, _)| Arc::ptr_eq(frames, &old_frames))
+            {
+                self.native_charges[other] += old_charge;
+            } else {
+                let retained_by_anim = self.animations.iter().any(|a| {
+                    matches!(&a.frames, AnimationFrames::Raw(frames) if Arc::ptr_eq(frames, &old_frames))
+                });
+                if !retained_by_anim {
+                    self.native_bytes -= old_charge;
+                }
+            }
+        }
         if let Some(animation) = self.animations.iter().find(|a| a.layer == source) {
             let animation = SpriteAnimation {
                 layer,
@@ -1141,7 +1210,7 @@ impl Sprites {
         name: &str,
         png: Option<&[u8]>,
         sheet_limit: usize,
-        admit: impl FnOnce(usize, usize) -> bool,
+        admit: impl FnOnce(usize, usize, bool) -> bool,
     ) -> Result<Decoded> {
         // `texture_resource`, so Custom Item Textures' `horizon_cit:` sprites find their file.
         let resource;
@@ -1228,6 +1297,14 @@ impl Sprites {
         }
         let columns = png_width / width;
         let count = columns * (png_height / height);
+        // A frame size from `.mcmeta` can cut a valid image into millions of frames, each its
+        // own allocation (and a clip as long); refuse before any is made.
+        if count > MAX_SPRITE_FRAMES {
+            return Err(format!(
+                "sprite {name} has {count} frames, more than the {MAX_SPRITE_FRAMES} allowed"
+            )
+            .into());
+        }
         let rgba = png_width as usize * png_height as usize * 4;
         // RGBA can reuse the canvas allocation for a single frame. Other formats need
         // a second buffer for conversion; multi-frame sprites allocate the split frames.
@@ -1245,7 +1322,8 @@ impl Sprites {
             return Err("sprite frame storage exceeds the decoded size limit".into());
         }
         let peak = retained + scratch + Decoded::named_bytes(name);
-        if !admit(native, peak) {
+        let may_alias = count == 1 && animation.is_none();
+        if !admit(native, peak, may_alias) {
             return Err("sprite decoded bytes exceed the remaining colour sprite budget".into());
         }
         let (_, _, pixels) = decode_rgba_frame(reader, vec![0; output_size])?;
@@ -1332,20 +1410,12 @@ impl Sprites {
             opaque,
             translucent,
         } = decoded;
-        if frame_bytes > self.memory.native - self.native_bytes {
-            return Err("sprite exceeds the remaining native colour sprite budget".into());
-        }
         let animation = animation_text
             .as_deref()
             .map(AnimationMetadata::from_json)
             .transpose()?;
         let count = frames.len() as u32;
         let bytes = native_colour_bytes(frame_bytes, animation.as_ref(), frames.len());
-        if bytes > self.memory.native - self.native_bytes {
-            return Err(
-                "sprite animation exceeds the remaining native colour sprite budget".into(),
-            );
-        }
         let layer = u32::try_from(self.native.len())?;
         let pbr = match name.split_once(':') {
             Some(_) if labpbr_maps() => {
@@ -1395,6 +1465,14 @@ impl Sprites {
             self.layers.insert(name.to_owned(), same);
             return Ok(same);
         }
+        if frame_bytes > self.memory.native - self.native_bytes {
+            return Err("sprite exceeds the remaining native colour sprite budget".into());
+        }
+        if bytes > self.memory.native - self.native_bytes {
+            return Err(
+                "sprite animation exceeds the remaining native colour sprite budget".into(),
+            );
+        }
         // Past what the renderer draws from, a texture no plan foresaw shows missing too
         // (with room for the missing texture's own layer).
         if self.full() {
@@ -1428,12 +1506,17 @@ impl Sprites {
         self.pbr.push(pbr);
         self.layers.insert(name.to_owned(), layer);
         self.native.push((side, frames, initial));
+        self.native_charges.push(bytes);
         if frame_size != [side, side] {
             self.shapes.insert(layer, frame_size);
         }
         Ok(layer)
     }
 }
+
+/// Most frames one animated sprite may be cut into. Real sheets have a few hundred (the largest
+/// kept in tests has 16,448); the cap bounds the per-frame allocations, not the decoded pixels.
+pub(crate) const MAX_SPRITE_FRAMES: u32 = 1 << 17;
 
 /// Refuses `count` square frames of `side` before they are made: a frame of any shape becomes a
 /// square layer, so a 32768x1 image of a few hundred bytes squared at its own side would ask for
@@ -1812,6 +1895,20 @@ mod tests {
         assert_eq!(side_within(1024, 1300, map_bytes(1536 << 20)), 256);
     }
     #[test]
+    fn a_separate_pbr_budget_overrides_the_maps_without_touching_the_textures() {
+        // Unset, the maps keep their quarter of the textures' budget.
+        assert_eq!(
+            map_budget(DEFAULT_TEXTURE_BUDGET, 0),
+            map_bytes(DEFAULT_TEXTURE_BUDGET)
+        );
+        // Set, they ignore it: 1300 layers in 4 MiB pack at 16 px, in 384 MiB at 256 px.
+        assert_eq!(side_within(1024, 1300, map_budget(1536 << 20, 4 << 20)), 16);
+        assert_eq!(
+            side_within(1024, 1300, map_budget(DEFAULT_TEXTURE_BUDGET, 384 << 20)),
+            256
+        );
+    }
+    #[test]
     fn a_labpbr_map_selects_whole_texels_and_missing_layers_get_defaults() {
         // Selecting a texel preserves encoded channels, including categorical values.
         let frame = [
@@ -1882,6 +1979,27 @@ mod tests {
         assert_eq!(
             sprites.specular[..128 * 128 * 4],
             resample(&maps[2], 16, 128)
+        );
+    }
+    #[test]
+    fn an_explicit_pbr_budget_keeps_maps_sharper_than_the_colours() {
+        // `pbr_side` takes the budgets as arguments, so this never sets the process-wide
+        // `PBR_BUDGET` that the other `finish()` tests read in parallel.
+        let side = |pbr_mib: u64| pbr_side(64, 16, 1, DEFAULT_TEXTURE_BUDGET, pbr_mib << 20);
+        assert_eq!(side(0), 16);
+        assert_eq!(side(64), 64);
+        let mut sprites = Sprites {
+            native: vec![(16, Arc::new(vec![vec![0; 16 * 16 * 4]]), 0)],
+            pbr: vec![[
+                Some((64, Arc::new(vec![[9, 8, 7, 6].repeat(64 * 64)]))),
+                None,
+            ]],
+            ..Default::default()
+        };
+        sprites.finish();
+        assert_eq!(
+            sprites.pbr_size, 16,
+            "without pbrBudgetMiB the maps follow the colours"
         );
     }
     #[test]
@@ -2625,8 +2743,21 @@ mod png_size_tests {
             "minecraft:block/test",
             Some(png),
             super::MAX_SPRITE_RGBA_BYTES,
-            |_, _| true,
+            |_, _, _| true,
         )
+    }
+
+    /// A valid PNG with a 1x1 `.mcmeta` frame size would be cut into one allocation per
+    /// texel (67 million for 8192x8192); the frame count is refused before any is made.
+    #[test]
+    fn a_frame_size_that_splits_a_sprite_into_millions_of_frames_is_refused() {
+        let mcmeta = r#"{"animation":{"width":1,"height":1}}"#;
+        let Err(error) = decode_sprite(&grey_png(1024, 1024), Some(mcmeta)) else {
+            panic!("a million frames must be refused");
+        };
+        assert!(error.to_string().contains("frames"), "{error}");
+        let ok = decode_sprite(&grey_png(256, 256), Some(mcmeta)).unwrap();
+        assert_eq!(ok.frames.len(), 256 * 256);
     }
 
     /// A real 32768x1 (or 1x32768) PNG is a few hundred bytes and decodes to 128 KiB; its
@@ -2670,7 +2801,7 @@ mod png_size_tests {
             "demo:block/sheet",
             Some(&grey_png(16, 32)),
             16 * 16 * 4,
-            |_, _| panic!("an over-budget sheet must not reach pixel buffer admission"),
+            |_, _, _| panic!("an over-budget sheet must not reach pixel buffer admission"),
         );
         assert!(
             result
