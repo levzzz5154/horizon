@@ -92,6 +92,8 @@ fn parse(source: &str) -> Vec<Block> {
     ) {
         match event {
             Event::Start(Tag::Heading { level, .. }) => {
+                // A tight list's item has no paragraph to end its text before the heading.
+                flush(&mut blocks, &mut text, &mut spans, &mut item, None);
                 heading = Some(match level {
                     HeadingLevel::H1 => 1,
                     HeadingLevel::H2 => 2,
@@ -123,7 +125,11 @@ fn parse(source: &str) -> Vec<Block> {
                 });
                 item = Some((depth, number));
             }
-            Event::End(TagEnd::Item) => flush(&mut blocks, &mut text, &mut spans, &mut item, None),
+            Event::End(TagEnd::Item) => {
+                flush(&mut blocks, &mut text, &mut spans, &mut item, None);
+                // An item with no text of its own (empty, or only a code block) ends here too.
+                item = None;
+            }
             Event::Start(Tag::CodeBlock(_)) => {
                 // A tight list's item has no paragraph to end its text before the block.
                 flush(&mut blocks, &mut text, &mut spans, &mut item, None);
@@ -151,7 +157,14 @@ fn parse(source: &str) -> Vec<Block> {
             },
             Event::SoftBreak => text.push(' '),
             Event::HardBreak => text.push('\n'),
-            Event::Rule => blocks.push(Block::Rule),
+            // A tight list's item has no paragraph to end its text before a rule or a quote.
+            Event::Rule => {
+                flush(&mut blocks, &mut text, &mut spans, &mut item, None);
+                blocks.push(Block::Rule)
+            }
+            Event::Start(Tag::BlockQuote(_)) => {
+                flush(&mut blocks, &mut text, &mut spans, &mut item, None)
+            }
             Event::Start(Tag::Table(_)) => {
                 flush(&mut blocks, &mut text, &mut spans, &mut item, None);
                 table = Some(Vec::new())
@@ -350,6 +363,38 @@ mod tests {
         assert_eq!(
             shown(&parse(around)),
             ["item 0 None before", "code code", "paragraph after"]
+        );
+    }
+
+    /// An item with no text of its own (empty, or only a code block) ends with the item: the
+    /// paragraph after the list is not drawn as one more item.
+    #[test]
+    fn a_paragraph_after_an_item_without_text_is_not_an_item() {
+        assert_eq!(
+            shown(&parse("- a\n-\n\nAfter.\n")),
+            ["item 0 None a", "paragraph After."]
+        );
+        assert_eq!(
+            shown(&parse("- ```\n  x\n  ```\n\nAfter.\n")),
+            ["code x", "paragraph After."]
+        );
+    }
+
+    /// A heading, a rule or a quote in a tight list's item starts after the item's text, as a
+    /// code block does: the text is not merged into the block or drawn after it.
+    #[test]
+    fn a_block_in_a_tight_list_item_follows_the_items_text() {
+        assert_eq!(
+            shown(&parse("- a\n  # h\n- b\n")),
+            ["item 0 None a", "heading 1 h", "item 0 None b"]
+        );
+        assert_eq!(
+            shown(&parse("- a\n  ***\n- b\n")),
+            ["item 0 None a", "rule", "item 0 None b"]
+        );
+        assert_eq!(
+            shown(&parse("- a\n  > q\n- b\n")),
+            ["item 0 None a", "paragraph q", "item 0 None b"]
         );
     }
 }

@@ -35,7 +35,10 @@ impl Game<'_> {
         ));
     }
 
-    pub(in crate::game) fn native_container_click_sent(&self, click: &ContainerClickSnapshot) {
+    pub(in crate::game) fn native_container_click_sent(
+        &self,
+        click: &mod_api::ContainerClickSnapshot,
+    ) {
         self.fire_container_click_sent(click);
     }
 }
