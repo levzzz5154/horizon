@@ -89,7 +89,8 @@ impl Game<'_> {
         if self.riding.is_some() {
             return false;
         }
-        let (from, ground, collision) = (player.position, player.ground, player.collision);
+        let saved_player = player.clone();
+        let from = saved_player.position;
         let gate = self.entity_move(MoveWho::Player, MoverType::SelfMovement, delta);
         if gate.skipped() || !in_bounds(from.add_vector(gate.delta()).components()) {
             return false;
@@ -98,9 +99,9 @@ impl Game<'_> {
         let player = self.player.as_mut().unwrap();
         let at = player.position;
         if result.is_err() || !in_bounds(at.components()) {
-            // An unsuccessful sweep must not leave the guest turn with a
-            // position discrepancy for its teleport handling.
-            (player.position, player.ground, player.collision) = (from, ground, collision);
+            // An unsuccessful sweep must not leave partial physics mutations or a
+            // position discrepancy for teleport handling.
+            *player = saved_player;
             return false;
         }
         let on_ground = player.ground.on_ground;

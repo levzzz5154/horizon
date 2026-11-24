@@ -561,6 +561,19 @@ impl Game<'_> {
             self.write_entity_displacement(handle, id, &mut gate, movement);
             return true;
         }
+        let mut movement = movement;
+        if let EntityHandle::Mob(i) = handle {
+            let stuck = self.mobs[i].stuck_multiplier;
+            if stuck.length_squared() > 1.0e-7 {
+                self.mobs[i].stuck_multiplier = Vec3::ZERO;
+                self.mobs[i].velocity = Vec3::ZERO;
+                movement = Vec3::new(
+                    movement.x * stuck.x,
+                    movement.y * stuck.y,
+                    movement.z * stuck.z,
+                );
+            }
+        }
         let entities = match handle {
             EntityHandle::Boat(i) => self.boat_move_obstacles(&self.boats[i]),
             EntityHandle::Cart(i) => self.cart_entity_collisions(&self.carts[i]),

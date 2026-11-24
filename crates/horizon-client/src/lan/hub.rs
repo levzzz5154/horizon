@@ -2515,6 +2515,12 @@ impl Hub {
                     self.apply_last_seen(i, &c.last_seen, events);
                 }
                 S::ChatAck(c) => self.chat_ack(i, c.offset, events),
+                S::CustomPayload(p)
+                    if p.channel == horizon_protocol::player_displacement::CHANNEL =>
+                {
+                    self.guests
+                        .update(i, |g| g.acknowledge_player_displacement(&p.data));
+                }
                 S::AcceptTeleportation(_)
                 | S::PlayerLoaded(_)
                 | S::ChunkBatchReceived(_)
