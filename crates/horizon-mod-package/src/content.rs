@@ -2058,8 +2058,13 @@ capabilities = ["registries"]
     const ITEM: &[u8] = br#"{"template": "minecraft:diamond", "rarity": "uncommon"}"#;
 
     fn scratch(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("horizon-content-{}-{name}", std::process::id()));
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-content-{}-{}-{name}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
