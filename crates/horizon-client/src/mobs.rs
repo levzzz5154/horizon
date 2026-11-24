@@ -6022,6 +6022,7 @@ mod magic_absorb_tests {
                 crate::test_resources::server_loop_context(),
                 &mut crate::health::TestLevel::new(0).level(),
                 None,
+                |_| {},
             );
         }
         assert_eq!(
@@ -6056,6 +6057,7 @@ mod magic_absorb_tests {
                 crate::test_resources::server_loop_context(),
                 &mut crate::health::TestLevel::new(0).level(),
                 None,
+                |_| {},
             );
         }
         assert!(m.extra.effects.is_empty(), "{:?}", m.extra.effects);
@@ -6072,6 +6074,7 @@ mod magic_absorb_tests {
                 crate::test_resources::server_loop_context(),
                 &mut crate::health::TestLevel::new(0).level(),
                 None,
+                |_| {},
             );
         }
         assert_eq!(
@@ -6096,6 +6099,7 @@ mod magic_absorb_tests {
                 crate::test_resources::server_loop_context(),
                 &mut crate::health::TestLevel::new(0).level(),
                 None,
+                |_| {},
             );
         }
         let restored = &m.extra.effects[0];
@@ -6116,6 +6120,7 @@ mod magic_absorb_tests {
                 crate::test_resources::server_loop_context(),
                 &mut crate::health::TestLevel::new(0).level(),
                 None,
+                |_| {},
             );
         }
         assert_eq!(
