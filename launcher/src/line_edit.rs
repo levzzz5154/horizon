@@ -146,7 +146,7 @@ impl LineEdit {
             } => {
                 let x = (pos.x - bounds.origin.x).clamp(px(0.), bounds.size.width);
                 let at = line.closest_index_for_x(x + *offset);
-                return Some(line.text[..at].chars().count());
+                return Some(line.text[..at].chars().count().min(self.len()));
             }
         };
         let shown: String = self
