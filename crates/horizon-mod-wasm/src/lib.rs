@@ -194,7 +194,7 @@ impl std::fmt::Display for Refusal {
             ),
             Self::Denied { call } => write!(
                 f,
-                "calls `{call}`, which wasm mods may not use: remove the call and rebuild it"
+                "imports `{call}`, which wasm mods may no longer use: rebuild it with this game's mod API, without calling it"
             ),
             Self::MixedGroup { first, second } => write!(
                 f,
