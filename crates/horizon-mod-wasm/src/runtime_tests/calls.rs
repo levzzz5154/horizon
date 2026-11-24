@@ -86,6 +86,29 @@ fn a_call_linked_by_name_reaches_the_games_method() {
 }
 
 #[test]
+fn old_wasm_clipboard_imports_are_refused_until_rebuilt() {
+    crate::test_stack::on_guest_stack(|| {
+        for call in [
+            ("ClientHost", "clipboard_text"),
+            ("ClientHost", "set_clipboard_text"),
+        ] {
+            let name = import(call);
+            let key = crate::calls::key(name);
+            let bytes = member(&[name], &[entry(key)], "i64.const 0");
+            assert_eq!(
+                load(&[("old_widget", &bytes)])
+                    .err()
+                    .expect("clipboard import must be refused"),
+                Refusal::Call {
+                    call: key.to_owned(),
+                    changed: true,
+                }
+            );
+        }
+    })
+}
+
+#[test]
 fn a_call_whose_signature_changed_is_refused_naming_it() {
     crate::test_stack::on_guest_stack(|| {
         let bytes = member(

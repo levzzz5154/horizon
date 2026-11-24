@@ -976,24 +976,40 @@ impl WasmMod {
             match name {
                 "host" => Some(Extern::Func(Func::wrap(store, control))),
                 "host_reply" => Some(Extern::Func(Func::wrap(store, host_reply))),
-                name => match crate::boundary::import_by_name(name) {
-                    Ok(id) => {
-                        imported.insert(crate::calls::key(name).to_owned());
-                        Some(Extern::Func(Func::wrap(
-                            store,
-                            move |caller: Caller<'_, State>, ptr, len, out, cap| {
-                                host(caller, id, ptr, len, out, cap)
-                            },
-                        )))
-                    }
-                    Err(changed) => {
+                name => {
+                    let key = crate::calls::key(name);
+                    if matches!(
+                        key,
+                        "ClientHost::clipboard_text" | "ClientHost::set_clipboard_text"
+                    ) {
+                        // Gate pre-existing Wasm binaries (including older SDK widgets whose Cut
+                        // handler ignores `set_clipboard_text`'s result and deletes the selection)
+                        // until rebuilt against the updated SDK without Wasm clipboard calls.
                         unlinked.get_or_insert(Refusal::Call {
-                            call: crate::calls::key(name).to_owned(),
-                            changed,
+                            call: key.to_owned(),
+                            changed: true,
                         });
-                        None
+                        return None;
                     }
-                },
+                    match crate::boundary::import_by_name(name) {
+                        Ok(id) => {
+                            imported.insert(key.to_owned());
+                            Some(Extern::Func(Func::wrap(
+                                store,
+                                move |caller: Caller<'_, State>, ptr, len, out, cap| {
+                                    host(caller, id, ptr, len, out, cap)
+                                },
+                            )))
+                        }
+                        Err(changed) => {
+                            unlinked.get_or_insert(Refusal::Call {
+                                call: key.to_owned(),
+                                changed,
+                            });
+                            None
+                        }
+                    }
+                }
             }
         })
         .map_err(|error| unlinked.take().unwrap_or_else(|| Refusal::from_link(error)))?;

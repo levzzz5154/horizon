@@ -34,11 +34,13 @@ For native mods, these still work only while the game handles a key, mouse or ty
 window or control socket. At other times or on a server, the read returns `None` and the write returns `false`
 without copying. Vanilla's own clipboard shortcuts are unchanged.
 
-Wasm mods cannot read or write the system clipboard through the host, even during input callbacks. Both methods
-keep their signatures so existing Wasm binaries still link; reads return `None` and writes return `false`
-without copying. Shared text widgets built with the updated SDK still accept typing, selection, navigation and
-deletion but ignore the Copy, Cut and Paste shortcuts in Wasm. Rebuild older widgets to pick up that shortcut
-behavior; the clipboard restriction applies without a rebuild.
+Wasm mods cannot read or write the system clipboard through the host, even during input callbacks.
+The host dispatcher returns `None` for reads and `false` for writes without copying, and the Wasm
+loader refuses existing Wasm binaries that import `clipboard_text` or `set_clipboard_text` (including
+shared text widgets built against an older SDK, whose Cut handler would otherwise delete the
+selection) until they are rebuilt against the updated SDK. Shared text widgets built with the updated
+SDK still accept typing, selection, navigation and deletion while ignoring Copy, Cut and Paste
+shortcuts in Wasm.
 
 ## Camera snapshots and perspective
 
