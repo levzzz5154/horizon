@@ -1,0 +1,3 @@
+ids = ["method:Hooks::blocks", "type:Block"]
+why = "Block gains an optional scaffolding_collision flag (Block::scaffolding_collision): a declared mod block can opt into vanilla scaffolding-style collision (stand on top, climb up, and descend through). Because the Block declaration record carries the new field, the blocks registration hook and Block wire layout change."
+migrate = "Rebuild mods that declare blocks against this version. Existing Block::new(...) declarations default scaffolding_collision to false and behave as before; set block.scaffolding_collision = true to opt a block into scaffolding-style collision."
