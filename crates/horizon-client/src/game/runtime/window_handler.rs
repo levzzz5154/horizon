@@ -248,6 +248,7 @@ impl Game<'_> {
         self.with_user_input(input, |game| {
             game.handle_window_event_as(event_loop, id, event, origin);
         });
+        self.forget_stale_native_title_request();
     }
 
     pub(super) fn handle_window_event_as(
@@ -469,6 +470,12 @@ impl Game<'_> {
             event_loop.exit();
             return;
         }
+        // A native mod's own title page asked for a button's work (`request_title`).
+        if let Err(error) = self.drain_native_title_request(event_loop) {
+            self.error = Some(error);
+            event_loop.exit();
+            return;
+        }
         // A Realm's address came back (GetServerDetailsTask hands over to ConnectScreen).
         if let Some(action) = self.title.as_mut().and_then(|t| t.take_connect_request())
             && let Err(error) = self.title_action(event_loop, action)
@@ -619,15 +626,21 @@ impl ApplicationHandler for Game<'_> {
         if let Some((event, modifiers)) = key
             && !self.loading_overlay_preview_active()
         {
-            use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
             let name = match event.physical_key {
                 PhysicalKey::Code(code) => horizon_client::keybinds::key_name(code),
                 PhysicalKey::Unidentified(_) => None,
             };
-            let layout_key = horizon_client::keybinds::layout_key_name(
-                event.physical_key,
-                &event.key_without_modifiers(),
-            );
+            #[cfg(not(target_os = "android"))]
+            let layout_key = {
+                use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
+                horizon_client::keybinds::layout_key_name(
+                    event.physical_key,
+                    &event.key_without_modifiers(),
+                )
+            };
+            #[cfg(target_os = "android")]
+            let layout_key =
+                horizon_client::keybinds::layout_key_name(event.physical_key, &event.logical_key);
             let raw_code = horizon_client::keybinds::raw_key_code(event.physical_key);
             let action = match (event.state, event.repeat) {
                 (winit::event::ElementState::Released, _) => mod_api::KeyAction::Release,

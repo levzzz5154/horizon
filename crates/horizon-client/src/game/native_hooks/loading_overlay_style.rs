@@ -21,7 +21,7 @@ impl Game<'_> {
         dark: bool,
         phase: LoadingOverlayPhase,
     ) {
-        let mut style = LoadingOverlayStyle::new(level_loading::brand_background(dark));
+        let mut style = level_loading::stock_style(dark);
         Self::native_loading_overlay_style(phase, progress, &mut style);
         level_loading::draw_loading_overlay_with_style(batch, atlas, line, progress, &style);
     }

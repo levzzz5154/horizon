@@ -29,6 +29,10 @@ pub trait ScreensClientHost {
     /// opened with its `extra`. A copy, so native and wasm read it alike. @API:menu_extra_data@.
     #[access(ClientSetup)]
     fn screen_extra_data(&self) -> Option<Vec<u8>>;
+    /// What started this level load, while `screen` is its selected registered
+    /// transition screen. None outside the load or for a different screen.
+    #[access(ClientSetup)]
+    fn dimension_transition_cause(&self, screen: &str) -> Option<DimensionTransitionCause>;
     /// Side: client.
     /// Where the open screen draws outside its `rect`, and where mods draw
     /// over it: the recipe book's panel, the creative tab rows, the active
@@ -141,6 +145,15 @@ pub trait ScreensClientHost {
     /// The same screen identifier provided to screen hooks.
     #[access(ClientSetup)]
     fn observed_screen_id(&self) -> Option<ScreenId>;
+    /// The topmost open screen, including dialogs and prompts, without needing a rendered view.
+    /// `None` during normal play or when no screen represented by the screen hooks is open.
+    /// A covering screen does not report an underlying screen's menu.
+    ///
+    /// Available in read-only client hooks, including `Hooks::item_tooltip`. The enchanting
+    /// table reports `id == "inventory"` and `menu.as_deref() == Some("minecraft:enchantment")`
+    /// on native and wasm alike.
+    #[access(ClientSetup)]
+    fn current_screen(&self) -> Option<ScreenIdentity>;
     /// Side: client.
     /// Whether a specific key is currently held down.
     /// `key` is the vanilla physical key name (`key.keyboard.left.shift`, for example).
@@ -168,4 +181,11 @@ pub trait ScreensClientHost {
     /// wasm alike.
     #[access(ClientSetup)]
     fn request_screenshot(&mut self) -> Result<(), ScreenshotError>;
+    /// Side: client.
+    /// The already selected splash text on the main title screen. None on other
+    /// screens, when Hide Splash Texts is enabled, or if no splash was selected.
+    /// Still available in the title's render hooks if Pre cancels stock drawing.
+    #[access(ClientSetup)]
+    #[default_on_unavailable]
+    fn title_splash(&self) -> Option<String>;
 }
