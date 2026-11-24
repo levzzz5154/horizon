@@ -66,6 +66,7 @@ fn a_players_burst_acts_on_the_next_tick_in_the_order_pressed() {
 
 /// Number-key selection, swap (F) and drop (Q) act before attack/use in the same tick, matching
 /// vanilla's `Minecraft.handleKeybinds` order (`pick` -> number keys -> F/Q/E -> attack/use/pick).
+/// The swap goes out as pressed; the drop after it is the first to tell the server of the new slot.
 #[test]
 #[ignore = "daily"]
 fn swap_and_drop_run_before_attack() {
@@ -82,8 +83,8 @@ fn swap_and_drop_run_before_attack() {
         assert_eq!(
             sent(packets),
             [
-                "minecraft:set_carried_item",
                 "minecraft:player_action",
+                "minecraft:set_carried_item",
                 "minecraft:player_action",
                 "minecraft:punch",
             ]
