@@ -4287,6 +4287,7 @@ fn a_passenger_set_seats_as_the_list_scan_did() {
         position: [0.0, 64.0, 0.0],
         codec_base: [0.0, 64.0, 0.0],
         silent: false,
+        spawn_data: 0,
         vehicle,
     };
     // 1 rides 40 and stays listed, 2 rides 40 and is no longer listed, 3
