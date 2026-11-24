@@ -54,6 +54,10 @@ impl DirtySections {
         }
         had
     }
+    /// The dirty section indexes of column (x, z).
+    pub fn column(&self, x: i32, z: i32) -> SectionMask {
+        self.columns.get(&(x, z)).copied().unwrap_or_default()
+    }
     /// The dirty section indexes of column (x, z), removed.
     pub fn take_column(&mut self, x: i32, z: i32) -> SectionMask {
         self.columns.remove(&(x, z)).unwrap_or_default()
@@ -502,22 +506,32 @@ impl World {
     pub fn end_player_edit(&mut self) {
         self.player_edit_depth = self.player_edit_depth.saturating_sub(1);
     }
-    /// Copy dirty sections whose center is within `max_dist_sq` of `camera_block` into
-    /// `immediate_sections` (vanilla `PrioritizeChunkUpdates.NEARBY`, 768.0 squared blocks),
-    /// stopping once `immediate_sections.len() > limit`.
-    pub fn mark_nearby_dirty_immediate(
-        &mut self,
+    /// Dirty sections whose center is within `max_dist_sq` of `camera_block` (vanilla
+    /// `PrioritizeChunkUpdates.NEARBY`, 768.0 squared blocks), nearest first, at most `limit`.
+    /// Returned apart from `immediate_sections` so the player's own edits are never budgeted.
+    pub fn nearby_dirty_sections(
+        &self,
         camera_block: [i32; 3],
         max_dist_sq: f64,
         limit: usize,
-    ) {
+    ) -> Vec<(i32, i32, i32)> {
         let bottom_y = self.bottom_y();
         let (cx0, cy0, cz0) = (
             f64::from(camera_block[0]),
             f64::from(camera_block[1]),
             f64::from(camera_block[2]),
         );
-        for ((cx, cz), sections) in self.dirty_sections.columns() {
+        // Only the columns whose centre can be within reach, not every dirty column loaded.
+        let reach = max_dist_sq.sqrt();
+        let columns = |c0: f64| {
+            ((c0 - 8.0 - reach) / 16.0).ceil() as i32..=((c0 - 8.0 + reach) / 16.0).floor() as i32
+        };
+        let mut nearby = Vec::new();
+        for (cx, cz) in columns(cx0).flat_map(|cx| columns(cz0).map(move |cz| (cx, cz))) {
+            let sections = self.dirty_sections.column(cx, cz);
+            if sections.is_empty() {
+                continue;
+            }
             let sx = f64::from(cx * 16 + 8) - cx0;
             let sz = f64::from(cz * 16 + 8) - cz0;
             let horiz = sx * sx + sz * sz;
@@ -526,14 +540,16 @@ impl World {
             }
             for sy in sections.iter().map(|s| s as i32) {
                 let sy_d = f64::from(bottom_y + sy * 16 + 8) - cy0;
-                if horiz + sy_d * sy_d <= max_dist_sq {
-                    self.immediate_sections.insert((cx, sy, cz));
-                    if self.immediate_sections.len() > limit {
-                        return;
-                    }
+                let dist_sq = horiz + sy_d * sy_d;
+                if dist_sq <= max_dist_sq {
+                    nearby.push((dist_sq, (cx, sy, cz)));
                 }
             }
         }
+        // Hash order differs run to run; the key breaks distance ties deterministically.
+        nearby.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        nearby.truncate(limit);
+        nearby.into_iter().map(|(_, key)| key).collect()
     }
     /// Resident storage write; marks the touched sections (and neighbours on
     /// section borders) for remeshing and the surrounding chunks for relighting.
@@ -760,6 +776,18 @@ impl World {
                 .0
         })
     }
+    /// Awake subset of [`Self::block_entity_tickers`], cached until tickers or sleep set changes.
+    pub fn awake_block_entity_tickers(
+        &mut self,
+    ) -> std::sync::Arc<Vec<(crate::block_entities::Pos, u32, u64)>> {
+        let (chunks, air) = (&self.chunks, self.air);
+        self.block_entities.awake_tickers(|(x, y, z)| {
+            chunks
+                .get_chunk(x >> 4, z >> 4)
+                .map_or(air, |chunk| chunk.block(x & 15, y, z & 15))
+                .0
+        })
+    }
     #[inline(always)]
     pub fn light(&self, x: i32, y: i32, z: i32) -> u8 {
         match self.chunks.get_chunk(x >> 4, z >> 4) {
@@ -838,45 +866,84 @@ impl World {
             .find(|(p, _)| *p == key)
             .map(|(_, tag)| tag)
     }
-    /// `LockCode.addToTag` for a tag a command gives a container (`setblock`,
-    /// `data merge`): the tag it was set with keeps the lock, so `data get`
-    /// shows it, a player's open checks it and the save writes it.
+    /// Updates a container's lock without changing its stored components.
     pub fn set_block_lock(&mut self, key: (i32, i32, i32), tag: &horizon_core::nbt::Tag) {
+        self.update_block_entity_metadata(key, tag, false);
+    }
+
+    /// `BlockEntity.loadWithComponents`: keep the explicit map beside the model.
+    /// An absent or empty map clears the previous one.
+    pub fn set_block_entity_metadata(
+        &mut self,
+        key: (i32, i32, i32),
+        tag: &horizon_core::nbt::Tag,
+    ) -> bool {
+        self.update_block_entity_metadata(key, tag, true)
+    }
+
+    fn update_block_entity_metadata(
+        &mut self,
+        key: (i32, i32, i32),
+        tag: &horizon_core::nbt::Tag,
+        load_components: bool,
+    ) -> bool {
         use horizon_core::nbt::Tag;
-        let lock = tag.get("lock").and_then(|lock| match lock {
-            Tag::Compound(_) => Some(lock.clone()),
-            _ => None,
-        });
-        let mut tag = tag.clone();
-        if let Tag::Compound(map) = &mut tag {
-            map.remove(&"LootTable".into());
-            map.remove(&"LootTableSeed".into());
+        let lock = tag
+            .get("lock")
+            .filter(|lock| matches!(lock, Tag::Compound(_)));
+        let components = tag
+            .get("components")
+            .filter(|map| matches!(map, Tag::Compound(map) if !map.is_empty()));
+        let source = self.block_entity_source(key);
+        let lock_changed = source.and_then(|tag| tag.get("lock")) != lock;
+        let components_changed = load_components
+            && source
+                .and_then(|tag| tag.get("components"))
+                .filter(|map| matches!(map, Tag::Compound(map) if !map.is_empty()))
+                != components;
+        if !lock_changed && !components_changed {
+            return false;
         }
         self.with_chunk_extras(key, |extras| {
             let at = extras
                 .block_entity_sources
                 .iter()
                 .position(|(p, _)| *p == key);
-            match at {
-                Some(i) => {
-                    if let Tag::Compound(source) = &mut extras.block_entity_sources[i].1 {
-                        match lock {
-                            Some(lock) => {
-                                source.insert("lock".into(), lock);
-                            }
-                            None => {
-                                source.remove(&"lock".into());
+            if let Some(i) = at {
+                if let Tag::Compound(source) = &mut extras.block_entity_sources[i].1 {
+                    for (field, value, changed) in [
+                        ("lock", lock, lock_changed),
+                        ("components", components, components_changed),
+                    ] {
+                        if changed {
+                            match value {
+                                Some(value) => {
+                                    source.insert(field.into(), value.clone());
+                                }
+                                None => {
+                                    source.remove(&field.into());
+                                }
                             }
                         }
                     }
+                    // A runtime stack-limit override may have created a source
+                    // record with no type or position yet.
+                    for field in ["id", "x", "y", "z"] {
+                        if let Some(value) = tag.get(field) {
+                            source.entry(field.into()).or_insert_with(|| value.clone());
+                        }
+                    }
                 }
-                // A container set at runtime has no source yet: the tag the
-                // command gave is the one it was set with, `id` and position
-                // included (the save checks the id before merging).
-                None if lock.is_some() => extras.block_entity_sources.push((key, tag.clone())),
-                None => {}
+            } else {
+                let mut source = tag.clone();
+                if let Tag::Compound(map) = &mut source {
+                    map.remove(&"LootTable".into());
+                    map.remove(&"LootTableSeed".into());
+                }
+                extras.block_entity_sources.push((key, source));
             }
         });
+        true
     }
     /// The fields Horizon keeps beside a block entity's model, for a journal: the tag it was
     /// loaded or set with (its `lock`) and its pending loot metadata.
