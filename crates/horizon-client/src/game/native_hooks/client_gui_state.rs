@@ -21,4 +21,14 @@ impl Game<'_> {
             menu: menu.map(str::to_owned),
         })
     }
+
+    pub(in crate::game) fn title_splash(&self) -> Option<String> {
+        let title = self.title.as_ref()?;
+        if !self.title_screen_render_uncovered() {
+            return None;
+        }
+        title
+            .visible_splash(self.settings.file.bool("hideSplashTexts"))
+            .map(str::to_owned)
+    }
 }

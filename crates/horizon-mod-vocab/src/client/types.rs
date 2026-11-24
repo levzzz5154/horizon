@@ -725,7 +725,7 @@ pub struct ScreenId {
 }
 
 /// The topmost screen's identity, without render or input state.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 // exhaustive: the game builds it with a literal; mods only read it
 #[derive(horizon_mod_api_macros::Wire)]
 pub struct ScreenIdentity {

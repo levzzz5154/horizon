@@ -59,6 +59,7 @@ READERS = {
     # template cases tools/lang_coverage.py shares.
     "horizon-client-core": [
         "crates/horizon-client/assets/horizon/lang", "tests/fixtures/translation_templates.json",
+        "tests/fixtures/translation_text_rules.json", "tools/lang_unicode_tables.json",
         "tools/lang_unformattable.json",
     ],
     # The world's shaders include the HDR look from its pack, and the look pack's tests load the pack.
@@ -111,8 +112,9 @@ READERS = {
     ],
 }
 # What a package's tests only read at run time and nothing else uses: the package is selected, its dependents are not.
-# horizon-client-core's lang.rs tests read the sources of every crate for the language keys the code names.
-SCANNED = {"horizon-client-core": ["crates"]}
+# horizon-client-core's lang.rs tests read the sources of every crate for the language keys the code names, and so do
+# horizon-client-render's lang_key_tests.rs (which also needs that crate's pvp::Opt).
+SCANNED = {"horizon-client-core": ["crates"], "horizon-client-render": ["crates"]}
 # Literals the scan takes for a walk up to crates/ that are not one (a ".." among path-traversal checks).
 # "machines/.." in a test's sample paths, "mods/" in an instance's file names: no read either.
 NOT_READS = {
