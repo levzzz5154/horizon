@@ -877,19 +877,19 @@ fn creative_tab_ordering_and_rich_icons_merge_across_packages() {
             .map(|tab| tab["id"].as_str().unwrap())
             .collect::<Vec<_>>(),
         [
+            "alpha:other",
+            "middle:m",
+            "zeta:a",
             "zeta:b",
             "zeta:c",
             "zeta:d",
-            "middle:m",
-            "alpha:other",
-            "zeta:a",
         ]
     );
     assert_eq!(tabs[2]["icon"], r#"{count:1,id:"minecraft:stone"}"#);
     assert_eq!(tabs[7]["page"], 1);
     assert_eq!(tabs[7]["row"], "BOTTOM");
     assert_eq!(tabs[7]["column"], 0);
-    let icon = tabs[7]["icon"].as_str().unwrap();
+    let icon = tabs[4]["icon"].as_str().unwrap();
     let (tag, consumed) = nbt::parse_snbt(icon).unwrap();
     assert_eq!(consumed, icon.len());
     assert_eq!(tag.get("id"), Some(&Tag::String("minecraft:stick".into())));
