@@ -58,7 +58,11 @@ impl Layer {
             return 0;
         }
         if let Material::Pending { layout, frame } = &self.material {
-            self.material = Material::ready(device, layout, *frame);
+            // A failed build stays pending, draws nothing, and a later frame tries again.
+            let Some(ready) = Material::ready(device, layout, *frame) else {
+                return 0;
+            };
+            self.material = ready;
         }
         let Material::Ready { buffer, .. } = &self.material else {
             unreachable!()
@@ -88,8 +92,10 @@ impl Material {
         device: &wgpu::Device,
         layout: &wgpu::PipelineLayout,
         (format, linear): (wgpu::TextureFormat, bool),
-    ) -> Self {
+    ) -> Option<Self> {
         const STRIDE: u64 = std::mem::size_of::<CelestialVertex>() as u64;
+        let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Native celestial triangles"),
             source: wgpu::ShaderSource::Wgsl(
@@ -145,6 +151,11 @@ impl Material {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        Self::Ready { pipeline, buffer }
+        let memory = pollster::block_on(memory.pop());
+        if let Some(e) = memory.or(pollster::block_on(validation.pop())) {
+            log::warn!("native celestial triangles unavailable this frame: {e}");
+            return None;
+        }
+        Some(Self::Ready { pipeline, buffer })
     }
 }
