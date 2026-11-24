@@ -1924,6 +1924,33 @@ fn region_files_kept_open_stay_under_vanillas_cache_size() {
     )
     .unwrap()
     .unwrap();
+    // A region whose write a failed sync left staged, held by no one, is
+    // not closed for room either: the next write finishes that commit.
+    let staged = super::cached_region(
+        &save.regions,
+        (-1, 0),
+        &save.region_path("region", -1, 0),
+        true,
+    )
+    .unwrap()
+    .unwrap();
+    staged
+        .lock()
+        .unwrap()
+        .write(
+            ChunkPos::new(-32, 0),
+            &horizon_world::region::ChunkRecord {
+                compression: horizon_world::compression::Compression::None,
+                compressed: vec![1; 10],
+                timestamp: 1,
+            },
+        )
+        .unwrap();
+    let staged = {
+        let weak = Arc::downgrade(&staged);
+        drop(staged);
+        weak
+    };
     for x in 1..=600 {
         super::cached_region(
             &save.regions,
@@ -1951,6 +1978,10 @@ fn region_files_kept_open_stay_under_vanillas_cache_size() {
         &cache.regions[&(0, 0)].0.clone().unwrap(),
         &held
     ));
+    let kept = cache.regions[&(-1, 0)].0.clone().unwrap();
+    assert!(std::ptr::eq(Arc::as_ptr(&kept), staged.as_ptr()));
+    assert!(kept.lock().unwrap().has_staged_changes());
+    drop(kept);
     drop(cache);
     // What was written to regions since closed reads back from the disk.
     let entity = |x: i32| Tag::compound([("x", Tag::Int(x))]);
@@ -2353,6 +2384,29 @@ fn a_loot_chest_keeps_the_components_and_lock_it_was_loaded_with() {
     assert_eq!(full.get("lock"), saved.get("lock"));
     assert_eq!(full.get("CustomName"), Some(&name));
     assert!(full.get("keepPacked").is_none());
+}
+#[test]
+fn trial_spawner_save_overlay_uses_normalized_inline_configs() {
+    let saved = horizon_core::nbt::parse_snbt(
+        r#"{id:"minecraft:trial_spawner",x:1,y:2,z:3,normal_config:{spawn_range:4,total_mobs:6.0f},ominous_config:{spawn_range:5,total_mobs:6.0f},components:{"minecraft:custom_data":{k:1}}}"#,
+    )
+    .unwrap()
+    .0;
+    let (pos, spawner) = decode_block_entity(&saved).expect("trial_spawner");
+    let full = full_block_entity_data(
+        pos,
+        &spawner,
+        "minecraft:trial_spawner",
+        Some(&saved),
+        None,
+        None,
+    );
+    assert_eq!(full.get("normal_config"), None);
+    assert_eq!(
+        full.get("ominous_config"),
+        Some(&horizon_core::nbt::parse_snbt("{spawn_range:5}").unwrap().0)
+    );
+    assert_eq!(full.get("components"), saved.get("components"));
 }
 #[test]
 fn spawner_block_entity_round_trips() {
