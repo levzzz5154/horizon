@@ -167,9 +167,61 @@ impl BetterGrass {
         let top = self.tiles[ground.surface as usize][usize::from(ground.snowy)]?;
         match mode {
             Mode::Fast => Some(top),
-            Mode::Fancy if self.ground(below) == Some(ground) => Some(top),
+            // The same block one step out and down, snowy or not: snow doesn't make it another block.
+            Mode::Fancy
+                if self
+                    .ground(below)
+                    .is_some_and(|below| below.surface == ground.surface) =>
+            {
+                Some(top)
+            }
             Mode::Fancy if ground.surface == Surface::DirtPath => self.path_side,
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fancy_side_matches_a_snowy_block_of_the_same_kind_below() {
+        let grass = |snowy| Ground {
+            surface: Surface::Grass,
+            snowy,
+        };
+        let top = Side {
+            tile: TileLayer::Layer {
+                layer: 7,
+                translucent: false,
+                opaque: true,
+            },
+            tint: 0,
+            overlay: None,
+        };
+        let mut tiles = [[None; 2]; Surface::ALL.len()];
+        tiles[Surface::Grass as usize][0] = Some(top);
+        let mut states = FxHashMap::default();
+        states.insert(1, grass(false));
+        states.insert(2, grass(true));
+        states.insert(
+            3,
+            Ground {
+                surface: Surface::Mycelium,
+                snowy: false,
+            },
+        );
+        let rules = BetterGrass {
+            pack_config: true,
+            states,
+            tiles,
+            path_side: None,
+        };
+        let layer = |below| rules.side(grass(false), Mode::Fancy, below).map(|s| s.tile);
+        assert_eq!(layer(2), Some(top.tile));
+        assert_eq!(layer(1), Some(top.tile));
+        assert_eq!(layer(3), None);
+        assert_eq!(layer(0), None);
     }
 }
