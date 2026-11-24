@@ -11,9 +11,8 @@ the hook catalog (catalog.json, hook-notes.md) and the guest's generated hook di
   (`cargo horizon-mod update` reports signature-hash changes for declared internals);
 - a path a native mod could declare without a kind that gains a second kind (E_INTERNAL_AMBIGUOUS), always;
 - any other difference in the generated files, except a catalog hook added with --allow-added, which explains its
-  generated catalog, new hook-notes sections (the others unchanged) and its own guest dispatch. A host call added
-  with --allow-added explains its own guest forwarder and shifted import numbers, or a native-only unsupported stub
-  that is compiled out on wasm.
+  generated catalog, new hook-notes sections (the others unchanged) and its own guest dispatch, and a host call added
+  with --allow-added, which explains its own guest forwarder and the guest's import numbers after it.
 The injection points' outputs (points.json, points_generated.rs) are never compared: `[[inject]]` and its points are
 removed (#19576), and a base that still writes them compares without them. The mod API's types and calls are the surface report's
 (tools/ci/surface_report.py), which runs beside this check.
@@ -96,12 +95,6 @@ NATIVE_ONLY_CFG = '#[cfg(not(target_arch = "wasm32"))]'
 
 # The guest implementation of an area trait begins on its own line and each forwarder occupies one line.
 GUEST_HOST_IMPL = re.compile(r"^impl (?:\w+\s*::\s*)*\w+ for Guest \{\n", re.MULTILINE)
-GUEST_NATIVE_STUB = re.compile(
-    r'^#\[cfg\(not\(target_arch = "wasm32"\)\)\]\n'
-    r'fn (?P<method>\w+)\b[^\n{}]* \{ crate::wire::guest::unsupported\("'
-    r'(?P<name>\w+::(?P=method))"\) \}\n',
-    re.MULTILINE,
-)
 
 
 def read_text(path, root_marks):
@@ -191,8 +184,12 @@ def guest_wire_without_hooks(guest, hooks, base, *, added_calls=False, native_re
         guest, count = re.subn(rf'crate::HookId::\w+ => "{re.escape(name)}",', "", guest)
         if count != 1:
             return None
-    arms = list(GUEST_ARM.finditer(guest, max(guest.find(GUEST_DISPATCH), 0)))
+    dispatch = max(guest.find(GUEST_DISPATCH), 0)
+    arms = list(GUEST_ARM.finditer(guest, dispatch))
     references = [set(map(int, WIRE_RECORD.findall(arm[0]))) for arm in arms]
+    # The host calls' forwarders come before the dispatch and their types are numbered before any hook's, so they
+    # bound every window from below, also one ahead of the first retained arm.
+    before_dispatch = set(map(int, WIRE_RECORD.findall(guest[:dispatch])))
 
     retained_arms = {}
     added_names = set()
@@ -218,15 +215,16 @@ def guest_wire_without_hooks(guest, hooks, base, *, added_calls=False, native_re
         return low, high
 
     removed_indices = set(removed)
-    retained = [refs if index not in removed_indices else () for index, refs in enumerate(references)]
-    windows = [window(retained, index) for index in removed]
+    retained = [before_dispatch] + [
+        refs if index not in removed_indices else () for index, refs in enumerate(references)]
+    windows = [window(retained, index + 1) for index in removed]
     native_records = {} if native_records is None else native_records
     native_hooks = hooks - added_names
     unrecorded = native_hooks - native_records.keys()
     if catalog and unrecorded:
         # Native-only hooks have no dispatch position. Apply the same bounds to the retained arm
         # records in catalog order, skipping other entries that have no guest-side records.
-        catalog_records = []
+        catalog_records = [before_dispatch]
         splits = set()
         for name in HOOK_NAME.findall(catalog[1]):
             if name in retained_arms:
@@ -293,24 +291,6 @@ def notes_only_add_sections(base, head):
         return False
     remaining = iter(head[1:])
     return all(any(section == other for other in remaining) for section in base[1:])
-
-
-def guest_wire_without_native_stubs(guest, base):
-    """Omit new native-only methods on Guest: these stubs disappear entirely when built for wasm."""
-    def stubs(text):
-        for area in GUEST_HOST_IMPL.finditer(text):
-            end = text.find("\n}\n", area.end() - 1)
-            if end >= 0:
-                for stub in GUEST_NATIVE_STUB.finditer(text, area.end(), end + 1):
-                    yield (area[0], stub["name"]), stub
-
-    known = {key for key, _ in stubs(base)}
-    additions = [(key, stub) for key, stub in stubs(guest) if key not in known]
-    if len({key for key, _ in additions}) != len(additions):
-        return guest, set()
-    for _, stub in reversed(additions):
-        guest = guest[:stub.start()] + guest[stub.end():]
-    return guest, {name for (_, name), _ in additions}
 
 
 def guest_wire_without_calls(guest, base):
@@ -401,7 +381,6 @@ def explained_additions(base_dir, head_dir, diffs, base_root, head_root):
     if GUEST_WIRE in changed:
         base = read_text(base_dir / GUEST_WIRE, [base_root] if base_root else [])
         head = read_text(head_dir / GUEST_WIRE, [head_root] if head_root else [])
-        head, native_calls = guest_wire_without_native_stubs(head, base)
         head, base, calls = guest_wire_without_calls(head, base)
         if head is None:
             return nothing
@@ -419,13 +398,12 @@ def explained_additions(base_dir, head_dir, diffs, base_root, head_root):
             head, base = records_in_order(head), records_in_order(base)
             explained = head
         else:
-            explained = head if native_calls else None
+            explained = None
         if explained != base:
             if explained is not None:
                 print(f"{GUEST_WIRE} differs after the added hooks and host calls, first at: "
                       + first_difference(explained, base)[:300])
             return nothing
-        calls.update(native_calls)
     return hooks, calls
 
 
