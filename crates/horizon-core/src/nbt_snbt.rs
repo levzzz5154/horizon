@@ -112,7 +112,9 @@ impl<'a> Parser<'a> {
         let value = self.value().map_err(|error| {
             // Grammar.parseForCommands uses the first error at the furthest cursor,
             // including failures from alternatives or optional terms that backtracked.
+            // The nesting refusal is not a grammar error: it aborts the parse as is.
             if let Some((cursor, expected, values)) = self.literal_failure
+                && error.key != "arguments.nbtpath.too_deep"
                 && cursor >= error.cursor
             {
                 return SnbtError {
