@@ -447,6 +447,10 @@ fn component(message: &Value) -> Option<Value> {
 /// old one when the heartbeat cannot be rescheduled (`management::set_heartbeat_seconds`), which keeps
 /// nothing.
 fn status_heartbeat_interval(shared: &Shared, seconds: i32) -> Result<Value, Failure> {
+    let path = shared.dir.join(crate::config::PROPERTIES);
+    let stored = ServerProperties::from_file(&path, &mut SystemEntropy::default())
+        .and_then(|p| p.update("status-heartbeat-interval", seconds.to_string()))
+        .map_err(|e| (INTERNAL_ERROR, Some(e)))?;
     if !management::set_heartbeat_seconds(shared, seconds) {
         crate::supervisor::note(
             shared,
@@ -464,10 +468,6 @@ fn status_heartbeat_interval(shared: &Shared, seconds: i32) -> Result<Value, Fai
         );
         return Ok(json!(management::heartbeat_seconds(shared)));
     }
-    let path = shared.dir.join(crate::config::PROPERTIES);
-    let stored = ServerProperties::from_file(&path, &mut SystemEntropy::default())
-        .and_then(|p| p.update("status-heartbeat-interval", seconds.to_string()))
-        .map_err(|e| (INTERNAL_ERROR, Some(e)))?;
     stored
         .store(&path)
         .map_err(|e| (INTERNAL_ERROR, Some(e.to_string())))?;
@@ -1327,6 +1327,7 @@ status-heartbeat-interval=0
     #[test]
     fn heartbeat_update_does_not_replace_unreadable_properties() {
         let shared = shared();
+        assert!(management::set_heartbeat_seconds(&shared, 15));
         let toml = shared.dir.join(crate::config::FILE);
         std::fs::write(&toml, crate::config::TEMPLATE).unwrap();
         let properties = shared.dir.join(crate::config::PROPERTIES);
@@ -1334,8 +1335,9 @@ status-heartbeat-interval=0
         for target in [crate::config::PROPERTIES, "missing.properties"] {
             std::os::unix::fs::symlink(target, &properties).unwrap();
 
-            let (code, message) = status_heartbeat_interval(&shared, 30).unwrap_err();
+            let (code, message) = status_heartbeat_interval(&shared, 0).unwrap_err();
             assert_eq!(code, INTERNAL_ERROR);
+            assert_eq!(management::heartbeat_seconds(&shared), 15);
             let message = message.unwrap();
             assert!(
                 message.contains(properties.to_string_lossy().as_ref()),
