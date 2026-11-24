@@ -2440,6 +2440,7 @@ impl Entity for FallingBlock {
 
 impl Entity for Projectile {
     fn reset_fall_distance(&mut self) {
+        self.fall_distance = 0.0;
         if let Some(arrow) = self.arrow.as_deref_mut() {
             arrow.fall_distance = 0.0;
         }
