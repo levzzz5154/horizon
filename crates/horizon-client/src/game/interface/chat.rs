@@ -153,6 +153,18 @@ fn with_studio_commands(base: &Dispatcher) -> Dispatcher {
 }
 
 impl Game<'_> {
+    /// Resolve the mod policy once for the local chat, not on receipt, layout or submit.
+    pub(super) fn configure_chat_history(&mut self) {
+        let mut capacity = None;
+        self.native_chat_history_capacity(
+            horizon_client::chat::DEFAULT_HISTORY_CAPACITY,
+            &mut capacity,
+        );
+        if let Some(capacity) = capacity {
+            self.ui.chat.configure_history_capacity(capacity);
+        }
+    }
+
     /// The tree the chat box colours, completes and parses with for the
     /// world's connection: `base`, the tree the server sent, or the game's own
     /// before it does. Built where that base changes — once per connection —
@@ -316,6 +328,14 @@ pub struct UiState {
     /// F2 screenshots not written yet: each reports in chat once its PNG is.
     pub screenshot_messages: Vec<std::path::PathBuf>,
     pub screenshot_writes: Vec<super::screenshot_writer::ScreenshotWrite>,
+    /// The path a mod's `request_screenshot` queued, until its readback reaches
+    /// `save_screenshot`: that capture is written without replacing a file.
+    pub mod_screenshot: Option<std::path::PathBuf>,
+    /// Uncompressed bytes of the mod captures written this session (`request_screenshot`'s budget).
+    pub mod_screenshot_bytes: u64,
+    /// The `screenshot` hook is running: a mod's request from inside it is `Busy`.
+    /// Shared with the guard that clears it, so a listener's panic can't leave it set.
+    pub screenshot_hook: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// The options screens.
     pub options: horizon_client::options_ui::OptionsUi,
     /// The prepared resources before resource packs are layered on.
@@ -1229,6 +1249,8 @@ impl Game<'_> {
     }
     /// A key (and the text it typed) while the chat screen is open.
     pub(super) fn chat_key_code(&mut self, key: KeyCode, typed_text: Option<&str>) {
+        // Tab shows the list with what mods add to the text so far.
+        self.ask_chat_suggestions();
         // The live modifiers, not `self.keys`: every ModifiersChanged runs
         // sync_toggle, which drops ShiftLeft and ControlLeft from `self.keys`
         // while a screen is open.
@@ -1319,6 +1341,27 @@ impl Game<'_> {
                 &completion.text,
                 &completion.input,
             );
+        }
+    }
+    /// `chat_suggestions`: mods' completions for the plain chat text the box
+    /// just worked out its list for (`ChatScreen::take_chat_query`), joined to
+    /// that list. With no mod listening nothing is asked or copied.
+    fn ask_chat_suggestions(&mut self) {
+        if !mod_api::__private::listened(mod_api::HookId::ChatSuggestions) {
+            return;
+        }
+        let Some((input, cursor)) = self
+            .ui
+            .chat_screen
+            .as_mut()
+            .and_then(ChatScreen::take_chat_query)
+        else {
+            return;
+        };
+        let mut suggestions = Vec::new();
+        self.native_chat_suggestions(&input, cursor, &mut suggestions);
+        if let Some(screen) = self.ui.chat_screen.as_mut() {
+            screen.add_chat_suggestions(&input, cursor, suggestions);
         }
     }
     /// The server's completions for an `ask_server` request
@@ -1738,6 +1781,9 @@ impl Game<'_> {
         Some(horizon_protocol::crypto::uuid_string(bits))
     }
     pub(super) fn draw_chat_screen(&mut self, batch: &mut HudBatch) {
+        // A change no key was pressed after (a click, a paste, the chat opening
+        // on a draft) reaches mods by the next frame.
+        self.ask_chat_suggestions();
         self.draw_screen_phase(batch, horizon_client::screen_draw::RenderPhase::Background);
         self.gui_layer("minecraft:chat", batch, |g, batch| g.draw_chat(batch));
         let Some(mut screen) = self.ui.chat_screen.take() else {
@@ -2306,16 +2352,44 @@ impl Game<'_> {
             .into_owned();
         let mut message = None;
         let mut cancel = false;
+        let hook = super::native_screenshot_request::HookRunning::start(&self.ui.screenshot_hook);
         self.native_screenshot(
             pending.image_mut(),
             &mut file_name,
             &mut message,
             &mut cancel,
         );
+        drop(hook);
+        let by_mod = self
+            .ui
+            .mod_screenshot
+            .take_if(|path| *path == pending.path)
+            .is_some();
         if cancel {
             self.ui.screenshot_messages.remove(at);
             self.post_screenshot_chat(screenshot_cancel_line(message));
             return None;
+        }
+        if by_mod {
+            // Charged before the writer starts, at no less than the minimum, so a hook that
+            // shrinks the image can't make captures free.
+            let charge =
+                super::native_screenshot_request::mod_screenshot_charge(pending.raw_bytes());
+            if !super::native_screenshot_request::within_budget(
+                self.ui.mod_screenshot_bytes,
+                charge,
+            ) {
+                self.ui.screenshot_messages.remove(at);
+                self.post_screenshot_chat(Text::translate(
+                    "screenshot.failure",
+                    &[Text::literal(
+                        "mod screenshots have used this session's budget",
+                    )],
+                ));
+                return None;
+            }
+            pending.no_replace = true;
+            self.ui.mod_screenshot_bytes += charge;
         }
         let root = horizon_client::logging::player_dir().join("screenshots");
         self.ui

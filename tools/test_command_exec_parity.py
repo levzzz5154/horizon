@@ -30,11 +30,12 @@ import sys
 import zipfile
 
 try:
-    from . import lab, test_rust_parity as base
+    from . import fast_bins, lab, test_rust_parity as base
     from .integration_env import run_game
     from . import command_exec_corpus as corpus_module
     from . import seed_agent
 except ImportError:
+    import fast_bins
     import lab
     import seed_agent
     from integration_env import run_game
@@ -143,6 +144,7 @@ def main():
     parser.add_argument('--item-contents-fixture', action='store_true')
     parser.add_argument('--item-contents-provider-empty-control', action='store_true')
     parser.add_argument("--boat-item-hit-fixture", action="store_true")
+    parser.add_argument("--boat-void-fixture", action="store_true")
     parser.add_argument("--stand-entity-collision-fixture", action="store_true")
     parser.add_argument("--reference-only", action="store_true")
     parser.add_argument("--boat-leash-view-fixture", action="store_true")
@@ -519,6 +521,9 @@ def main():
     if args.merchant_gate_fixture:
         from merchant_gate_corpus import cases
         groups = [('setup', [corpus_module.cmd('/tick freeze', False), *corpus_module.group_setup()]), ('merchant reputation AI gate', cases())]
+    if args.boat_void_fixture:
+        from test_boat_void_parity import program as boat_void_program
+        groups = [('Boat load and void removal', boat_void_program())]
     if args.groups_file:
         # Generated scripts (tools/parity_fuzz.py): the common setup, then the file's [name, ops] groups only.
         groups = [('setup', corpus_module.group_setup()),
@@ -612,7 +617,7 @@ def main():
     if args.binary:
         binary = args.binary.resolve(strict=True)
     else:
-        run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-game', '--bin', 'horizon-client'], 'compile-rust', cwd=lab.ROOT)
+        run(fast_bins.command('horizon-client'), 'compile-rust', cwd=lab.ROOT)
         metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1'], cwd=lab.ROOT, text=True))
         binary = Path(metadata['target_directory']) / 'fast' / ('horizon-client.exe' if os.name == 'nt' else 'horizon-client')
     rust_dir = build / 'rust'
@@ -654,7 +659,7 @@ def main():
         java = json.loads((build / 'client_config.json').read_text())
         if java.get('server_view') != 2 or java.get('server_simulation') != 2 or not java.get('client_loaded'):
             sys.exit(f'Java server/client-loaded prerequisite failed: {java}')
-        if not args.merchant_gate_fixture:
+        if any(name == 'loaded ticket removal' for name, _ in groups):
             for name in ['java.log', 'rust.log']:
                 waits = re.findall(r'harness paced wait: (\d+) ticks, (\d+) ms', (build / name).read_text())
                 if len(waits) != 2 or any(int(n) != ticks or not ticks * 50 <= int(ms) <= upper
