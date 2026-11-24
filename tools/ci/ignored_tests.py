@@ -523,9 +523,13 @@ def failure_diagnostics(output):
             prefix = Path(__file__).resolve().parents[2].as_posix() + "/"
             if os.sep == "\\":
                 path = path.replace("\\", "/")
+                # std::fs::canonicalize yields verbatim \\?\C:\... paths on
+                # Windows; drop that prefix, but keep \\?\UNC\ shares foreign.
+                if path.startswith("//?/") and not path[4:].upper().startswith("UNC/"):
+                    path = path[4:]
             if path.startswith(prefix):
                 path = path[len(prefix):]
-            elif path.startswith("/") or (os.sep == "\\" and re.match(r"^[A-Za-z]:", path)):
+            elif path.startswith("/") or re.match(r"^[A-Za-z]:", path):
                 path = ""
             # Rust cross-crate source paths can contain lexical ../ segments.
             # Never resolve an untrusted path against the filesystem, and never

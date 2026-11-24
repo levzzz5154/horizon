@@ -73,6 +73,21 @@ class Budgets(unittest.TestCase):
                 self.assertNotIn('  panicked at ', log)
                 self.assertNotIn(str(root), log)
 
+    def test_windows_verbatim_location_uses_only_this_checkout_root(self):
+        # game-discovery canonicalizes #[path] declarations: \\?\C:\... on Windows.
+        root = Path(ci.__file__).resolve().parents[2]
+        path = 'crates/fixture/src/lib.rs'
+        tracked = {path: ['', '']}
+        windows = (root / path).as_posix().replace('/', '\\')
+        with patch.object(ci.os, 'sep', '\\'):
+            log = self.render(f"test safe ... FAILED\nthread 'safe' panicked at \\\\?\\{windows}:2:1:\n"
+                              "assertion failed: PRIVATE\n", tracked=tracked)
+            self.assertIn(f'panicked at {path}:2:1', log)
+            log = self.render(f"test safe ... FAILED\nthread 'safe' panicked at "
+                              f"\\\\?\\UNC\\host\\share\\{windows}:2:1:\n"
+                              "assertion failed: PRIVATE\n", tracked=tracked)
+            self.assertIn('panic location withheld', log)
+
     def test_relative_and_cross_crate_raw_panic_headers(self):
         path = 'crates/fixture/src/lib.rs'
         tracked = {path: ['', '']}
