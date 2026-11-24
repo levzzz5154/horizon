@@ -141,7 +141,7 @@ fn feature_flag_conditions_use_world_and_reload_features_for_recipes_and_carvers
 
     crate::game::native_entity_refs::tests::with_game(|game| {
         let selected = horizon_mod_package::selection::SelectedPackage {
-            package: horizon_mod_package::Package::read(&module).unwrap(),
+            package: std::sync::Arc::new(horizon_mod_package::Package::read(&module).unwrap()),
             path: module.clone(),
         };
         game.mods.selected = vec![selected].into();

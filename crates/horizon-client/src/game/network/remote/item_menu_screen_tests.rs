@@ -150,7 +150,7 @@ fn content_root(package: &Path) -> PathBuf {
     let base = PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
     let selected = horizon_mod_package::selection::SelectedPackage {
         path: package.to_owned(),
-        package: horizon_mod_package::Package::read(package).unwrap(),
+        package: Arc::new(horizon_mod_package::Package::read(package).unwrap()),
     };
     let sources = crate::game::mods::ModsState {
         dev: vec![package.to_owned()],
