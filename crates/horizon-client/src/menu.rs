@@ -1736,7 +1736,11 @@ impl Menu {
             self.vanilla_may_place(env, s, stack),
             self.vanilla_slot_max(s, stack),
         );
-        if allowed { self.limit_slot_max(s, max) } else { 0 }
+        if allowed {
+            self.limit_slot_max(s, max)
+        } else {
+            0
+        }
     }
 
     /// `Slot.mayPickup`: whether slot `s` gives up what it holds.

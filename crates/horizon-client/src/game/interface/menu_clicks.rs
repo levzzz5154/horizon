@@ -227,6 +227,16 @@ impl Game<'_> {
         let kind = self.screen_menu_kind()?;
         let mut menu = self.screen_menu_model(kind);
         (slot < menu.slot_count()).then_some(())?;
+        // A mod screen's hidden slots (`native_screen_slots`) are not in the
+        // menu the server keeps either: nothing can go there.
+        if let horizon_client::menu::Kind::Mod(_) = kind
+            && let Some(internal) = i32::try_from(slot)
+                .ok()
+                .and_then(|s| Self::inventory_screen_slot(name, s))
+            && !self.slots().contains(&internal)
+        {
+            menu.hide_slot(slot);
+        }
         if kind == horizon_client::menu::Kind::CrafterBlock
             && let Some(BlockEntity::Crafter(c)) = self.container_kind()
         {
