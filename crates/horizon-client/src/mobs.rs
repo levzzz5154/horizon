@@ -2094,10 +2094,15 @@ pub enum MobEvent {
         source: Damage,
         apply_blocking: Option<f32>,
     },
-    /// Set another mob's attack target (HurtByTargetGoal alerts).
+    /// Set another mob's attack target (`HurtByTargetGoal.alertOthers`,
+    /// `PiglinAi.broadcastAngerTarget`): `mob` takes the alerting mob's attacker.
+    /// For a `Who::Player` target, `player` is the connection the alerting mob
+    /// saw as it sent the event (vanilla hands over the entity itself), not the
+    /// one nearest `mob`; `None` is the host. Its tick fills it in.
     SetTarget {
         mob: u32,
         target: Who,
+        player: Option<u32>,
     },
     PiglinAlertTarget(undead::PiglinAlert),
     /// `HoglinAi.broadcastAttackTarget`: receiver and source player connection.
@@ -2599,7 +2604,8 @@ impl MobEvent {
             | Self::StabDismount { target }
             | Self::Ignite(target, _)
             | Self::ZombieIgnite(target, _)
-            | Self::IronGolemHit { target, .. } => *target == Who::Player,
+            | Self::IronGolemHit { target, .. }
+            | Self::SetTarget { target, .. } => *target == Who::Player,
             Self::Projectile(projectile) => matches!(
                 &projectile.kind,
                 crate::projectiles::ProjectileKind::ShulkerBullet {
@@ -4809,6 +4815,7 @@ impl Mob {
         crate::hunger::native_living_heal(context, self.id, &mut amount, &mut cancel);
         if !cancel && self.health > 0.0 {
             self.health = (self.health + amount).clamp(0.0, self.attrs.max_health);
+            crate::hunger::native_living_heal_cause(context, self.id, "other", amount);
         }
     }
     /// `HealOrHarmMobEffect.applyInstantenousEffect`: a harming effect hurts a
