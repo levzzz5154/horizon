@@ -1,11 +1,14 @@
 //! Stage the sprites of mod-registered texture atlases (`register_texture_atlases`) into a
-//! client resource generation, as GUI textures under each sprite's `sprite_name`.
+//! client resource generation, as GUI textures under each sprite's `sprite_name`, and run
+//! mod-registered sprite sources (`register_sprite_sources`) for the built-in `minecraft:blocks`
+//! and `minecraft:items` atlases.
 use super::Game;
 use horizon_assets::resource_source::{Resource, ResourceRoot, ResourceSource};
-use horizon_client::atlas_sources::{self, SpriteOrigin};
+use horizon_client::atlas_sources::{self, SpriteOrigin, SpriteSource};
+use horizon_client_render::mod_sprite_sources::{self, SourceResourceReader};
 use mod_api::__private::game::*;
 use mod_api::{Identifier, TextureAtlasRegistration};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Atlases one load accepts, across all mods.
 const MAX_ATLASES: usize = 32;
@@ -22,20 +25,28 @@ pub(in crate::game) fn collect_texture_atlases() -> Vec<TextureAtlasRegistration
     atlases
 }
 
-/// The root with every registered atlas's sprites added as GUI textures: a file sprite as the
-/// texture itself (with its `.mcmeta`), a generated one (`unstitch`, `paletted_permutations`)
-/// encoded once. The runtime block sprites and passive data stay as they were.
+/// The root with every registered atlas's sprites added as GUI textures and any mod-registered
+/// sprite sources in the built-in `minecraft:blocks` and `minecraft:items` atlases applied: a file
+/// sprite as the texture itself (with its `.mcmeta`), a generated one (`unstitch`,
+/// `paletted_permutations`, or a mod's `Pixels`) encoded once, and `Remove` dropping the listed
+/// sprite from the built-in atlas layer. The runtime block sprites and passive data stay as they
+/// were, with added `minecraft:blocks` mod sprites appended so they stitch even when no baked
+/// model names them.
 pub(in crate::game) fn stage_texture_atlases(
     root: ResourceRoot,
     atlases: &[TextureAtlasRegistration],
 ) -> ResourceRoot {
-    if atlases.is_empty() {
+    let has_mod_sources = mod_sprite_sources::has_registered();
+    if atlases.is_empty() && !has_mod_sources {
         return root;
     }
     let source = root.source();
     let mut textures = atlas_sources::list_textures(source);
     textures.sort_unstable();
+    let reader = SourceResourceReader::new(source);
     let mut files = BTreeMap::new();
+    let mut removed = BTreeSet::new();
+    let mut blocks = root.runtime_block_sprites().to_vec();
     let mut seen = Vec::new();
     let mut sprites = 0;
     for registration in atlases {
@@ -57,7 +68,7 @@ pub(in crate::game) fn stage_texture_atlases(
             }
         };
         seen.push(atlas.clone());
-        let mut ask = horizon_client_render::mod_sprite_sources::ask(atlas);
+        let mut ask = mod_sprite_sources::ask_with_resources(atlas, &reader);
         for (id, origin) in atlas_sources::list(&sources, &textures, &mut ask) {
             if sprites == MAX_SPRITES {
                 log::warn!("Horizon: texture atlas {atlas}: sprites past {MAX_SPRITES} skipped");
@@ -78,8 +89,93 @@ pub(in crate::game) fn stage_texture_atlases(
             }
         }
     }
-    let blocks = root.runtime_block_sprites().to_vec();
-    root.with_runtime_textures(files, blocks)
+    if has_mod_sources {
+        stage_builtin_atlases(
+            source,
+            &textures,
+            &reader,
+            &mut files,
+            &mut removed,
+            &mut blocks,
+            &mut sprites,
+        );
+    }
+    root.with_runtime_texture_changes(files, &removed, blocks)
+}
+
+/// Run mod-registered sprite sources listed in the built-in `minecraft:blocks` and
+/// `minecraft:items` atlas definitions, staging their added/replaced sprites and removing sprites
+/// dropped by `SpriteSourceOutput::Remove`.
+fn stage_builtin_atlases(
+    source: &ResourceSource,
+    textures: &[String],
+    reader: &SourceResourceReader<'_>,
+    files: &mut BTreeMap<String, Resource>,
+    removed: &mut BTreeSet<String>,
+    blocks: &mut Vec<String>,
+    sprites: &mut usize,
+) {
+    for (atlas_name, is_blocks) in [("minecraft:blocks", true), ("minecraft:items", false)] {
+        let Ok(atlas) = Identifier::parse(atlas_name) else {
+            continue;
+        };
+        let file = definition_file(&atlas);
+        let Ok(text) = source.read_to_string(&file) else {
+            continue;
+        };
+        let sources = match atlas_sources::decode(&text) {
+            Ok(sources) => sources,
+            Err(error) => {
+                log::warn!("Horizon: built-in atlas {atlas} skipped mod sources: {file}: {error}");
+                continue;
+            }
+        };
+        if !sources
+            .iter()
+            .any(|entry| matches!(entry, SpriteSource::Registered { .. }))
+        {
+            continue;
+        }
+        let baseline = atlas_sources::list(&sources, textures, &mut atlas_sources::unasked);
+        let mut ask = mod_sprite_sources::ask_with_resources(&atlas, reader);
+        let resolved = atlas_sources::list(&sources, textures, &mut ask);
+        for id in baseline.keys() {
+            if !resolved.contains_key(id) {
+                let path = atlas_sources::texture_resource(id, "textures");
+                files.remove(&path);
+                files.remove(&format!("{path}.mcmeta"));
+                removed.insert(format!("{path}.mcmeta"));
+                removed.insert(path);
+                if is_blocks {
+                    blocks.retain(|entry| entry != id);
+                }
+            }
+        }
+        for (id, origin) in &resolved {
+            let changed = match baseline.get(id) {
+                Some(before) => before != origin,
+                None => true,
+            };
+            if !changed {
+                continue;
+            }
+            if *sprites == MAX_SPRITES {
+                log::warn!("Horizon: texture atlas {atlas}: sprites past {MAX_SPRITES} skipped");
+                break;
+            }
+            let path = atlas_sources::texture_resource(id, "textures");
+            if stage_sprite(source, origin, &path, files) {
+                removed.remove(&path);
+                removed.remove(&format!("{path}.mcmeta"));
+                if is_blocks && !blocks.iter().any(|entry| entry == id) {
+                    blocks.push(id.clone());
+                }
+                *sprites += 1;
+            } else {
+                log::warn!("Horizon: texture atlas {atlas}: sprite {id} could not be loaded");
+            }
+        }
+    }
 }
 
 fn admit(registration: &TextureAtlasRegistration, seen: &[Identifier]) -> Result<(), &'static str> {
@@ -565,6 +661,164 @@ mod tests {
             let unanswered = stage(40);
             assert!(!unanswered.source().contains(&checker));
             assert!(unanswered.source().contains(&star) && unanswered.source().contains(&heart));
+        });
+    }
+
+    struct BuiltinAtlasReaderMod;
+    #[mod_api::__subscriptions]
+    impl mod_api::Hooks for BuiltinAtlasReaderMod {
+        fn register_sprite_sources(
+            &self,
+            _: &mod_api::RegistrationContext,
+            event: &mut mod_api::RegisterSpriteSourcesEvent<'_>,
+        ) {
+            event.sources.push("builtin_mod:from_reader".into());
+        }
+
+        fn sprite_source_read(
+            &self,
+            _: &mod_api::RegistrationContext,
+            event: &mut mod_api::SpriteSourceReadEvent<'_>,
+        ) {
+            if event.source != "builtin_mod:from_reader" {
+                return;
+            }
+            let shade = event
+                .resources
+                .read(&Identifier::parse("builtin_mod:custom/shade.bin").unwrap())
+                .and_then(|bytes| bytes.first().copied())
+                .unwrap_or(0);
+            let stack_len = event
+                .resources
+                .read_stack(&Identifier::parse("builtin_mod:custom/shade.bin").unwrap())
+                .len() as u8;
+            if event.atlas.to_string() == "minecraft:blocks" {
+                event.output.push(mod_api::SpriteSourceOutput::Pixels {
+                    sprite: Identifier::parse("builtin_mod:block/generated").unwrap(),
+                    width: 1,
+                    height: 1,
+                    rgba: vec![shade, stack_len, 0, 255],
+                });
+                event.output.push(mod_api::SpriteSourceOutput::Remove {
+                    sprite: Identifier::parse("builtin_mod:block/dropped").unwrap(),
+                });
+            } else if event.atlas.to_string() == "minecraft:items" {
+                let listed = event.resources.list("textures/item/", ".png");
+                if listed.contains(&Identifier::parse("builtin_mod:textures/item/base.png").unwrap())
+                {
+                    event.output.push(mod_api::SpriteSourceOutput::Texture {
+                        sprite: Identifier::parse("builtin_mod:item/aliased").unwrap(),
+                        texture: Identifier::parse("builtin_mod:item/base").unwrap(),
+                    });
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn builtin_blocks_and_items_atlases_run_mod_sprite_sources_with_scoped_reader() {
+        let blocks_def = r#"{"sources":[
+            {"type":"directory","source":"block","prefix":"block/"},
+            {"type":"builtin_mod:from_reader"}
+        ]}"#;
+        let items_def = r#"{"sources":[
+            {"type":"directory","source":"item","prefix":"item/"},
+            {"type":"builtin_mod:from_reader"}
+        ]}"#;
+        let base_item = fixture_png(2, 2, 123);
+        let base_layer = ResourceSource::indexed(BTreeMap::from([
+            (
+                "assets/builtin_mod/custom/shade.bin".into(),
+                Resource::bytes(vec![11]),
+            ),
+            (
+                "assets/builtin_mod/textures/block/dropped.png".into(),
+                Resource::bytes(fixture_png(2, 2, 5)),
+            ),
+            (
+                "assets/builtin_mod/textures/item/base.png".into(),
+                Resource::bytes(base_item.clone()),
+            ),
+        ]));
+        let layered = ResourceSource::layered(
+            BTreeMap::from([
+                (
+                    "assets/minecraft/atlases/blocks.json".into(),
+                    Resource::bytes(blocks_def.as_bytes().to_vec()),
+                ),
+                (
+                    "assets/minecraft/atlases/items.json".into(),
+                    Resource::bytes(items_def.as_bytes().to_vec()),
+                ),
+                (
+                    "assets/builtin_mod/custom/shade.bin".into(),
+                    Resource::bytes(vec![77]),
+                ),
+                (
+                    "assets/builtin_mod/textures/block/dropped.png".into(),
+                    Resource::file(
+                        base_layer.clone(),
+                        "assets/builtin_mod/textures/block/dropped.png".into(),
+                    ),
+                ),
+                (
+                    "assets/builtin_mod/textures/item/base.png".into(),
+                    Resource::file(
+                        base_layer.clone(),
+                        "assets/builtin_mod/textures/item/base.png".into(),
+                    ),
+                ),
+            ]),
+            base_layer,
+        );
+        let input = ResourceRoot::new("prepared".into(), "cache".into(), layered);
+        let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+            "builtin_mod",
+            Box::new(BuiltinAtlasReaderMod),
+        )]
+        .into();
+        mod_platform::testing::with_mods(mods, || {
+            let mut types = Vec::new();
+            Game::native_register_sprite_sources(&mod_api::RegistrationContext::new(), &mut types);
+            horizon_client_render::mod_sprite_sources::register(types);
+
+            let staged = stage_texture_atlases(input, &[]);
+            let gen_bytes = staged
+                .source()
+                .read("assets/builtin_mod/textures/block/generated.png")
+                .expect("blocks atlas generated sprite staged");
+            assert_eq!(
+                horizon_client::hud::decode_bytes(&gen_bytes).unwrap(),
+                (1, 1, vec![77, 2, 0, 255]),
+                "reader saw winning byte 77 and 2-layer stack"
+            );
+            assert!(
+                staged
+                    .runtime_block_sprites()
+                    .iter()
+                    .any(|id| id == "builtin_mod:block/generated"),
+                "blocks atlas sprite is stitched into runtime_block_sprites"
+            );
+            assert!(
+                !staged
+                    .source()
+                    .contains("assets/builtin_mod/textures/block/dropped.png"),
+                "SpriteSourceOutput::Remove dropped the listed block sprite"
+            );
+            assert_eq!(
+                staged
+                    .source()
+                    .read("assets/builtin_mod/textures/item/aliased.png")
+                    .expect("items atlas aliased sprite staged"),
+                base_item
+            );
+            assert!(
+                !staged
+                    .runtime_block_sprites()
+                    .iter()
+                    .any(|id| id == "builtin_mod:item/aliased"),
+                "items atlas sprite does not pollute runtime_block_sprites"
+            );
         });
     }
 }

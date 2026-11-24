@@ -37,3 +37,20 @@ pub enum SpriteSourceOutput {
         sprite: Identifier,
     },
 }
+
+/// Scoped read-only view of the client's active resource packs handed to a mod's sprite source
+/// during atlas loading (`sprite_source_read`). Every identifier maps to `assets/<namespace>/<path>`
+/// (for example, `mymod:textures/item/gem.png` reads `assets/mymod/textures/item/gem.png`).
+///
+/// Valid only for the duration of the callback; on wasm it is backed by a scoped host frame that is
+/// invalidated when the hook returns.
+pub trait ResourceReader {
+    /// Winning bytes of `assets/<namespace>/<path>`, or `None` if absent or unreadable.
+    fn read(&self, id: &Identifier) -> Option<Vec<u8>>;
+    /// Every pack's bytes for `assets/<namespace>/<path>`, lowest priority first (matching
+    /// vanilla's `ResourceManager.getResourceStack`). Empty when absent.
+    fn read_stack(&self, id: &Identifier) -> Vec<Vec<u8>>;
+    /// Asset identifiers under `assets/<namespace>/<path>` whose path starts with `prefix` and ends
+    /// with `suffix`, in deterministic sorted order.
+    fn list(&self, prefix: &str, suffix: &str) -> Vec<Identifier>;
+}

@@ -171,11 +171,24 @@ impl ResourceRoot {
     /// Add generated client textures as the highest asset layer, keeping the
     /// prepared tables and passive server data on their original sources.
     pub fn with_runtime_textures(
-        mut self,
+        self,
         textures: BTreeMap<String, Resource>,
         block_sprites: Vec<String>,
     ) -> Self {
-        if textures.is_empty() {
+        self.with_runtime_texture_changes(textures, &BTreeSet::new(), block_sprites)
+    }
+    /// Apply generated client texture additions and removals as the highest asset layer, keeping
+    /// the prepared tables and passive server data on their original sources.
+    pub fn with_runtime_texture_changes(
+        mut self,
+        textures: BTreeMap<String, Resource>,
+        removed: &BTreeSet<String>,
+        block_sprites: Vec<String>,
+    ) -> Self {
+        if textures.is_empty()
+            && removed.is_empty()
+            && block_sprites == self.0.runtime_block_sprites
+        {
             return self;
         }
         let root = Arc::make_mut(&mut self.0);
@@ -183,6 +196,7 @@ impl ResourceRoot {
         let mut files: BTreeMap<_, _> = source
             .list("")
             .into_iter()
+            .filter(|name| !removed.contains(name))
             .map(|name| (name.clone(), Resource::file(source.clone(), name)))
             .collect();
         // The generated layer sits over the same resolved files, whose own
@@ -456,6 +470,34 @@ impl ResourceSource {
     pub fn read_to_string(&self, name: &str) -> io::Result<String> {
         String::from_utf8(self.read(name)?)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    }
+    /// Every layer's copy of `name`, lowest priority first (matching vanilla's
+    /// `ResourceManager.getResourceStack`). Pass-through entries that forward directly to the
+    /// underlay without replacing it are not duplicated.
+    pub fn read_stack(&self, name: &str) -> Vec<Vec<u8>> {
+        if !stays_inside(name) {
+            return Vec::new();
+        }
+        match self.0.as_ref() {
+            Storage::Index(files, base) => {
+                let mut stack = base
+                    .as_ref()
+                    .map_or_else(Vec::new, |underlay| underlay.read_stack(name));
+                if let Some(resource) = files.get(name) {
+                    let forwards_underlay = matches!(
+                        &resource.0,
+                        ResourceStorage::File { source, name: target }
+                            if target == name
+                                && base.as_ref().is_some_and(|underlay| underlay.same_generation(source))
+                    );
+                    if !forwards_underlay && let Ok(bytes) = resource.read() {
+                        stack.push(bytes);
+                    }
+                }
+                stack
+            }
+            _ => self.read(name).ok().into_iter().collect(),
+        }
     }
     /// At most the first `max` bytes, for image headers and other bounded probes.
     pub fn read_head(&self, name: &str, max: u64) -> io::Result<Vec<u8>> {
