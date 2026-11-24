@@ -66,10 +66,6 @@ pub(super) struct Group<M: MobSlot> {
     pub corpses: Vec<Mob>,
     pub gone: Vec<Gone>,
     pub guest_events: Vec<(u32, u32, MobEvent)>,
-    /// The turns that ran while native mods were loaded, by their place in the whole list
-    /// (`mob_islands::Foreign::defers`). Nothing replays a turn's hooks at the join, so the loop
-    /// stays serial with mods loaded and this stays empty.
-    pub deferred: Vec<usize>,
     /// Whether each turn draws its level-random rolls from a stream of its own, so that it waits
     /// for no other lane (`parallel::mobs_own_random`, read once where the group is made).
     own_random: bool,
@@ -161,7 +157,6 @@ impl<M: MobSlot> Group<M> {
             corpses: Vec::new(),
             gone: Vec::new(),
             guest_events: Vec::new(),
-            deferred: Vec::new(),
             own_random: own_random(),
         }
     }
@@ -199,9 +194,6 @@ impl<M: MobSlot> Group<M> {
                 foreign.reader.set(at);
             }
             if let Some(foreign) = foreign {
-                if foreign.defers {
-                    self.deferred.push(at);
-                }
                 foreign.in_seed_order(at, || {
                     self.turn(i, turns, shared);
                 });
