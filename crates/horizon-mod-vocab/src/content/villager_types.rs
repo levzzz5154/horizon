@@ -18,6 +18,19 @@ pub struct VillagerTypeDefinition {
     pub zombie_villager_texture: Identifier,
 }
 
+impl VillagerTypeDefinition {
+    /// A type with its two clothing textures and no biome selectors yet.
+    pub fn new(key: Identifier, villager_texture: Identifier, zombie_villager_texture: Identifier) -> Self {
+        Self {
+            key,
+            biomes: Vec::new(),
+            biome_tags: Vec::new(),
+            villager_texture,
+            zombie_villager_texture,
+        }
+    }
+}
+
 /// Load-scoped villager type registrar. The calling mod is recorded as owner.
 pub trait VillagerTypes {
     /// Declare a type for validation with the rest of the candidate registry.

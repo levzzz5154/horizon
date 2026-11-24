@@ -51,3 +51,4 @@ horizon_client::game::banners::Game<'_>::banner_layers_at  #20193
 horizon_client::game::banners::layer_textures  #20193
 horizon_client::game::native_shaders::manifest_refused  #20601
 horizon_client::game::shader_packs::block_id_table  #20601
+horizon_client::game::native_merchant_refs::registry_index  #19382
