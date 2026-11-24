@@ -234,6 +234,8 @@ struct DrawPlayer<'a, 'g> {
     /// The body as it is drawn, posed on the first `bone`.
     body: Option<PooledPoses>,
     poses: PooledPoses,
+    /// What the caller adds to every submitted vertex afterwards: `Light::AtPlace` reads there.
+    offset: glam::Vec3,
 }
 
 impl DrawPlayer<'_, '_> {
@@ -247,7 +249,7 @@ impl DrawPlayer<'_, '_> {
         match light {
             Light::Full => FULL,
             Light::AtPlace => {
-                let p = (self.camera + at.as_dvec3()).floor();
+                let p = (self.camera + (at + self.offset).as_dvec3()).floor();
                 let l = self.game.world.light(p.x as i32, p.y as i32, p.z as i32);
                 (u32::from(l >> 4) * 16) | ((u32::from(l & 15) * 16) << 8)
             }
@@ -436,6 +438,7 @@ impl Game<'_> {
             bounds: None,
             body: None,
             poses: Poses::pooled(),
+            offset: glam::Vec3::ZERO,
         };
         engine::player_layers(&model, &mut draw);
         draw.bounds
@@ -478,6 +481,7 @@ impl Game<'_> {
             bounds: None,
             body: None,
             poses: Poses::pooled(),
+            offset,
         };
         engine::player_layers(&model, &mut draw);
         if let Some(see_through_start) = see_through_start {
@@ -521,6 +525,7 @@ impl Game<'_> {
                 bounds: None,
                 body: None,
                 poses: Poses::pooled(),
+                offset: glam::Vec3::ZERO,
             };
             engine::first_person(&own, &mut draw);
         }
