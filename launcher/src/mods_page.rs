@@ -1529,7 +1529,10 @@ impl Launcher {
         let plays = self
             .selected_instance()
             .and_then(|i| self.version_of(i))
-            .cloned();
+            .map(|tag| match crate::native_mods::revision_of(tag) {
+                Ok(rev) => format!("{tag}@{rev}"),
+                Err(_) => tag.clone(),
+            });
         if self.mods.loaded
             && !target_changed
             && self.mods.java.is_none()
