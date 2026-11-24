@@ -99,7 +99,7 @@ The guide supplies the initial fields in a `SceneBlockEntity` and the block stat
 belongs to. It doesn't register or call the other mod's ticker or renderer itself:
 
 ```rust
-use mod_api::{Identifier, ModBlockEntityFields, Scene, SceneBlock, SceneBlockEntity, SceneClock};
+use mod_api::{Identifier, Scene, SceneBlock, SceneBlockEntity, SceneClock, item::containers::ModBlockEntityFields};
 
 let mut fields = ModBlockEntityFields::default();
 fields.data.push(0);

@@ -7,7 +7,7 @@ impl Game<'_> {
         pos: [i32; 3],
         state: BlockStateId,
         tick: u64,
-        fields: &mut mod_api::ModBlockEntityFields,
+        fields: &mut mod_api::item::containers::ModBlockEntityFields,
     ) {
         Self::fire_block_entity_scene_tick(kind, pos, state, tick, fields);
     }
