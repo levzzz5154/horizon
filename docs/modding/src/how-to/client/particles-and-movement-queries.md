@@ -71,8 +71,9 @@ For held-item effects, `host.living(player.entity()).and_then(|p| p.hand_item(ho
 reads the local stack. Distinguish real enchantments from a forced glint by checking for
 a nonempty `minecraft:enchantments` compound via `ItemResource::of(&stack).value(host, &component_id)`.
 
-Use `client_living_hurt` for one trigger per received damage notice, not a tick-polled
-hurt timer. The event has `entity`, `causing_entity`, and `direct_entity`. Some sources
+Use `client_living_hurt` for one trigger per received damage notice for a tracked living
+victim (player, mob, or dragon), not a tick-polled hurt timer. The event has `entity`,
+`causing_entity`, and `direct_entity`. Some sources
 are absent or not tracked by the client; skip them if the effect needs an attacker.
 For a local-attacker effect compare `causing_entity` with the local player's `EntityRef`
 and use the local hand read above. The event is not a server damage log and cannot
