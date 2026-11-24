@@ -67,7 +67,7 @@ impl<'a, 'b> SceneBlocks<'a, 'b> {
             let rotation = Quat::from_euler(EulerRot::ZYX, z, y, x);
             let transform = Affine3A::from_rotation_translation(
                 rotation,
-                translation + pivot - rotation * pivot,
+                translation + (pivot - rotation * pivot),
             );
             if !transform.is_finite() {
                 return Err(invalid);
