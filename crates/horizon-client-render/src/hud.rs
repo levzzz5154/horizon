@@ -117,6 +117,9 @@ pub struct HudAtlas {
     /// The packs' `core/sky` and `core/stars`, when a pack replaces them.
     pub sky_shader: Option<std::sync::Arc<crate::core_shader::CoreProgram>>,
     pub stars_shader: Option<std::sync::Arc<crate::core_shader::CoreProgram>>,
+    /// The packs' `core/lightmap`, which draws the lightmap texture in place of the CPU
+    /// formula (`RenderPipelines.LIGHTMAP`).
+    pub lightmap_shader: Option<std::sync::Arc<crate::core_shader::CoreProgram>>,
     /// The packs' `core/position_tex_color` (`RenderPipelines.GUI_TEXTURED`), when a pack
     /// replaces it: [`HudBatch::pack_blit`] draws the menu textures with it.
     pub blit_shader: Option<std::sync::Arc<crate::core_shader::CoreProgram>>,
@@ -1105,6 +1108,7 @@ impl HudAtlas {
             lines_shader: None,
             sky_shader: None,
             stars_shader: None,
+            lightmap_shader: None,
             blit_shader: None,
             sprite_modifiers: Default::default(),
             random_textures: Default::default(),
@@ -1175,6 +1179,7 @@ impl HudAtlas {
             lines_shader: None,
             sky_shader: None,
             stars_shader: None,
+            lightmap_shader: None,
             blit_shader: None,
             sprite_modifiers: Default::default(),
             random_textures: Default::default(),
@@ -1797,6 +1802,7 @@ impl HudAtlas {
             lines_shader: None,
             sky_shader: None,
             stars_shader: None,
+            lightmap_shader: None,
             blit_shader: None,
             sprite_modifiers: Default::default(),
             random_textures,
@@ -1952,6 +1958,8 @@ pub struct HudBatch {
     pub blur_at: u32,
     /// Player object profiles encountered while painting text this frame.
     pub inline_profiles: Vec<std::sync::Arc<serde_json::Value>>,
+    /// The stock HUD's hotbar origin while that layer is drawing and in its post hooks.
+    pub stock_hotbar_origin: Option<[f32; 2]>,
 }
 /// How a run of HUD vertices blends and tests depth.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -2099,6 +2107,7 @@ impl HudBatch {
             game_time: 0.0,
             blur_at: 0,
             inline_profiles: Vec::new(),
+            stock_hotbar_origin: None,
         }
     }
     /// Clear all geometry and per-frame state for reuse with `window` and `inputs`,
@@ -2123,6 +2132,7 @@ impl HudBatch {
         self.game_time = 0.0;
         self.blur_at = 0;
         self.inline_profiles.clear();
+        self.stock_hotbar_origin = None;
     }
     /// Draw the vertices added since `start` with the inverting blend.
     pub fn invert_since(&mut self, start: usize) {
@@ -6479,6 +6489,7 @@ texture=wide",
                 game_time: 0.0,
                 blur_at: 0,
                 inline_profiles: Vec::new(),
+                stock_hotbar_origin: None,
             };
             for (image_width, image_height) in [(195, 136), (176, 166), (176, 222)] {
                 assert_eq!(
@@ -6522,6 +6533,7 @@ texture=wide",
             game_time: 0.0,
             blur_at: 0,
             inline_profiles: Vec::new(),
+            stock_hotbar_origin: None,
         };
         assert_eq!(literal.width, 320.0);
 

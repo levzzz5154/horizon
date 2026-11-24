@@ -961,6 +961,9 @@ struct Game<'a> {
     streaming: Streaming,
     lod: Option<horizon_client::lod::Lod>,
     lod_source_attempted: bool,
+    /// Whether the next far terrain created should arm its world-entry
+    /// first-load hold (`Lod::arm_first_load`).
+    lod_first_load: bool,
     lod_observe: horizon_client::fast_hash::FxHashSet<(i32, i32)>,
     /// The server level far terrain keeps the chunks of.
     lod_level: Option<String>,
@@ -1340,6 +1343,9 @@ struct Game<'a> {
     /// The save a native mod asked the title to open (`request_world`), taken by the title's next frame, which
     /// asks the player first.
     native_world_request: Option<native_world_request::Request>,
+    /// What a native mod's own title page asked for (`request_title`), run by the title's next frame as the main
+    /// page's button would run it.
+    native_title_request: Option<mod_api::TitleRequest>,
     /// Armor slots: head, chest, legs, feet.
     armor: [Option<ItemStack>; 4],
     /// The off hand (Inventory slot 40, saved as slot 150; menu slot 504 here).
@@ -1704,7 +1710,7 @@ struct Game<'a> {
     /// The mod whose own screen is open (`Screen::Mod`).
     native_mod_screen: Option<String>,
     /// Meshed sections waiting for an upload budget (Horizon settings).
-    pending_uploads: Vec<((i32, i32, i32), horizon_client::mesher::SectionMesh)>,
+    pending_uploads: horizon_client::streaming::PendingUploads,
     upload_pace: upload_pace::UploadPace,
     /// This frame's view frustum, for culling entities and block entities.
     view_frustum: Option<horizon_client::gfx::JoinedFrusta>,
@@ -3150,7 +3156,12 @@ impl Game<'_> {
                 .iter()
                 .filter(|g| h.hub.here(g))
                 .filter(|g| !g.is_fake()) // fake players hold small forced tickets below
-                .map(|g| (g.ticket_chunk(), g.spectator()))
+                // A mod's view centre loads around it as around the player, who keeps their own
+                // chunks loaded where they stand (`Hub::set_view_center`).
+                .flat_map(|g| {
+                    std::iter::once((g.ticket_chunk(), g.spectator()))
+                        .chain(g.view_center.map(|c| (c, g.spectator())))
+                })
                 .collect()
         });
         if let Some(p) = &self.player {
@@ -4809,12 +4820,15 @@ impl Game<'_> {
             + self.clock.fraction() as f32)
             / 24000.0;
         let (w, h) = (batch.width, batch.height);
+        // DialogScreen keeps its previous screen for closing, but only the
+        // active screen is rendered by Gui.extractRenderState.
+        let dialog = self.dialog_open();
         // HDR calibration ends when its page does, whatever moved the screen
         // off Options (a death screen opened by a server, say).
         if self.screen != Screen::Options && self.ui.options.calibration_window.is_some() {
             self.show_calibration((w, h));
         }
-        if self.screen == Screen::Win {
+        if !dialog && self.screen == Screen::Win {
             let drawn = self.draw_screen_with_pre_hook(batch);
             if drawn {
                 self.draw_win_screen(batch);
@@ -4824,7 +4838,7 @@ impl Game<'_> {
             self.draw_screen_with_post_hook(batch);
             return;
         }
-        if self.screen == Screen::Options {
+        if !dialog && self.screen == Screen::Options {
             if self.title.is_none() {
                 self.flush_skin_slots();
                 self.update_remote_skins();
@@ -4877,6 +4891,16 @@ impl Game<'_> {
             // resource-reload failure still shows on the title (#4428).
             let drawn = self.draw_title_screen_with_pre_hook(batch);
             if drawn && let Some(title) = &self.title {
+                let mut decorate = |row: horizon_client::multiplayer::SavedServerRow<'_>,
+                                    batch: &mut HudBatch| {
+                    self.decorate_server_row(row, batch)
+                };
+                let decorate =
+                    (mod_api::__private::listened(mod_api::HookId::ServerListRowDecorations)
+                        && self.title_screen_render_uncovered())
+                    .then_some(
+                        &mut decorate as &mut horizon_client::multiplayer::DecorateServerRow<'_>,
+                    );
                 title.draw_with_items(
                     &self.gui.atlas,
                     Some(&self.pack.item_renderer),
@@ -4885,6 +4909,7 @@ impl Game<'_> {
                     self.settings.file.bool("hideSplashTexts"),
                     self.settings.file.bool("hideServerAddress"),
                     &mut |phase, batch| self.draw_screen_phase(batch, phase),
+                    decorate,
                 );
             }
             // ScreenEvent.Render.Post over the title's own screens: a mod draws
@@ -4922,7 +4947,7 @@ impl Game<'_> {
         // rest of the HUD.
         let subtitles = subtitles(
             show_hud,
-            in_game_ui(self.screen, self.book.is_some() || self.sign_edit.is_some()),
+            !dialog && in_game_ui(self.screen, self.book.is_some() || self.sign_edit.is_some()),
         );
         // The mods' layers (`register_gui_layers`) draw among vanilla's while the HUD shows.
         self.hud_layer_next = show_hud.then_some(0);
@@ -5005,6 +5030,8 @@ impl Game<'_> {
                     };
                     draws.clear();
                     hud_layout::hotbar_into(wi, hi, &inputs, &mut draws);
+                    batch.stock_hotbar_origin =
+                        Some(hud_layout::hotbar_origin(wi, hi).map(|v| v as f32));
                     hud_layout::paint_with_scratch(batch, &g.gui.atlas, &draws, &mut glyph_scratch);
                     for d in &draws {
                         if let hud_layout::GuiDraw::Item { slot, x, y, .. } = *d {
@@ -5020,6 +5047,7 @@ impl Game<'_> {
                     }
                 }
             });
+            batch.stock_hotbar_origin = None;
             self.gui_layer("minecraft:effects", batch, |g, batch| {
                 // The PvP & HUD effects widget takes the icons' place.
                 if !g.pvp_effects_shown() {
@@ -5091,8 +5119,11 @@ impl Game<'_> {
                 let health_draws: &[hud_layout::GuiDraw] = match &native_health_hud {
                     Some(native) => native.as_slice(),
                     None => {
+                        let mut blink = self.health_hud.heart_blink(inputs.tick);
+                        self.native_heart_blink(&mut blink);
                         draws.clear();
-                        self.health_hud.layout_into(&inputs, wi, hi, &mut draws);
+                        self.health_hud
+                            .layout_into_with_heart_blink(&inputs, wi, hi, blink, &mut draws);
                         draws.as_slice()
                     }
                 };
@@ -5240,7 +5271,7 @@ impl Game<'_> {
         } else {
             self.screen
         };
-        let drawn = self.draw_screen_with_pre_hook(batch);
+        let drawn = !dialog && self.draw_screen_with_pre_hook(batch);
         match screen {
             _ if !drawn => {}
             Screen::Paused if self.pause_menu => self.draw_pause_menu(batch),
@@ -5305,10 +5336,12 @@ impl Game<'_> {
         // tooltips, so a native mod draws over it here. Never `Playing`: the
         // prompts, books and sign editors drawn over gameplay keep it, draw
         // after this point and so over what a mod drew.
-        self.draw_screen_with_post_hook(batch);
+        if !dialog {
+            self.draw_screen_with_post_hook(batch);
+        }
         self.draw_saving_indicator(batch);
         self.draw_every_toast(batch, !show_hud);
-        if self.server_packs.prompt.is_none() {
+        if !dialog && self.server_packs.prompt.is_none() {
             self.remote_hud(batch);
             self.draw_sign_editor(batch);
             self.draw_book(batch);
@@ -5402,6 +5435,33 @@ impl Game<'_> {
         // follows those too.
         let posed = self.skin_frame.borrow().vertices;
         self.entity_motion_posed.borrow_mut().push(posed);
+    }
+    /// Visible block entities inside the view frustum (or marked off-screen),
+    /// matching live block states that `BlockEntityRenderer` renders.
+    fn frustum_block_entities<'a>(
+        &'a self,
+        r: &'a Renderer,
+        camera: glam::DVec3,
+        view: Option<horizon_client::gfx::JoinedFrusta>,
+        reach: &'a Arc<[u8]>,
+    ) -> impl Iterator<Item = &'a ([i32; 3], u32)> {
+        r.visible_block_entities_in_frustum(self.settings.chunk_fade, camera, view, Some(reach))
+            .filter(move |(block, section_inside)| {
+                let (pos, state) = **block;
+                self.live_block_entity_render(pos, state)
+                    && (block_entity_off_screen(reach, state)
+                        || *section_inside
+                        || view.is_none_or(|v| {
+                            let o = (glam::DVec3::new(
+                                f64::from(pos[0]),
+                                f64::from(pos[1]),
+                                f64::from(pos[2]),
+                            ) - camera)
+                                .as_vec3();
+                            v.intersects(o - glam::Vec3::ONE, o + glam::Vec3::splat(2.0))
+                        }))
+            })
+            .map(|(block, _)| block)
     }
     /// ItemEntityRenderer: items bob and spin; blocks render as small cubes.
     fn entity_geometry(
@@ -5682,38 +5742,15 @@ impl Game<'_> {
             // Both flags are one byte per state, worked out once (`block_entity_reach`): a frame
             // asks them of every block entity within 256 blocks.
             let reach = block_entity_reach(&self.res);
-            let off_screen = |state: u32| {
-                reach
-                    .get(state as usize)
-                    .is_some_and(|flags| flags & 1 != 0)
-            };
-            let in_view = |p: &[i32; 3]| {
-                view.is_none_or(|v| {
-                    let o = (glam::DVec3::new(f64::from(p[0]), f64::from(p[1]), f64::from(p[2]))
-                        - camera)
-                        .as_vec3();
-                    v.intersects(o - glam::Vec3::ONE, o + glam::Vec3::splat(2.0))
-                })
-            };
+            let has_pack = self.pack_ids.is_some();
             // Only materialize `camera_list` / `shadow_only` when a shader pack needs
             // shadow-pass span hiding (#8464); the default path streams frustum-visible
             // block entities directly in a single pass with zero heap allocations.
-            let (camera_list, shadow_only, shadow_only_at) = if self.pack_ids.is_some()
+            let (camera_list, shadow_only, shadow_only_at) = if has_pack
                 && self.occlusion.shadow_casters.0
             {
-                let camera_list: Vec<&([i32; 3], u32)> = r
-                    .visible_block_entities_in_frustum(
-                        self.settings.chunk_fade,
-                        camera,
-                        view,
-                        Some(&reach),
-                    )
-                    .filter(|(block, section_inside)| {
-                        let (pos, state) = **block;
-                        self.live_block_entity_render(pos, state)
-                            && (off_screen(state) || *section_inside || in_view(&pos))
-                    })
-                    .map(|(block, _)| block)
+                let camera_list: Vec<&([i32; 3], u32)> = self
+                    .frustum_block_entities(r, camera, view, &reach)
                     .collect();
                 // A shader pack's shadow pass draws the block entities of every section it draws,
                 // in the view or not (`Renderer::shadow_pass_block_entities`, #8464): those the
@@ -5731,7 +5768,7 @@ impl Game<'_> {
                 (Vec::new(), Vec::new(), None)
             };
             let dynamic_visible = |pos: [i32; 3], state: u32, lo: glam::DVec3, hi: glam::DVec3| {
-                if off_screen(state)
+                if block_entity_off_screen(&reach, state)
                     || shadow_only_at
                         .as_ref()
                         .is_some_and(|set| set.contains(&pos))
@@ -5807,12 +5844,11 @@ impl Game<'_> {
             // and disables their per-section GPU cache. Shader packs still need
             // per-entity span marks, so they keep the callback path.
             let block_entities = out.len();
-            if self.pack_ids.is_some() {
+            if has_pack {
                 let section_revision = |pos| r.block_entity_section_revision(pos);
-                if let Some(shadow_only_at) = &shadow_only_at {
+                static_block_entity_stats = if let Some(shadow_only_at) = &shadow_only_at {
                     let visible = camera_list.into_iter().chain(shadow_only.iter().copied());
-                    static_block_entity_stats = self
-                        .res
+                    self.res
                         .block_entity_render()
                         .render_with_cache_options_and_callbacks(
                             &scene,
@@ -5830,27 +5866,13 @@ impl Game<'_> {
                                     self.hide_spans_from(start, out.len());
                                 }
                             },
-                        );
-                } else {
-                    let visible = r
-                        .visible_block_entities_in_frustum(
-                            self.settings.chunk_fade,
-                            camera,
-                            view,
-                            Some(&reach),
                         )
-                        .filter(|(block, section_inside)| {
-                            let (pos, state) = **block;
-                            self.live_block_entity_render(pos, state)
-                                && (off_screen(state) || *section_inside || in_view(&pos))
-                        })
-                        .map(|(block, _)| block);
-                    static_block_entity_stats = self
-                        .res
+                } else {
+                    self.res
                         .block_entity_render()
                         .render_with_cache_options_and_callbacks(
                             &scene,
-                            visible,
+                            self.frustum_block_entities(r, camera, view, &reach),
                             block_entity_cache,
                             r.block_entity_revision(),
                             Some(&section_revision),
@@ -5860,22 +5882,10 @@ impl Game<'_> {
                                 self.mark_motion(start, motion_block_entity(pos));
                             },
                             |_, _, _, _| {},
-                        );
-                }
+                        )
+                };
             } else {
-                let visible = r
-                    .visible_block_entities_in_frustum(
-                        self.settings.chunk_fade,
-                        camera,
-                        view,
-                        Some(&reach),
-                    )
-                    .filter(|(block, section_inside)| {
-                        let (pos, state) = **block;
-                        self.live_block_entity_render(pos, state)
-                            && (off_screen(state) || *section_inside || in_view(&pos))
-                    })
-                    .map(|(block, _)| block);
+                let visible = self.frustum_block_entities(r, camera, view, &reach);
                 let cache_candidates = r
                     .visible_block_entities_in_frustum(self.settings.chunk_fade, camera, None, None)
                     .filter(|(block, _)| self.live_block_entity_render(block.0, block.1))
@@ -6592,7 +6602,7 @@ impl Game<'_> {
         self.using = None;
         self.set_screen(Screen::Playing);
         self.hide_title();
-        self.clear_lod();
+        self.clear_lod_for_world_entry();
         self.pending_uploads.clear();
         if let Some(r) = self.renderer.as_mut() {
             r.clear_sections(self.world.layout());
@@ -6644,6 +6654,7 @@ impl Game<'_> {
         self.clear_entities();
         self.set_screen(Screen::Playing);
         self.clear_lod();
+        self.lod_first_load = false;
         self.pending_uploads.clear();
         if let Some(r) = self.renderer.as_mut() {
             r.clear_sections(self.world.layout());
@@ -8269,6 +8280,30 @@ impl Game<'_> {
             return Ok(false);
         };
         pr.lap("pr_setup");
+        if mod_api::__private::listened(mod_api::HookId::RenderFrame)
+            && self.title.is_none()
+            && self.player.is_some()
+            && !self.remote_screen_up()
+            && self
+                .remote
+                .as_ref()
+                .is_none_or(|remote| remote.reconfiguring.is_none())
+            && self.pending_save.is_none()
+        {
+            let mut gui_only = false;
+            self.native_render_frame(&mut gui_only);
+            if gui_only {
+                self.native_camera_frame = None;
+                self.locator_camera = None;
+                self.screen_blur_requested.set(false);
+                let mut hud = self.prepare_frame_hud(size);
+                hud.patches.append(&mut self.map_patches);
+                hud.patches.append(self.text_patches.get_mut());
+                pr.lap("pr_hud");
+                drop(prepare);
+                return self.draw_gui_only_frame(hud, consume);
+            }
+        }
         let alpha = self.frame_world_partial_tick();
         // Camera.getCameraEntityPartialTicks: the view, the hand and the
         // player's own model stay smooth while the level is frozen.
@@ -8659,11 +8694,7 @@ impl Game<'_> {
         let _projection_frame = (!title).then(|| self.activate_projection_frame());
         pr.lap("pr_projection");
         // GUI hooks project against this frame's camera, including its bob/spin and FOV.
-        let mut hud = std::mem::replace(&mut self.hud_batch, HudBatch::scratch([1, 1]));
-        horizon_client::spans::time("hud", || self.hud_into(size, &mut hud));
-        self.flush_ime(&mut hud);
-        self.native_gui_render_post(&mut hud, self.ui.hide_gui, self.focused);
-        self.resolve_inline_profiles(&hud.inline_profiles);
+        let mut hud = self.prepare_frame_hud(size);
         pr.lap("pr_hud");
         self.locator_camera =
             (!title).then_some((camera.to_array(), view_yaw, view_pitch, fov_degrees));
@@ -8823,11 +8854,7 @@ impl Game<'_> {
             self.gather_dynamic_lights(camera, alpha);
         }
         pr.lap("pr_lights");
-        pack_inputs.frame_timing = self
-            .screenshot_sequence
-            .as_ref()
-            .map(screenshot_sequence::Sequence::timing)
-            .or_else(|| self.export.as_ref().map(export::Session::timing));
+        pack_inputs.frame_timing = self.frame_timing();
         pr.lap("pr_shader_inputs");
         // Fog hooks may clear particles too. They must run before the final clear
         // boundary, not while constructing Frame after geometry has been extracted.
@@ -8892,6 +8919,7 @@ impl Game<'_> {
                 self.water_plane(camera)
             },
             title,
+            gui_only: false,
             sky_blocked: horizon_client::fog::sky_pass_skipped(
                 self.camera_submersion([camera.x, camera.y, camera.z]),
                 self.potions.effects.get("blindness").is_some()
@@ -9017,18 +9045,13 @@ impl Game<'_> {
         let mut prepared_draws = std::mem::take(&mut *self.prepared_model_draws.borrow_mut());
         let result = match self.renderer.as_mut() {
             Some(renderer) => {
-                use horizon_client::client_perf::request::GpuSwitch;
-                let capture_gpu = self.profile.gpu();
-                let recording = capture_gpu != GpuSwitch::Off;
-                renderer.set_pass_timing(debug_passes || self.gpu_passes || recording);
-                renderer.set_keep_timed_frames(recording);
-                renderer.set_pass_detail(self.gpu_pass_detail || capture_gpu == GpuSwitch::Detail);
-                // `gpu_passes` and a capture's `--gpu` are measurements: they take every sample they can.
-                renderer.set_pass_timing_gap(if self.gpu_passes || recording {
-                    Duration::ZERO
-                } else {
-                    horizon_client::debug_overlay::GPU_TIMING_GAP
-                });
+                configure_frame_timing(
+                    renderer,
+                    self.profile.gpu(),
+                    debug_passes,
+                    self.gpu_passes,
+                    self.gpu_pass_detail,
+                );
                 self.native_shaders.hand_over(renderer);
                 renderer.stage_prepared_draws(&prepared_draws);
                 consume(renderer, &frame)
@@ -9064,6 +9087,75 @@ impl Game<'_> {
         self.see_through_vertices = see_through;
         result
     }
+
+    /// Takes `hud_batch` for this frame's HUD; the frame gives it back when it ends.
+    fn prepare_frame_hud(&mut self, size: [u32; 2]) -> HudBatch {
+        let mut hud = std::mem::replace(&mut self.hud_batch, HudBatch::scratch([1, 1]));
+        horizon_client::spans::time("hud", || self.hud_into(size, &mut hud));
+        self.flush_ime(&mut hud);
+        self.native_gui_render_post(&mut hud, self.ui.hide_gui, self.focused);
+        self.resolve_inline_profiles(&hud.inline_profiles);
+        hud
+    }
+
+    fn frame_timing(&self) -> Option<horizon_client::gfx::pack_uniforms::FrameTiming> {
+        self.screenshot_sequence
+            .as_ref()
+            .map(screenshot_sequence::Sequence::timing)
+            .or_else(|| self.export.as_ref().map(export::Session::timing))
+    }
+
+    fn draw_gui_only_frame(
+        &mut self,
+        hud: HudBatch,
+        consume: impl FnOnce(&mut Renderer, &Frame<'_>) -> Result<bool>,
+    ) -> Result<bool> {
+        let mut frame = loading_frame(&hud);
+        frame.title = false;
+        frame.gui_only = true;
+        frame.ticks = self.texture_clock();
+        frame.glint_alpha = self.glint_frame.alpha;
+        frame.glint_ticks = self.glint_frame.scroll_ticks();
+        frame.pack.frame_timing = self.frame_timing();
+        frame.menu_blur = self.menu_blur();
+        let debug_passes = self.debug_lists_gpu_passes();
+        let renderer = self
+            .renderer
+            .as_mut()
+            .expect("renderer checked before GUI preparation");
+        configure_frame_timing(
+            renderer,
+            self.profile.gpu(),
+            debug_passes,
+            self.gpu_passes,
+            self.gpu_pass_detail,
+        );
+        let result = consume(renderer, &frame);
+        self.frame_drawn = matches!(result, Ok(true));
+        drop(frame);
+        self.hud_batch = hud;
+        result
+    }
+}
+
+fn configure_frame_timing(
+    renderer: &mut Renderer,
+    capture_gpu: horizon_client::client_perf::request::GpuSwitch,
+    debug_passes: bool,
+    gpu_passes: bool,
+    pass_detail: bool,
+) {
+    use horizon_client::client_perf::request::GpuSwitch;
+    let recording = capture_gpu != GpuSwitch::Off;
+    renderer.set_pass_timing(debug_passes || gpu_passes || recording);
+    renderer.set_keep_timed_frames(recording);
+    renderer.set_pass_detail(pass_detail || capture_gpu == GpuSwitch::Detail);
+    // `gpu_passes` and a capture's `--gpu` are measurements: they take every sample they can.
+    renderer.set_pass_timing_gap(if gpu_passes || recording {
+        Duration::ZERO
+    } else {
+        horizon_client::debug_overlay::GPU_TIMING_GAP
+    });
 }
 /// `computeNextAutosaveInterval`'s arithmetic: `Math.max(100, (int)(rate * 300.0F))`.
 fn autosave_interval(rate: f32) -> i64 {
@@ -9917,6 +10009,12 @@ impl Game<'_> {
                             {
                                 self.smooth_camera_action();
                             }
+                            // `key.fullbright` takes mouse buttons too (`bind_mouse`), and no
+                            // vanilla mapping translates it: its press is taken here as the key's
+                            // is. It is not swallowed: the mappings on this button still run below.
+                            if pressed {
+                                self.fullbright_key_press(&input);
+                            }
                             for mapped in self.settings.keys.translate_mouse_all(button) {
                                 match mapped {
                                     Err(b)
@@ -10344,6 +10442,16 @@ impl Game<'_> {
                             .is_some_and(|n| self.settings.keys.get("key.smoothCamera") == n)
                     {
                         self.smooth_camera_action();
+                    }
+                    // `key.fullbright` is Horizon's, unbound by default: no vanilla mapping
+                    // translates it, so its press is taken here. It is not swallowed: a key it
+                    // shares with a mapping still drives that mapping, as vanilla runs every
+                    // mapping bound to a key.
+                    if event.state == ElementState::Pressed
+                        && !event.repeat
+                        && let Some(name) = horizon_client::keybinds::key_name(key)
+                    {
+                        self.fullbright_key_press(name);
                     }
                     // ScreenEvent.KeyPressed.Post / KeyReleased.Post: no screen arm
                     // took the key, so the open screen's `keyPressed` returned
@@ -10790,6 +10898,7 @@ impl<'a> Game<'a> {
             streaming,
             lod: None,
             lod_source_attempted: false,
+            lod_first_load: false,
             far_beacons: HashMap::new(),
             lod_observe: Default::default(),
             lod_level: None,
@@ -11001,6 +11110,7 @@ impl<'a> Game<'a> {
             frame_ticks: 0.0,
             title: None,
             native_world_request: None,
+            native_title_request: None,
             armor: [None, None, None, None],
             offhand: None,
             equipment: Default::default(),
@@ -11201,7 +11311,7 @@ impl<'a> Game<'a> {
             view_frustum: None,
             occlusion: Default::default(),
             async_particle_culler: RefCell::new(Default::default()),
-            pending_uploads: Vec::new(),
+            pending_uploads: horizon_client::streaming::PendingUploads::new(),
             upload_pace: Default::default(),
             frame_graph: Default::default(),
             extras: Default::default(),
@@ -11882,6 +11992,10 @@ impl Game<'_> {
 mod sign_chain_tests;
 
 #[cfg(test)]
+#[path = "game/interface/tests/sign_update_tests.rs"]
+mod sign_update_tests;
+
+#[cfg(test)]
 #[path = "game/interface/tests/sign_use_tests.rs"]
 mod sign_use_tests;
 
@@ -11919,6 +12033,12 @@ mod hud_vertex_tests {
         assert!(batch.vertices.is_empty());
         assert!(batch.vertices.capacity() >= capacity);
     }
+}
+
+fn block_entity_off_screen(reach: &[u8], state: u32) -> bool {
+    reach
+        .get(state as usize)
+        .is_some_and(|flags| flags & 1 != 0)
 }
 
 /// For each block state, whether its block entity draws off screen (1: beacons, end gateways,
