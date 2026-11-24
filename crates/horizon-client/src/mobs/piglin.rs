@@ -1410,7 +1410,11 @@ impl Goal for FightMelee {
     fn start(&mut self, m: &mut Mob, _cx: &mut Cx) {
         m.ai.aggressive = true;
     }
-    fn stop(&mut self, m: &mut Mob, _cx: &mut Cx) {
+    fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
+        // `StopAttackingIfTargetInvalid`: a creative player is no target.
+        if m.target_info(cx.w).is_some_and(|t| t.is_player && t.creative) {
+            m.set_ai_target(cx.w, None);
+        }
         self.path_end = None;
         self.walk = false;
         m.ai.aggressive = false;
