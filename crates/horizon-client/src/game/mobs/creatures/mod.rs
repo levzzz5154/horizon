@@ -1203,9 +1203,9 @@ impl Game<'_> {
             .filter(|k| self.world.chunks.get(k).is_some_and(|c| c.fresh && c.lit))
             .collect();
         for key in fresh {
-            if let Some(c) = self.world.chunks.get_mut(&key) {
+            self.world.chunks.mutate_chunk(key, |c| {
                 Arc::make_mut(c).fresh = false;
-            }
+            });
             self.world.chunks.remove_fresh(&key);
             self.spawn_generation_creatures(key.0, key.1);
         }
@@ -5612,16 +5612,25 @@ impl Game<'_> {
                                 };
                                 self.player_hit(&victim, "minecraft:arrow", Some(direct), amount);
                             }
-                            // AbstractArrow.onHitEntity: KILLED_BY_ARROW for a kill
-                            // (piercing arrows are not modelled).
-                            if hurt
-                                && let Some(m) = self.mobs.iter().find(|m| m.id == id)
-                                && !m.alive()
-                            {
+                            // AbstractArrow.onHitEntity: a piercing arrow adds what it
+                            // killed to its list and passes the whole list on every
+                            // hurt; any other arrow passes its victim on a kill.
+                            if hurt && let Some(m) = self.mobs.iter().find(|m| m.id == id) {
+                                let killed = !m.alive();
                                 let victim = self.mob_entity(m);
                                 let weapon =
                                     p.arrow.as_ref().and_then(|a| a.fired_from_weapon.as_ref());
-                                self.trigger_killed_by_arrow(&[victim], weapon);
+                                match arrow.arrow.as_mut().and_then(|a| a.pierced_and_killed.as_mut()) {
+                                    Some(list) => {
+                                        if killed {
+                                            list.push(victim);
+                                        }
+                                        let victims = list.clone();
+                                        self.trigger_killed_by_arrow(&victims, weapon);
+                                    }
+                                    None if killed => self.trigger_killed_by_arrow(&[victim], weapon),
+                                    None => {}
+                                }
                             }
                         }
                         hurt
@@ -7463,6 +7472,9 @@ impl Game<'_> {
         let Some(p) = self.player.as_ref() else {
             return Ok(false);
         };
+        // SnowballItem / EggItem / EnderpearlItem.playSound: the player's
+        // feet (getX/getY/getZ), not the eye the projectile starts from.
+        let feet = [p.position.x, p.position.y, p.position.z];
         // Projectile.shootFromRotation adds getKnownMovement: what the thrower last moved.
         let on_ground = p.ground.on_ground;
         let velocity = self.known_player_movement();
@@ -7484,7 +7496,7 @@ impl Game<'_> {
             _ => "minecraft:entity.ender_pearl.throw",
         };
         let pitch = 0.4 / (self.world.random.next_float() * 0.4 + 0.8);
-        self.audio.play(sound, Some(eye), 0.5, pitch);
+        self.audio.play(sound, Some(feet), 0.5, pitch);
         self.swing_arm();
         if !self.creative
             && let Some(s) = self.held_mut().as_mut()
@@ -8023,7 +8035,8 @@ impl Game<'_> {
             // effect sets): only the name tag draws (and the outline of a
             // glowing mob, LivingEntityRenderer.getRenderType). A player keeps
             // its armour, elytra and held items (`LivingEntityRenderer.submit`
-            // skips only the body).
+            // skips only the body), and a sulfur cube keeps its contained block
+            // (`SulfurCubeInnerLayer.submit`).
             let invisible = mob.is_invisible();
             // Entity.isInvisibleTo(viewer): a spectator sees it anyway, the
             // body forced translucent (`LivingEntityRenderer.submit`).
@@ -8035,7 +8048,19 @@ impl Game<'_> {
                     true,
                 );
             let layers_only = invisible && outline.is_none() && is_player && !seen_invisible;
-            if invisible && outline.is_none() && !layers_only && !seen_invisible {
+            // An invisible sulfur cube holding a renderable block stays in the loop so
+            // `sulfur_cube_body_geometry` draws its contained block. Like `layers_only`
+            // for invisible players, it also runs the mod render hooks and any registered
+            // mod living renderer (`mod_living_renderer_geometry`), which takes ownership
+            // and suppresses `sulfur_cube_body_geometry` when present.
+            let sulfur_cube_block = mob.species() == Species::SulfurCube
+                && self.sulfur_cube_contained_block(mob).is_some();
+            if invisible
+                && outline.is_none()
+                && !layers_only
+                && !seen_invisible
+                && !sulfur_cube_block
+            {
                 continue;
             }
             let culling = if PRECHECK
@@ -8083,15 +8108,15 @@ impl Game<'_> {
             // A mod's renderer for the type (`register_entity_renderers`) draws in place of its
             // model and vanilla layers; the mods' layers and post hooks still follow.
             let modded = self.mod_living_renderer_geometry(mob, alpha as f32, camera, packed, out);
-            if mob.species() == Species::SulfurCube && !mob.is_invisible() && !modded {
-                self.sulfur_cube_body_geometry(
+            let drew_sulfur_block = mob.species() == Species::SulfurCube
+                && !modded
+                && self.sulfur_cube_body_geometry(
                     mob,
                     alpha as f32,
                     horizon_client::mobs::render::base_transform(mob, alpha as f32, camera),
                     packed,
                     out,
                 );
-            }
             // Other players on a server: PlayerRenderer's HumanoidArmorLayer.
             let armor = if is_player {
                 self.worn_armor_layers(mob)
@@ -8252,7 +8277,7 @@ impl Game<'_> {
                     let color = horizon_client::mobs::render::abgr(rgb);
                     self.skin_frame.borrow_mut().outline_since(first, color);
                 }
-                if invisible && !seen_invisible {
+                if invisible && !seen_invisible && !drew_sulfur_block {
                     out.truncate(entity_start);
                     continue;
                 }
