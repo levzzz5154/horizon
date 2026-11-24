@@ -54,6 +54,7 @@ pub struct StructureCell<'a> {
 }
 
 impl<'a> StructureCell<'a> {
+    // hidden: the game builds a cell for each question it asks; mods only read one.
     #[doc(hidden)]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -99,6 +100,7 @@ pub(crate) struct StructureCandidateInfo {
 }
 
 /// Startup declarations, for the executable to hand to the world generator.
+// hidden: the executable's startup reads these; mod authoring code never calls it.
 #[doc(hidden)]
 pub fn structure_candidate_declarations() -> Vec<(String, Arc<dyn StructureCandidateSelector>)> {
     crate::parts::installed_structure_candidate_list()
