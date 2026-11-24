@@ -3318,25 +3318,48 @@ def grid_items(game):
 
 
 def check_recipes(host, guest, out):
+    def toggle_craftable(book):
+        button = next(rect for rect in book['targets'] if rect[2:] == [26.0, 16.0])
+        guest.raw('click-at', *centre(button))
+        guest.wait(5)
+        return guest('screen')['recipe_book']
+
     guest('command', command='clear @s')
     guest('command', command='give @s minecraft:oak_log 4')
     guest.wait(40)
     guest.raw('key', 'e', 'tap')
     guest.wait(5)
+    restore_filter = False
     try:
         book = guest('screen').get('recipe_book')
         assert book, 'the guest\'s inventory has no recipe book'
-        if len(book['targets']) == 1:
+        if not book['open']:
             guest.raw('click-at', *centre(book['targets'][0]))
             guest.wait(5)
             book = guest('screen').get('recipe_book')
         known = book['known']
         assert known > 0, f'the guest\'s book is empty: {book}'
-        guest.raw('click-at', *centre(book['targets'][1]))
+        # Search, paging and tabs also export targets. The craftable filter
+        # keeps earlier checks' recipe unlocks from affecting the selection.
+        if not book['filtering']:
+            book = toggle_craftable(book)
+            restore_filter = book['filtering']
+        assert book['filtering'], f"the guest's book did not filter: {book}"
+        recipes = [rect for rect in book['targets'] if rect[2:] == [25.0, 25.0]]
+        assert recipes, f"the guest's book has no craftable recipe buttons: {book}"
+        guest.raw('click-at', *centre(recipes[0]))
         guest.wait(10)
         grid = grid_items(guest)
         guest.shot(out, 'recipes')
     finally:
+        if restore_filter:
+            # The alternatives popup below needs the uncraftable entries too.
+            book = guest('screen')['recipe_book']
+            if not book['open']:
+                guest.raw('click-at', *centre(book['targets'][0]))
+                guest.wait(5)
+                book = guest('screen')['recipe_book']
+            toggle_craftable(book)
         guest.raw('key', 'esc', 'tap')
         guest.wait(5)
     assert any('oak_log' in str(item) for item in grid.values()), f'nothing placed in the grid: {grid}'
@@ -6390,6 +6413,29 @@ def check_frames(host, guest, out):
                       and o['position'] == [x, y + 1, z + 2]]
             assert theirs and theirs[0]['item'] == 'minecraft:diamond' and theirs[0]['rotation'] == 1, \
                 f'the other side sees the {label}\'s frame as {theirs}'
+            # Empty the frame, then insert a filled map with an empty main hand.
+            player.raw('look-at', f'{x + 0.5:.2f}', f'{y + 1.5:.2f}', f'{z + 2.95:.2f}')
+            player.raw('mouse', 'left', 'click')
+            player.wait(10)
+            emptied = next(o for o in player('status')['objects'] if o['id'] == frame['id'])
+            assert emptied.get('item') is None, f'{label}: expected an empty frame, got {emptied}'
+            player('command', command='item replace entity @s weapon.mainhand with minecraft:air')
+            player('command', command='item replace entity @s weapon.offhand with '
+                   'minecraft:filled_map[minecraft:map_id=0]')
+            player.wait(5)
+            inventory = player('inventory')
+            offhand = inventory['offhand']
+            assert inventory['held'] is None, f'{label}: the main hand is not empty'
+            assert offhand['item'] == 'minecraft:filled_map' and offhand['count'] == 1, \
+                f'{label}: expected one map in the off hand, got {offhand}'
+            player.raw('mouse', 'right', 'click')
+            player.wait(15)
+            for viewer in (player, other):
+                seen = next(o for o in viewer('status')['objects'] if o['id'] == frame['id'])
+                assert seen.get('item') == 'minecraft:filled_map', f'{label}: off-hand map insertion left {seen}'
+            offhand = player('inventory')['offhand']
+            assert offhand['item'] is None, f'{label}: the client still sees {offhand} in the off hand'
+            server_reply(player, 'execute unless items entity @s weapon.offhand *', 'Test passed')
             player('command', command='item replace entity @s weapon.mainhand with minecraft:iron_helmet')
             player.wait(5)
             stand = [o for o in player('status')['objects'] if o['kind'] == 'minecraft:armor_stand'
@@ -6422,14 +6468,17 @@ def check_frames(host, guest, out):
             assert player('inventory')['counts'].get('minecraft:name_tag') == 2, 'named tag was not consumed once'
             server_reply(player, f'data get entity {selector} CustomName', name)
             server_reply(other, f'data get entity {selector} CustomName', name)
-            # NameTagItem shrinks its stack in creative too.
+            # Player.interactOn gives NameTagItem a copy of the creative player's stack.
             player('command', command='gamemode creative')
+            creative_name = f'{label} creative Bob'
             player('command', command='item replace entity @s weapon.mainhand with '
-                   f'minecraft:name_tag[minecraft:custom_name="{name}"] 3')
+                   f'minecraft:name_tag[minecraft:custom_name="{creative_name}"] 3')
             player.wait(5)
             player.raw('mouse', 'right', 'click')
             player.wait(10)
-            assert player('inventory')['counts'].get('minecraft:name_tag') == 2, 'creative tag was not consumed once'
+            assert player('inventory')['counts'].get('minecraft:name_tag') == 3, 'creative tag was consumed'
+            server_reply(player, f'data get entity {selector} CustomName', creative_name)
+            server_reply(other, f'data get entity {selector} CustomName', creative_name)
             player('command', command='gamemode survival')
             result[label] = {'frame': 'diamond, turned', 'stand': 'helmet on and off; named tag consumed'}
         finally:
@@ -7439,6 +7488,8 @@ def run(ctl, out, resources, checks):
     try:
         if 'recipes-hmod' in checks:
             prepare_recipes_hmod(host, guest)
+        if 'view_center' in checks:
+            prepare_view_center(Path(ctl).parent, host, guest)
         host.pid = host.raw(*launch)['pid']
         # Guests' commands need the world's Allow Commands as well as the LAN's (#372): a creative
         # world has them; everyone plays in survival.
@@ -7516,8 +7567,9 @@ def main():
         sys.exit(str(error))
     out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
-    # Recipes is an opt-in native mod; this check requires a game built with it.
-    checks = args.check or [name for name in CHECKS if name != 'recipes-hmod']
+    # Recipes is an opt-in native mod; this check requires a game built with it. view_center builds its wasm
+    # fixture first, so it too runs only when asked for.
+    checks = args.check or [name for name in CHECKS if name not in ('recipes-hmod', 'view_center')]
     results = run(lab.binary(bins, 'horizon-ctl'), out, resources, checks)
     (out / 'results.json').write_text(json.dumps({'checks': results}, indent=2) + '\n')
     print(json.dumps(results, indent=1))
@@ -14454,6 +14506,116 @@ def check_hive_bees(host, guest, out):
 
 CHECKS += ['hive_bees']
 CHECK_FNS['hive_bees'] = check_hive_bees
+
+
+
+
+def prepare_view_center(bins, *games):
+    """Build the view-centre fixture (tests/view-center-mod) as a wasm mod and install it in both games, with the
+    wasm std library beside the game program."""
+    # The checkout's tool, run in the fixture's folder (the packager reads the mod from the working directory).
+    tool = ['cargo', 'run', '--locked', '--profile', 'fast', '-q', '--manifest-path', str(ROOT / 'Cargo.toml'),
+            '-p', 'cargo-horizon-mod', '--']
+    std = bins / 'horizon-wasm-std.wasm'
+    if not std.exists():
+        subprocess.run(tool + ['wasm-std', str(std)], cwd=ROOT, check=True)
+    # The packager builds a mod from a folder inside this checkout's target/.
+    work = ROOT / 'target/view-center-mod'
+    shutil.rmtree(work, ignore_errors=True)
+    shutil.copytree(ROOT / 'tests/view-center-mod', work, ignore=shutil.ignore_patterns('target'))
+    subprocess.run(tool + ['horizon-mod', 'build', '--wasm'], cwd=work, check=True)
+    package = (work / 'target/horizon-mod/view_center_fixture.hmod').read_bytes()
+    for game in games:
+        mods = game.work / 'horizon-mods'
+        mods.mkdir(exist_ok=True)
+        (mods / 'view_center_fixture.hmod').write_bytes(package)
+        enabled = game.work / 'horizon-mods.txt'
+        lines = enabled.read_text() if enabled.exists() else ''
+        enabled.write_text(lines + 'mod.view_center_fixture:true\n')
+
+
+def check_view_center(host, guest, out):
+    """`PlayerRef::set_view_center` (#19219), through the fixture's `view <x> <z>` chat line: the guest's chunks
+    stream from a chunk 40 chunks away and its window draws them there while it stays where it is; `view off`, a
+    respawn and a level change each put the tracking back on the guest. The host, on its server thread, does the
+    same once for its own window."""
+    def chunk_of(game):
+        x, _, z = pos_of(game)
+        return math.floor(x) >> 4, math.floor(z) >> 4
+
+    def loaded(game, chunk):
+        return game.raw('block', chunk[0] * 16 + 8, 64, chunk[1] * 16 + 8).get('loaded')
+
+    def streams(game, chunk, ticks=1200):
+        """Wait until the game holds `chunk` and not the one it stands in."""
+        return game.until(lambda: (loaded(game, chunk), loaded(game, chunk_of(game))),
+                          lambda seen: seen == (True, False), ticks=ticks)
+
+    def back_home(game, far, ticks=600):
+        """Wait until the game holds the chunk it stands in again and has forgotten `far`."""
+        return game.until(lambda: (loaded(game, chunk_of(game)), loaded(game, far)),
+                          lambda seen: seen == (True, False), ticks=ticks)
+
+    def view(game, chunk):
+        line = 'view off' if chunk is None else f'view {chunk[0]} {chunk[1]}'
+        game.raw('chat', line)
+        wanted = 'view centre off' if chunk is None else f'view centre {chunk[0]} {chunk[1]}'
+        game.until(lambda: game.raw('messages', 10)['chat'], lambda chat: any(wanted in c for c in chat), ticks=40)
+
+    seen = {}
+    start = pos_of(guest)
+    own = chunk_of(guest)
+    far = (own[0] + 40, own[1])
+    view(guest, far)
+    streams(guest, far)
+    moved = math.dist(pos_of(guest), start)
+    assert moved < 0.5, f'the guest moved {moved} blocks with its view centre'
+    assert loaded(host, chunk_of(host)), 'the guest\'s view centre took the host\'s chunks'
+    drawn = guest.until(lambda: guest('status')['renderer']['drawn_sections'], lambda n: n > 0, ticks=200)
+    guest.wait(40)
+    guest.shot(out, 'view-center-far')
+    seen['set'] = {'far': far, 'moved': moved, 'drawn_sections': drawn}
+
+    view(guest, None)
+    back_home(guest, far)
+    seen['off'] = True
+
+    view(guest, far)
+    streams(guest, far)
+    host('command', command=f'kill {GUEST_NAME}')
+    guest.until(lambda: guest('state').get('screen'), lambda s: s == 'dead', ticks=60)
+    guest.raw('respawn')
+    guest.until(lambda: guest('state'), lambda s: s.get('screen') == 'playing' and s['player']['health'] > 0,
+                ticks=100)
+    back_home(guest, far)
+    seen['respawn'] = True
+
+    view(guest, far)
+    streams(guest, far)
+    x, y, z = pos_of(guest)
+    host('command', command=f'execute in minecraft:the_nether run tp {GUEST_NAME} {x:.2f} 100 {z:.2f}')
+    guest.until(lambda: remote(guest)['dimension'], lambda d: d == 'minecraft:the_nether', ticks=400)
+    host('command', command=f'execute in minecraft:overworld run tp {GUEST_NAME} {x:.2f} {y:.2f} {z:.2f}')
+    guest.until(lambda: remote(guest)['dimension'], lambda d: d == 'minecraft:overworld', ticks=400)
+    back_home(guest, far)
+    seen['level_change'] = True
+    # The window's camera follows the fixture's last accepted reply: put it back on the guest.
+    view(guest, None)
+
+    # The host's own window, on the integrated server thread.
+    host_far = (chunk_of(host)[0], chunk_of(host)[1] + 40)
+    view(host, host_far)
+    streams(host, host_far)
+    host.wait(40)
+    host.shot(out, 'view-center-host-far')
+    view(host, None)
+    back_home(host, host_far)
+    seen['host'] = {'far': host_far}
+    return seen
+
+
+CHECKS += ['view_center']
+CHECK_FNS.update(view_center=check_view_center)
 
 
 if __name__ == '__main__':

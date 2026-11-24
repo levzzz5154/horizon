@@ -276,6 +276,12 @@ takes one value per declared property too, so a block's default is exactly one
 state of its own. Every combination has to fit in the states a world holds
 (2^20), so a declaration that would not is refused when the mods load.
 
+A `minecraft:simple_block` worldgen feature uses the template's placement rules.
+For example, a block based on `minecraft:sunflower` gets its own lower and upper
+halves when the feature names its lower half. The `minecraft:pale_moss_carpet`
+template follows vanilla's carpet placement routine, which writes vanilla pale
+moss carpet rather than the candidate block.
+
 A block with template `minecraft:farmland` may set `"base_block": "namespace:block"` to choose the block it becomes when it dries out, is trampled, or has a solid block placed above it. The ID must name a registered block; without the key, the template's dirt base is used.
 
 A block whose template is one of vanilla's signs is a sign, whatever its name: it has vanilla's sign block
@@ -901,6 +907,14 @@ in_enchanting_table.json` and the others), which a mod adds to as any tag. A wor
 enchantment of the same id. What an enchantment does beyond vanilla's effect components is the mod's code: a native
 hook reads the held stack's enchantments, or claims a `post_attack` effect of its own kind
 ([enchantment effect kinds](items/enchantment-effect-kinds.md)).
+
+Armor trims use vanilla's `data/<namespace>/trim_material/<name>.json` and
+`data/<namespace>/trim_pattern/<name>.json`. World data packs can replace those entries
+on the server, which sends their registry IDs when players join. For rendering, install
+the content mod on the client too. Its `palette_id` names a PNG in `textures/palettes/`
+and its `asset_id` names a pattern in `textures/trims/entity/<equipment-layer>/`. To
+color an item icon, add a `paletted_permutations` source to `assets/minecraft/atlases/items.json`
+and a `minecraft:trim_material` select case for the full material ID in the armor's item definition.
 
 A mod adds to structure sets, template pools and processor lists that are not its own (vanilla's villages, another
 mod's houses) with a set, pool or processor list file in its own namespace holding `horizon:add_to`, a key vanilla data
