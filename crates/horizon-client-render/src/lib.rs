@@ -71,6 +71,8 @@ pub use horizon_polytone::creative_tabs as polytone_creative_tabs;
 pub use horizon_world::json_folder;
 pub mod dimension_transition;
 pub mod fluid_models;
+#[cfg(test)]
+mod lang_key_tests;
 pub mod level_loading;
 pub mod light;
 pub mod lod;
@@ -162,6 +164,7 @@ pub mod tab_list;
 pub mod test_block;
 pub mod test_instance_block;
 pub mod testgen;
+pub mod tfr;
 pub mod title_edition;
 pub mod touch;
 pub mod trims;

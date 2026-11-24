@@ -101,7 +101,9 @@ fn read_rgb(renderer: &mut Renderer, frame: &Frame<'_>) -> Vec<[u8; 3]> {
     assert_eq!([image.width, image.height], SIZE);
     image
         .rgba
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|p| [p[0], p[1], p[2]])
         .collect()
 }
