@@ -286,8 +286,13 @@ pub fn main() -> Result<(), Error> {
         return Ok(());
     }
     let flat = std::env::var("HORIZON_FLAT");
-    let preset = std::env::var("HORIZON_PRESET");
-    let preset = preset.as_deref().unwrap_or("minecraft:normal");
+    let preset = std::env::var("HORIZON_PRESET").unwrap_or_else(|_| "minecraft:normal".into());
+    let preset = if preset.contains(':') {
+        preset
+    } else {
+        format!("minecraft:{preset}")
+    };
+    let preset = preset.as_str();
     let (overrides, preset_text) = match std::env::var_os("HORIZON_DATAPACKS") {
         Some(dir) => datapacks(Path::new(&dir), flat.is_err().then_some(preset))?,
         None => (WorldgenOverrides::default(), None),
