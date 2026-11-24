@@ -3,10 +3,16 @@
 //! play egress, keep the holder only for peers that passed the content check.
 //! This also covers shared saved chunks, terrain reveals and resends.
 use super::Body;
-use horizon_protocol::{Result, buf::{Reader, write_varint}, ids::play::clientbound};
+use horizon_protocol::{
+    Result,
+    buf::{Reader, write_varint},
+    ids::play::clientbound,
+};
 
 pub(super) fn project(body: Body, hidden: Option<i32>) -> Option<Body> {
-    let Some(kind) = hidden else { return Some(body) };
+    let Some(kind) = hidden else {
+        return Some(body);
+    };
     let id = i32::from(*body.first()?);
     match id {
         clientbound::BLOCK_ENTITY_DATA => {
@@ -136,7 +142,9 @@ mod tests {
         ]);
         drop(hold);
         peer.flush();
-        assert!(matches!(rx.try_recv(), Ok(Out::Packets(p)) if p == [chunk_without_holder, vanilla_update]));
+        assert!(
+            matches!(rx.try_recv(), Ok(Out::Packets(p)) if p == [chunk_without_holder, vanilla_update])
+        );
 
         let (tx, rx) = channel();
         let matched = PlayerSender::new(tx, Arc::default());

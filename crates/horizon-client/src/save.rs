@@ -1740,7 +1740,9 @@ fn decode_column(
                 if !chunk.block_entities.iter().any(|(at, _)| *at == pos) {
                     use crate::containers::{BlockEntity, ModBlockEntity};
                     let entity = ModBlockEntity::new(kind.to_owned(), Default::default());
-                    chunk.block_entities.push((pos, BlockEntity::Mod(Box::new(entity))));
+                    chunk
+                        .block_entities
+                        .push((pos, BlockEntity::Mod(Box::new(entity))));
                 }
             }
         }

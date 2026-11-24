@@ -183,13 +183,22 @@ fn only_the_water_cauldron_can_opt_in_to_a_native_factory() {
     let water = crate::block_entity_types::WATER_CAULDRON;
     mods[0].content.block_entity_types = vec![kind("test:holder", &[water])];
     assert_eq!(
-        Plan::new(&base, &mods).unwrap().block_entity_factories.get(water),
+        Plan::new(&base, &mods)
+            .unwrap()
+            .block_entity_factories
+            .get(water),
         Some(&"test:holder"),
     );
     for (block, error) in [
         (water, "belongs to both block entity types"),
-        ("minecraft:stone", "cannot own vanilla block minecraft:stone"),
-        ("minecraft:chest", "cannot own vanilla block minecraft:chest"),
+        (
+            "minecraft:stone",
+            "cannot own vanilla block minecraft:stone",
+        ),
+        (
+            "minecraft:chest",
+            "cannot own vanilla block minecraft:chest",
+        ),
     ] {
         mods[1].content.block_entity_types = vec![kind("other:holder", &[block])];
         let error_text = Plan::new(&base, &mods).err().unwrap().to_string();
