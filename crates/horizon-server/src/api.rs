@@ -151,8 +151,8 @@ pub const ROUTES: [Route; 32] = [
     Route {
         method: "POST",
         path: "/api/v1/restore",
-        takes: "`{\"name\": \"<backup>\", \"dimension\": \"minecraft:the_nether\"}` (`dimension` optional)",
-        answers: "`{\"name\": \"<backup>\", \"dimension\": \"<id>\" or null}`",
+        takes: "`{\"name\": \"<backup>\", \"dimension\": \"minecraft:the_nether\"}` (`name` must be a nonblank string; `dimension` is optional)",
+        answers: "`{\"name\": \"<backup>\", \"dimension\": \"<id>\" or null}`; `400` if no backup name is given",
         what: "Restart the game with that backup's world, or only one dimension of it (what it replaces is kept in backups/)",
     },
     Route {
@@ -783,7 +783,11 @@ pub fn route(shared: &Arc<Shared>, request: &Request) -> Response {
         }
         ("POST", "/api/v1/restore") => {
             let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
-            let Some(name) = body["name"].as_str().filter(|name| !name.trim().is_empty()) else {
+            let Some(name) = body["name"]
+                .as_str()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+            else {
                 return Response::error(400, "a backup name is required");
             };
             match backup::find(&shared.dir, name) {
@@ -1766,7 +1770,10 @@ mod tests {
             "horizon-server-restore-validation-{}",
             std::process::id()
         ));
-        std::fs::create_dir(&root).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("backups")).unwrap();
+        // One backup: a blank name used to match it as a prefix and restore it (#20180).
+        std::fs::write(root.join("backups/2026-01-01_00-00-00-manual.zip"), b"zip").unwrap();
         let shared = Shared::with_install(&root, None);
         for body in [
             "",
@@ -1790,7 +1797,7 @@ mod tests {
             assert!(shared.restore.lock().unwrap().is_none(), "{body:?}");
             assert!(!shared.restart.load(Ordering::SeqCst), "{body:?}");
         }
-        std::fs::remove_dir(&root).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     fn backup_reply(mut response: Response) -> Value {
