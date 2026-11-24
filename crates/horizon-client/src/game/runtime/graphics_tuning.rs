@@ -175,13 +175,14 @@ fn reclaim_abandoned_trials(dir: &Path) {
             .file_name()
             .to_str()
             .is_some_and(|name| name.starts_with("trial-"));
-        if is_trial && entry.path().is_dir() {
-            if let Err(error) = fs::remove_dir_all(entry.path()) {
-                log::warn!(
-                    "Horizon graphics benchmark: couldn't reclaim abandoned trial folder {}: {error}",
-                    entry.path().display()
-                );
-            }
+        if is_trial
+            && entry.path().is_dir()
+            && let Err(error) = fs::remove_dir_all(entry.path())
+        {
+            log::warn!(
+                "Horizon graphics benchmark: couldn't reclaim abandoned trial folder {}: {error}",
+                entry.path().display()
+            );
         }
     }
 }
