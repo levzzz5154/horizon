@@ -139,8 +139,9 @@ The statistic, in `horizon_bench::compare`, exact and deterministic:
 
 Reports do not record user names, host names, addresses or world names. Saved reports may
 include a player-chosen `label` and `local` log paths. Automatic uploads require benchmark
-upload consent and omit those two fields. See [telemetry](telemetry.md) for what is sent
-and how to preview it.
+upload consent and send the report as it is after scrubbing, `label` and `local` included, with
+the user folder in paths replaced. See [telemetry](telemetry.md) for what is sent and how to
+preview it.
 
 ## Where reports go
 
