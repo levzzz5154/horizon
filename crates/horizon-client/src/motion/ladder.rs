@@ -46,7 +46,11 @@ impl ClimbingWorld for MotionWorld<'_, '_, '_> {
         self.player.last_climbable = Some(position);
     }
     fn adjust_ladder(&mut self, position: BlockPos, state: BlockStateId, tagged: bool) -> bool {
-        let mut ladder = tagged;
+        let mut ladder = tagged
+            || self
+                .collision_binding
+                .cached_shapes()
+                .is_scaffolding_collision(state);
         native_is_ladder(
             self.loop_context,
             self.player.entity_id as u32,

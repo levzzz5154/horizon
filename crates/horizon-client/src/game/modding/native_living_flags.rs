@@ -335,6 +335,7 @@ impl Game<'_> {
         };
         let mut world = FlagClimbing {
             world: &self.world,
+            cached_shapes: self.collision.cached_shapes(),
             context: &self.loop_context,
             entity: living.id(),
             position: BlockPos::containing(position),
@@ -347,6 +348,7 @@ impl Game<'_> {
     pub(super) fn native_mob_is_climbing(&self, mob: &horizon_client::mobs::Mob) -> bool {
         let mut world = FlagClimbing {
             world: &self.world,
+            cached_shapes: self.collision.cached_shapes(),
             context: &self.loop_context,
             entity: mob.id,
             position: BlockPos::containing(mob.position),
@@ -379,6 +381,7 @@ impl Game<'_> {
 /// walks the level the flag's entity stands in, at its feet.
 struct FlagClimbing<'a> {
     world: &'a horizon_client::world::World,
+    cached_shapes: &'a horizon_world::collision::CachedCollisionRegistry<'a>,
     context: &'a horizon_world::native_load_context::LoopContext,
     entity: u32,
     position: BlockPos,
@@ -405,7 +408,7 @@ impl ClimbingWorld for FlagClimbing<'_> {
     }
     fn set_last_climbable_position(&mut self, _: BlockPos) {}
     fn adjust_ladder(&mut self, position: BlockPos, state: BlockStateId, tagged: bool) -> bool {
-        let mut ladder = tagged;
+        let mut ladder = tagged || self.cached_shapes.is_scaffolding_collision(state);
         horizon_client::motion::native_is_ladder(
             self.context,
             self.entity,
