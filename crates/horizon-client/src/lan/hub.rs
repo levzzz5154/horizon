@@ -439,6 +439,10 @@ pub struct Hub {
     /// An integrated server's owner (`MinecraftServer.isSingleplayerOwner`),
     /// whose moves are never checked.
     pub singleplayer_owner: Option<u128>,
+    /// Splitscreen seats an integrated server gave the owner's permissions
+    /// (`IntegratedServer.joinSplit`): they are in `ops` for permission checks
+    /// but are no `ops.json` entries, so `PlayerList.isOp` does not name them.
+    pub split_players: std::collections::HashSet<u128>,
     /// The world is superflat (`ServerLevel.isFlat`, a world-wide flag, sent as
     /// `CommonPlayerSpawnInfo.isFlat` in every dimension).
     pub flat_world: bool,
@@ -853,6 +857,7 @@ impl Hub {
             chat_filter: None,
             far: None,
             singleplayer_owner: None,
+            split_players: Default::default(),
             flat_world: false,
             debug_world: false,
             riding: Default::default(),
@@ -3789,12 +3794,13 @@ impl Hub {
                             now,
                             &mut g.advancements,
                             &mut g.recipe_book,
+                            &mut g.recipes_unlocked,
                         );
                         if let Some(add) = first.recipe_book_add {
                             g.send(&raw(ids::RECIPE_BOOK_ADD, add));
                         }
                         g.send(&raw(ids::UPDATE_ADVANCEMENTS, first.update_advancements));
-                        g.advancements_visible = sync.advancements.visibility(&g.advancements);
+                        g.advancements_visible = first.visible;
                         g.advancements_changed.clear();
                     }
                 });

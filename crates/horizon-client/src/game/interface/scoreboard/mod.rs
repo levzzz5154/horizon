@@ -118,17 +118,20 @@ impl Game<'_> {
         if root.is_none() && dim == super::Dim::Overworld {
             root = save::read_dat(&self.world_root.join("data/minecraft/world_border.dat"));
         }
-        root.as_ref()
+        let border = root
+            .as_ref()
             .and_then(|root| root.get("data"))
             .map(horizon_client::worldborder::WorldBorder::unpack)
-            .unwrap_or_default()
+            .unwrap_or_default();
+        self.levels.limit_border(border)
     }
     /// Save the border of the level in place (`SavedData`, one per level).
     pub(super) fn save_border(&self) {
         if !self.score.loaded || self.remote.is_some() {
             return;
         }
-        if self.border != horizon_client::worldborder::WorldBorder::default()
+        // Not `!= WorldBorder::default()`: that counts `max-world-size`, which is never saved.
+        if !self.border.is_default_when_saved()
             && let Err(e) = save::write_dat(
                 &self.border_path(self.dim),
                 Tag::compound([
@@ -484,18 +487,28 @@ impl Game<'_> {
         host.hub.teams.clone_from(&self.score.board.teams);
         let view = horizon_client::lan::scoreboard::View::of(&self.score.board);
         host.hub.guests.update_all(|g| {
-            if g.placed && g.scoreboard != view {
-                let packets = g.scoreboard.changes(&view);
-                if g.sent_sidebar_claims_slot
-                    && packets.iter().any(
-                        |packet| matches!(packet, Clientbound::SetDisplayObjective(d) if d.slot == 1),
-                    )
-                {
-                    g.sent_sidebar_claims_slot = false;
-                }
-                g.send_all(&packets);
-                g.scoreboard = view.clone();
+            if !g.placed {
+                return;
             }
+            let packets = if !g.scoreboard_synced {
+                g.scoreboard_synced = true;
+                view.initial_packets()
+            } else if g.scoreboard != view {
+                g.scoreboard.changes(&view)
+            } else {
+                return;
+            };
+            if g.sent_sidebar_claims_slot
+                && packets.iter().any(
+                    |packet| matches!(packet, Clientbound::SetDisplayObjective(d) if d.slot == 1),
+                )
+            {
+                g.sent_sidebar_claims_slot = false;
+            }
+            if !packets.is_empty() {
+                g.send_all(&packets);
+            }
+            g.scoreboard = view.clone();
         });
     }
     /// `ServerPlayer.doTick` score updates and the statistic criteria.
