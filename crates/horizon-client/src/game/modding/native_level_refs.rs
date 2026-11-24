@@ -12,8 +12,9 @@ use horizon_items::items::ItemStack;
 use horizon_world::registry::BlockStateId;
 use mod_api::world::mod_chunk_tickets::ModTicket;
 use mod_api::{
-    BlockHit, BlockTransformPreview, ChunkRef, ChunkStatus, ClipBlock, ClipFluid, DimensionKey,
-    Hand, LevelRef, LightLayer, MapState, PlayerRef, RespawnData, TicketController, Vec3,
+    BlockHit, BlockTransformPreview, ChunkDeltaCursor, ChunkDeltas, ChunkRef, ChunkStatus, ClipBlock,
+    ClipFluid, DimensionKey, Hand, LevelRef, LightLayer, MapState, PlayerRef, RespawnData,
+    TicketController, Vec3,
 };
 
 fn block_pos([x, y, z]: [i32; 3]) -> BlockPos {
@@ -396,6 +397,38 @@ impl Game<'_> {
                 .collect(),
         )
     }
+    /// Read the current client level's residency and content journal without loading any chunk.
+    pub(super) fn level_chunk_deltas(
+        &self,
+        level: LevelRef,
+        since: Option<ChunkDeltaCursor>,
+    ) -> Option<ChunkDeltas> {
+        if self.native_client_level()? != level {
+            return None;
+        }
+        let chunks = &self.world.chunks;
+        let now = chunks.touch_cursor();
+        let cursor = ChunkDeltaCursor::new(level, now);
+        let touched = since
+            .and_then(|since| since.for_level(level))
+            .filter(|&(_, seq)| seq <= now.1)
+            .and_then(|since| chunks.touched_since(since));
+        let loaded = |&(x, z)| mod_api::__private::built::chunk_delta([x, z], true);
+        let full = touched.is_none();
+        let mut changes: Vec<_> = match touched {
+            Some(keys) => keys.map(loaded).collect(),
+            None => chunks.keys().map(loaded).collect(),
+        };
+        changes.sort_unstable_by_key(|delta| delta.pos);
+        if !full {
+            changes.dedup_by_key(|delta| delta.pos);
+            for delta in &mut changes {
+                let [x, z] = delta.pos;
+                delta.loaded = chunks.contains_key(&(x, z));
+            }
+        }
+        Some(mod_api::__private::built::chunk_deltas(cursor, full, changes))
+    }
     /// Whether this chunk is loaded; false on a client or for a stale handle.
     pub(super) fn chunk_loaded(&self, chunk: ChunkRef) -> bool {
         self.chunk(chunk.level(), chunk.pos()).is_some()
@@ -404,6 +437,39 @@ impl Game<'_> {
     pub(super) fn chunk_status(&self, chunk: ChunkRef) -> Option<ChunkStatus> {
         self.chunk(chunk.level(), chunk.pos())
             .map(|_| ChunkStatus::Full)
+    }
+    /// The section Y coordinates (bottom up) of a loaded chunk whose palette may hold
+    /// any state of `block` (`PalettedContainer.maybeHas`). None on a client, for a
+    /// stale handle, or when the chunk is not loaded.
+    pub(super) fn chunk_sections_with_block(
+        &self,
+        chunk: ChunkRef,
+        block: mod_api::BlockKey,
+    ) -> Option<Vec<i32>> {
+        let world = self.native_level_world(chunk.level())?;
+        let [cx, cz] = chunk.pos();
+        let loaded = world.chunks.get(&(cx, cz))?;
+        let name = block.id(self);
+        if name.is_empty() {
+            return Some(Vec::new());
+        }
+        let registry = self.pack.assets.registry;
+        let min_section = loaded.min_y() >> 4;
+        Some(
+            loaded
+                .sections
+                .iter()
+                .enumerate()
+                .filter(|(_, section)| {
+                    section.blocks.maybe_has(|v| {
+                        registry
+                            .state(BlockStateId(v))
+                            .is_some_and(|s| s.name == name)
+                    })
+                })
+                .map(|(index, _)| min_section + index as i32)
+                .collect(),
+        )
     }
     /// A handle for chunk `pos` of an open level, loaded or not, so a mod can
     /// force an unloaded chunk. None for a stale handle, on a client, and for
@@ -3710,5 +3776,34 @@ mod environment_read_tests {
                 );
             }
         });
+    }
+
+    #[test]
+    fn chunk_sections_with_block_skips_empty_sections_and_returns_none_when_unloaded() {
+        if std::env::var_os("HORIZON_TEST_RESOURCES").is_none() {
+            return;
+        }
+        let mut game = crate::game::native_machines::tests::server_game();
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        let ore = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:diamond_ore")
+            .unwrap();
+        game.world.set(1, -48, 1, ore).unwrap();
+        game.world.set(2, 20, 2, ore).unwrap();
+
+        let level = <dyn mod_api::Host>::level(&game, "minecraft:overworld").unwrap();
+        let loaded = level.chunk_ref(&game, [0, 0]).unwrap();
+        let unloaded = level.chunk_ref(&game, [5, 5]).unwrap();
+        let ore_key = mod_api::__private::block_key("minecraft:diamond_ore").unwrap();
+        let gold_key = mod_api::__private::block_key("minecraft:gold_ore").unwrap();
+
+        assert_eq!(loaded.sections_with_block(&game, ore_key), Some(vec![-3, 1]));
+        assert_eq!(loaded.sections_with_block(&game, gold_key), Some(Vec::new()));
+        assert_eq!(unloaded.sections_with_block(&game, ore_key), None);
     }
 }
