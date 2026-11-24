@@ -1,3 +1,6 @@
+//! The `can_swim_in_fluid` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
+// catalog-order: 0358
+
 pub trait Hooks {
     /// Edit player swim admission for the fluid being tested, including its source or flowing
     /// identity. `can_swim` starts true for water and false for other fluids. `fire_resistance`
