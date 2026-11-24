@@ -52,6 +52,7 @@ pub enum ControllerGlyphFamily {
 
 /// A resolved control prompt. Read it again when drawing a new frame to follow settings, device,
 /// language and resource changes. It contains no atlas names or coordinates.
+// exhaustive: its fields are private, so mods cannot build or destructure it
 #[derive(Clone, Debug, PartialEq, horizon_mod_api_macros::Wire)]
 pub struct InputGlyph {
     pub(crate) label: String,
