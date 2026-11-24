@@ -64,28 +64,31 @@ fn a_players_burst_acts_on_the_next_tick_in_the_order_pressed() {
     });
 }
 
-/// Swap (F), drop (Q) and mount inventory (E) act before attack/use in the same tick, matching
-/// vanilla's `Minecraft.handleKeybinds` order.
+/// Number-key selection, swap (F) and drop (Q) act before attack/use in the same tick, matching
+/// vanilla's `Minecraft.handleKeybinds` order (`pick` -> number keys -> F/Q/E -> attack/use/pick).
 #[test]
 #[ignore = "daily"]
-fn swap_drop_and_mount_inventory_run_before_attack() {
+fn swap_and_drop_run_before_attack() {
     with_pressing_game(|game, packets, _| {
         game.set_mode_id(1);
         game.forced_hit = None;
-        game.inventory[game.selected] = Some(ItemStack::new("minecraft:stone", 64));
+        game.inventory[1] = Some(ItemStack::new("minecraft:stone", 64));
         game.play_mouse(MouseButton::Left, true).unwrap();
         game.play_mouse(MouseButton::Left, false).unwrap();
+        game.key_pressed(KeyCode::Digit2, KeyCode::Digit2).unwrap();
         game.key_pressed(KeyCode::KeyF, KeyCode::KeyF).unwrap();
         game.key_pressed(KeyCode::KeyQ, KeyCode::KeyQ).unwrap();
         game.remote_handle_input();
         assert_eq!(
             sent(packets),
             [
+                "minecraft:set_carried_item",
                 "minecraft:player_action",
                 "minecraft:player_action",
                 "minecraft:punch",
             ]
         );
+        assert_eq!(game.selected, 1);
     });
 }
 

@@ -36,10 +36,6 @@ impl Game<'_> {
             self.hotbar_presses.clear();
             return;
         }
-        // Minecraft.handleKeybinds: hotbar number keys select first, then swap (F), drop (Q)
-        // and mount inventory (E) act before attack, use and pick.
-        self.select_queued_hotbar();
-        self.remote_queued_keys();
         let (attack, use_item) = (self.left, self.right);
         input.tick(&mut RemoteInputWorld(self), attack, use_item);
         if let Some(r) = self.remote.as_mut() {
