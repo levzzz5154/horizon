@@ -10118,6 +10118,79 @@ CHECKS += ['cart_portal_rider']
 CHECK_FNS.update(cart_portal_rider=check_cart_portal_rider)
 
 
+def check_boat_end_portal(host, guest, out):
+    """#17485: a mounted boat falling faster than its box is tall must sweep the End portal."""
+    home = 'execute in minecraft:overworld run'
+    tag = 'boat_end_portal'
+    result = {}
+    spots = apart(host, guest)
+    for label, player, other in (('host', host, guest), ('guest', guest, host)):
+        x, ground, z = spots[label]
+        y, portal_y = 220, 183
+        for cmd in (
+            f'fill {x - 2} {y - 1} {z - 1} {x + 2} {y - 1} {z + 4} packed_ice',
+            f'fill {x - 2} {portal_y - 3} {z - 1} {x + 2} {portal_y - 3} {z + 26} stone',
+            # At this height the boat falls from y=183.88 to y=182.16 in one tick.
+            # Neither endpoint overlaps the portal's 6/16..12/16 inside shape.
+            f'fill {x - 2} {portal_y} {z + 5} {x + 2} {portal_y} {z + 26} end_portal',
+            f'tp @s {x + 0.5} {y} {z + 0.5} 0 0',
+            f'summon oak_boat {x + 0.5} {y} {z + 2.5} {{Tags:["{tag}"]}}',
+        ):
+            player('command', command=cmd)
+        player.wait(25)
+        try:
+            assert player.raw('block', x, portal_y, z + 5)['block'] == 'minecraft:end_portal'
+            boat = board(player, 'oak_boat', (x + 0.5, y, z + 2.5))
+
+            def boat_status():
+                status = player('status')
+                at = next((o['position'] for o in status['objects'] if o['id'] == boat['id']), None)
+                return status.get('riding'), at
+
+            player.raw('key', 'w', 'down')
+            try:
+                # Paddle off the runway, then coast through the portal below it.
+                for _ in range(60):
+                    player.wait(2)
+                    if player('state').get('dimension') == END:
+                        break
+                    _, at = boat_status()
+                    if at is not None and at[2] > z + 6:
+                        break
+                else:
+                    raise AssertionError(f'{label}: boat did not leave the runway: {boat_status()}')
+            finally:
+                player.raw('key', 'w', 'up')
+
+            there = wait_dimension(player, END, 600)
+            assert there.get('dimension') == END, f'{label}: boat did not enter the End: {boat_status()}'
+            for _ in range(30):
+                player.wait(20)
+                riding, at = boat_status()
+                if riding == boat['id'] and at is not None:
+                    break
+            assert riding == boat['id'] and at is not None, f'{label}: lost boat {boat["id"]} in the End'
+            rider = pos_of(player)
+            assert math.dist(at, rider) < 3, f'{label}: boat is not under its rider: {at}, {rider}'
+            assert other('state').get('dimension') == OVERWORLD
+            player.shot(out, 'boat-end-portal')
+            result[label] = {'riding': riding, 'boat': at, 'player': rider}
+        finally:
+            back_to_game(player)
+            player('command', command=f'kill @e[tag={tag}]')
+            player('command', command=f'{home} kill @e[tag={tag}]')
+            for level, last_z in ((y - 1, z + 4), (portal_y, z + 26), (portal_y - 3, z + 26)):
+                player('command', command=f'{home} fill {x - 2} {level} {z - 1} {x + 2} {level} {last_z} air')
+            player('command', command=f'{home} tp @s {x + 0.5} {ground} {z + 0.5}')
+            wait_dimension(player, OVERWORLD, 600)
+            player.wait(20)
+    return result
+
+
+CHECKS += ['boat_end_portal']
+CHECK_FNS.update(boat_end_portal=check_boat_end_portal)
+
+
 def check_recipe_removal(host, guest, out):
     """ServerRecipeBook.removeRecipes sends ClientboundRecipeBookRemovePacket to the player:
     the open book updates immediately, reopening keeps it empty, and later grants still arrive."""
@@ -14508,6 +14581,80 @@ CHECKS += ['hive_bees']
 CHECK_FNS['hive_bees'] = check_hive_bees
 
 
+def check_boat_boarding_order(host, guest, out):
+    """The first player aboard keeps the front seat and steering when the second joins (#15941)."""
+    positions = [(game, pos_of(game)) for game in (host, guest)]
+    x, _, z = (math.floor(v) for v in positions[0][1])
+    y = 100
+    spot = (x + 0.5, y, z + 0.5)
+    host('command', command=f'fill {x - 3} {y - 2} {z - 2} {x + 3} {y - 1} {z + 10} minecraft:stone')
+    host('command', command=f'fill {x - 3} {y} {z - 2} {x + 3} {y + 3} {z + 10} minecraft:air')
+    host('command', command=f'fill {x - 1} {y - 1} {z - 1} {x + 1} {y - 1} {z + 9} minecraft:water')
+    tag = 'lan_boat_boarding_order'
+
+    def boat(game, boat_id):
+        return next(o for o in game('status')['objects'] if o['id'] == boat_id)
+
+    result = {}
+    try:
+        for driver, passenger in ((guest, host), (host, guest)):
+            host('command', command=f'summon minecraft:oak_boat {spot[0]} {y - 0.1} {spot[2]} '
+                 f'{{Rotation:[0f,0f],Tags:["{tag}"]}}')
+            for game, dx in ((driver, -2), (passenger, 2)):
+                game('command', command=f'tp @s {spot[0] + dx} {y} {spot[2]}')
+            host.wait(24)
+            guest.wait(12)
+            boat_id = board(driver, 'oak_boat', spot)['id']
+            # Aim at the boat's empty end so the first rider cannot intercept the click.
+            px, py, pz = boat(passenger, boat_id)['position']
+            passenger.raw('look-at', f'{px:.2f}', f'{py + 0.25:.2f}', f'{pz - 0.5:.2f}')
+            passenger.raw('mouse', 'right', 'click')
+            passenger.wait(12)
+            boarded = passenger('status').get('riding') == boat_id
+            if not boarded:
+                # Measure seat assignment and steering even when boarding by interaction failed.
+                passenger('command', command=f'ride @s mount @e[tag={tag},limit=1]')
+            passenger.until(lambda: passenger('status').get('riding'), lambda riding: riding == boat_id, ticks=20)
+            assert driver('status').get('riding') == boat_id
+            host.wait(12)
+            guest.wait(12)
+
+            shared_boat = boat(host, boat_id)
+            start = shared_boat['position']
+            yaw = math.radians(shared_boat['yaw'])
+
+            def offset(position):
+                return round(-(position[0] - start[0]) * math.sin(yaw)
+                             + (position[2] - start[2]) * math.cos(yaw), 3)
+
+            seen = {
+                'passenger_boarded_by_click': boarded,
+                'server_seats': {g.name: offset(server_player(host, g)['position']) for g in (host, guest)},
+                'client_seats': {g.name: offset(pos_of(g)) for g in (host, guest)},
+            }
+            for rider in (passenger, driver):
+                before = boat(host, boat_id)['position']
+                rider.script(['key w down', 'wait 20', 'key w up', 'wait 8'])
+                after = boat(host, boat_id)['position']
+                seen[f'{rider.name}_paddle_blocks'] = round(math.dist(before, after), 3)
+            result[f'{driver.name}_first'] = seen
+            host('command', command=f'kill @e[tag={tag}]')
+        lab.write_json(out / 'boat-boarding-order.json', result)
+    finally:
+        host('command', command=f'kill @e[tag={tag}]')
+        for game, pos in positions:
+            game('command', command='tp @s ' + ' '.join(str(v) for v in pos))
+    for driver, passenger in ((guest, host), (host, guest)):
+        seen = result[f'{driver.name}_first']
+        assert seen['passenger_boarded_by_click'], result
+        for seats in (seen['server_seats'], seen['client_seats']):
+            assert abs(seats[driver.name] - 0.2) < 0.15 and abs(seats[passenger.name] + 0.6) < 0.15, result
+        assert seen[f'{passenger.name}_paddle_blocks'] < 0.15 and seen[f'{driver.name}_paddle_blocks'] > 0.5, result
+    return result
+
+
+CHECKS += ['boat_boarding_order']
+CHECK_FNS['boat_boarding_order'] = check_boat_boarding_order
 
 
 def prepare_view_center(bins, *games):

@@ -14,7 +14,14 @@ The screen holds vanilla's video options and Horizon's own together, built from 
 
 Tab, the arrows, Enter and Space work it from the keyboard (Left and Right step a focused slider, Space lets go of it), a controller moves between its rows and its bumpers between the pages, and the narrator reads each row as a tick box, a slider or a button.
 
-Every setting applies at once, except worker threads, the graphics API, translucent batching and the sizes battery mode halves the client's pools to (chunk building, the tick's helpers, chunk decoding, saves, network and chunk encoding), which apply at the next start (battery mode's frame cap applies at once). A preset sets the quality settings together; changing one of them turns it into Custom. Display preferences (FOV, framerate, VSync, GUI scale, fullscreen, present mode, pacing) leave the preset as it is.
+Every setting applies at once, except worker threads, the graphics API, translucent batching, ray tracing turned on in a game started without it, and the sizes battery mode halves the client's pools to (chunk building, the tick's helpers, chunk decoding, saves, network and chunk encoding), which apply at the next start (battery mode's frame cap applies at once). Ray tracing turned on (On, or Auto with a pack that traces) applies at once only in a game that started with it: ray queries are part of the device the game opens, so after a start without them (Off, or Auto with no such pack) it waits for the next start, as the shader pack screen says of a pack that traces. A preset sets the quality settings together; changing one of them turns it into Custom. Display preferences (FOV, framerate, VSync, GUI scale, fullscreen, present mode, pacing) leave the preset as it is.
+
+**Video Settings → Quality → Textures → Better Grass** controls how grass-like blocks use their top
+texture on their sides. **Pack default** uses Fancy only if an enabled resource pack supplies
+`optifine/bettergrass.properties`; otherwise it leaves vanilla block sides unchanged. **Off** disables
+the effect even with a pack. **Fast** uses the top texture without checking neighboring blocks;
+**Fancy** checks neighboring blocks to blend terrain edges. Fast and Fancy use built-in rules if no
+pack supplies the file. The selected mode is saved in `options.txt` and is not changed by graphics presets.
 
 With VSync off, **Present Mode: Mailbox** uses FIFO on surfaces that do not support Mailbox, so
 the explicit tear-free choice never becomes Immediate. **Auto** still follows vanilla's selection.
@@ -53,7 +60,7 @@ Every preset also turns on the optimizations that leave the picture as it is: as
 | | sky, fog, weather, animated textures, distant plant dither (`ditherCutoutMips`, off by default: cutouts from 64 texels up), resolution scale, dynamic resolution and its target FPS, anti-aliasing (FXAA or TAA), TAA upscaling, screenshot quality, frame generation | `horizon-graphics.txt` |
 | Performance | chunk builder | `options.txt` |
 | | chunk updates and upload budget per frame, worker threads, parallel tick, cave culling, GPU culling, entity and particle culling modes, leaf culling, battery mode, and the block-entity caches (shulker boxes, signs, decorated pots, bells, chests, banners, copper golem statues) | `horizon-graphics.txt` |
-| Shaders | **Shader Packs...**: the list of shader packs, [Horizon's `.hshader` ones](shaders.md) and classic `shaders/` folder ones, and the picked pack's options; shadow cache | `horizon-graphics.txt`, the pack's own options file |
+| Shaders | **Shader Packs...**: the list of shader packs, [Horizon's `.hshader` ones](shaders.md) and classic `shaders/` folder ones, and the picked pack's options; shadow cache; ray tracing (Auto, On, Off) | `horizon-graphics.txt`, the pack's own options file |
 | Advanced | present mode, frame pacing, graphics API, translucent batching, performance overlay (FPS, frame/CPU/GPU times, the render thread's wait on the GPU and the display, frame-time graph) | `horizon-graphics.txt` |
 | HDR | HDR, calibration, black level, peak brightness, paper white, UI brightness, look | `horizon-graphics.txt` |
 
@@ -164,6 +171,17 @@ Not implemented: anisotropic filtering (wgpu needs linear magnification for it, 
 `HORIZON_VISBUFFER=1` (read at startup, off by default) draws solid terrain through a visibility buffer (`gfx/visbuffer.rs`, `visbuffer.wgsl`). Pass 1 rasterises the solid draws, near sections and far terrain alike, writing only depth and, per pixel, a 32-bit ID of the quad it shows (bit 31 set, the arena page in bits 22 to 30, the quad in that page below); cutout and fading quads keep their alpha test and dither there, the other quads never discard, so a tiled GPU still hides what lies behind them. Pass 2 is one full-screen draw with up to 16 arena pages bound (more pages, more draws; one draw per page made each GPU thread group shade once for every page among its pixels, 36 ms instead of 2 at 1440p): it reads the quad's corners from its page and its section's origin (through a copy of the drawn pages' block tables in one buffer) as the vertex shaders do, runs the terrain vertex code on the triangle the pixel falls in, interpolates with perspective-correct barycentrics (homogeneous 2D rasterisation, so corners behind the camera need no clipping) and works out the UV's screen gradients over that triangle as `dpdxFine`/`dpdyFine` would, so the texel, mip level and RGSS blend, light, HDR light and fog come out as in the normal path. Both passes sample only the side of RGSS's blend with nearest texels that it keeps (one tap where the texels are large), which gives the same value. Each solid pixel is then shaded once, however many quads were drawn over it and however small they are.
 
 It runs only in frames drawn flat (Metal past `flat::MIN_SECTIONS` sections in view, or `HORIZON_FLAT_DRAWS=1` elsewhere), with or without occlusion culling. Frames with a shader pack's terrain, one of Horizon's own packs with a material stage or a shadow pass, a pack's surface target, and the title screen keep the normal solid passes, as do translucent terrain and the water mirror's own pass.
+
+## Shader pack shadow draws
+
+A `shaders/` pack's frames are drawn flat: each frame a compute pass copies the indices of every section draw into one list, which the pack's programs draw from. The shadow pass's solid terrain, the frame's largest list (the light sees down to bedrock, with no cave culling), is left out of that list and drawn with indirect multi-draws over the quad indices at each section's base vertex instead (`gfx::pack_shadow_indirect`), where all of these hold:
+
+- frames without a pack draw section by section: DirectX 12 and Vulkan, not OpenGL, Metal, Qualcomm's Adreno under DirectX 12, or Intel Gen11 and Gen12 on Vulkan, except Raptor Lake on Mesa 26.0.8 or later; and not with `HORIZON_FLAT_DRAWS=1`, which draws every frame flat;
+- the device runs a multi-draw of the whole list as one command: always under DirectX 12, and on Vulkan with `multiDrawIndirect` and a `maxDrawIndirectCount` of at least the list's draws (wgpu-hal replays it draw by draw otherwise);
+- the pack's shadow program has no geometry stage, which reads the flat list itself;
+- the indirect buffer has room for the list's arguments; where video memory has none, that frame keeps the list flat.
+
+The pack's vertex stage reads the same `gl_VertexIndex` (the base vertex plus the quad's corner) and `gl_InstanceID` (0) either way. `HORIZON_PACK_SHADOW_INDIRECT=0` keeps the shadow's solid terrain in the flat list, for A/B checks; it is read once per process, so set it before the game starts.
 
 ## Benchmark
 

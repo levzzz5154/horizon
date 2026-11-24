@@ -4,8 +4,8 @@
 //! (`Renderer::set_external_pipeline`), each point is one `Option` test.
 //!
 //! Workspace-internal: the trait names the engine's frame, its mesh format and its pass order,
-//! has one implementer in this workspace, carries no stability promise and is never exposed to
-//! mods. A mesher or pass change updates its implementer in the same PR. HDR output
+//! carries no stability promise and is never exposed to mods. A mesher or pass change
+//! updates its implementers in the same PR. HDR output
 //! (`output.rs`, `frame_policy`) is not an implementer: it stays the one output stage after the
 //! frame, and a pipeline draws into the frame it gives.
 //!
@@ -181,6 +181,8 @@ pub struct Capabilities {
     pub displacement: bool,
     /// Its terrain draws with layers of its own.
     pub material: bool,
+    /// It draws its own sky in place of the engine's Overworld sky.
+    pub replaces_sky: bool,
     /// Its sky leaves out vanilla's clouds, sun, moon or stars.
     pub hides_clouds: bool,
     pub hides_sun: bool,
@@ -206,6 +208,10 @@ pub struct Capabilities {
     /// Besides `engine_resolve`, TAA upscales its world and sharpens it as without a pack: its
     /// `[tonemap]`, if it has one, never reads `previous`, which is then larger than the world.
     pub engine_upscale: bool,
+    /// Without `engine_resolve`, the renderer still moves the world's projection by TAA's
+    /// sub-pixel offset every frame and says it in `frame.jitter` (`[frame] jitter`), for the
+    /// pack's own temporal pass; it doesn't resolve, upscale or keep a history for it.
+    pub jitter: bool,
 }
 
 /// What the renderer hands the pack's post stage (`ExternalPipeline::run_post`).
@@ -404,6 +410,9 @@ pub struct EntityLayers<'a> {
     /// Their group 3: the pack's frame, with this frame's version of the kept resources the
     /// stage reads where it reads any.
     pub frame: &'a wgpu::BindGroup,
+    /// `[entity] surface = true`: the surface target both pipelines write beside the colour,
+    /// the one the material stage's solid terrain writes.
+    pub surface: Option<&'a wgpu::TextureView>,
 }
 
 /// A section the grid may draw from this frame: its arena page, the base vertex of its solid
@@ -528,6 +537,33 @@ pub(super) fn shadow_box(view: &ShadowView) -> Frustum {
         planes[5] = Vec4::W;
     }
     Frustum { planes }
+}
+
+/// Where a section comes in the shadow pass's draw order, nearest the light first: a key that
+/// sorts as the height of its camera-relative `origin` along `light` (the direction toward the
+/// light) does with `f32::total_cmp`, highest first. Worked out once a section, where comparing
+/// heights worked them out again at every comparison.
+fn shadow_order(origin: [f32; 3], light: Vec3) -> u64 {
+    let bits = Vec3::from(origin).dot(light).to_bits();
+    // `total_cmp`'s order as unsigned integers (negatives below positives, each by magnitude),
+    // then turned around so that the highest comes first.
+    let ascending = if bits & 0x8000_0000 != 0 {
+        !bits
+    } else {
+        bits | 0x8000_0000
+    };
+    u64::from(!ascending)
+}
+
+/// Puts a shadow pass's `sections` in its draw order, nearest the light first, so that the
+/// depth test rejects what lies under them: highest along `light` first (`shadow_order`, worked
+/// out once a section into `distance`, which nothing reads of them after), those level with
+/// each other by key. They come in any order (`Resident::visible_unsorted`).
+pub(super) fn sort_shadow_sections(sections: &mut [super::resident::Visible], light: Vec3) {
+    for s in &mut *sections {
+        s.distance = shadow_order(s.origin, light);
+    }
+    sections.sort_unstable_by_key(|s| (s.distance, s.key));
 }
 
 /// The runs of a section's solid quads the shadow pass draws: every face within the unculled
