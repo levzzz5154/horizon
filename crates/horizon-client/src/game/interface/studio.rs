@@ -45,6 +45,7 @@ impl Studio {
             None => Default::default(),
         };
         self.timeline.selected_keyframe = None;
+        self.timeline.dragging_keyframe = None;
     }
 }
 
