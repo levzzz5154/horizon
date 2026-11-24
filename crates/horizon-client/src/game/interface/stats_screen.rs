@@ -93,7 +93,8 @@ enum Format {
     Time,
 }
 fn two(v: f64) -> String {
-    horizon_core::java_number::format_fixed2(v)
+    // `DecimalFormat("########0.00")`: HALF_EVEN on the exact binary value, as `{:.2}` does.
+    format!("{v:.2}")
 }
 /// `StatFormatter`.
 fn format(f: Format, v: i32) -> String {
@@ -991,11 +992,11 @@ mod tests {
         assert_eq!(ui.scroll.amount, 0.0);
     }
 
-    /// `StatFormatter` uses Java fixed-point rounding (half-up on the decimal midpoint):
-    /// `100_500 cm` is `1.005 km`, which Java formats as `"1.01 km"` rather than `"1.00 km"`.
+    /// `StatFormatter`'s seconds are Java's `double + " s"`; its decimals are
+    /// `DecimalFormat` on the binary value, so `1.005 km` (just below the midpoint) is `"1.00 km"`.
     #[test]
-    fn stat_formatter_rounds_decimal_midpoints_half_up() {
-        assert_eq!(format(Format::Distance, 100_500), "1.01 km");
+    fn stat_formatter_matches_java_number_text() {
+        assert_eq!(format(Format::Distance, 100_500), "1.00 km");
         assert_eq!(format(Format::Time, 20), "1.0 s");
     }
 }

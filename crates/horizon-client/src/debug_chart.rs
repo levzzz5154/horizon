@@ -382,7 +382,7 @@ impl Chart {
                 }
             }
             Chart::Tps { mspt } => {
-                let tps = horizon_core::java_number::format_fixed(1000.0 / f64::from(mspt), 1);
+                let tps = horizon_core::java_number::format_fixed(f64::from(1000.0 / mspt), 1);
                 shaded(
                     out,
                     font,
