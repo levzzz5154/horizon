@@ -1770,6 +1770,9 @@ pub enum MobEvent {
         count: u32,
     },
     Sound(&'static str, [f64; 3], f32, f32),
+    /// `Entity.playSound`: a sound at `at` in the entity's own sound source,
+    /// which the event's category alone would not give.
+    SourcedSound(&'static str, mod_api::SoundSource, [f64; 3], f32, f32),
     ProfessionWorkSound(Arc<str>, [f64; 3], f32, f32),
     /// `level.playSound(null, mob, sound, source, volume, pitch)`: a sound
     /// bound to mob `mob` (`ServerLevel.playSeededSound`'s entity overload),
@@ -2672,6 +2675,39 @@ pub struct SpawnSetup {
 include!("mobs/seen.rs");
 
 impl Mob {
+    /// Its saved stacks as the game that owns `prototypes` takes them in
+    /// (`ItemStack.CODEC`, `applyPatch`): its equipment, chest, carried inventory, an
+    /// allay's item and a trader's results. A trade's costs are `ItemCost` predicates,
+    /// not stacks: they keep what they require.
+    pub fn clean_stacks(&mut self, prototypes: &crate::item_data::ItemPrototypes) {
+        use crate::item_data::clean_stacks;
+        let extra = &mut self.extra;
+        clean_stacks(extra.equipment.iter_mut().flatten(), prototypes);
+        clean_stacks(extra.items.iter_mut().flatten(), prototypes);
+        clean_stacks(&mut extra.inventory, prototypes);
+        if let Some(villager) = extra.villager.as_mut() {
+            clean_stacks(&mut villager.inventory, prototypes);
+        }
+        if let Some(allay) = extra.allay.as_mut() {
+            clean_stacks(allay.inventory.as_mut(), prototypes);
+        }
+        if let Some(trade) = extra.trade.as_mut() {
+            clean_stacks(trade.offers.iter_mut().map(|o| &mut o.result), prototypes);
+        }
+    }
+
+    /// [`Self::clean_stacks`] on a mob decoded from its saved `tag`. A villager's
+    /// or piglin's carried stacks merge as they load (`SimpleContainer.fromItemList`),
+    /// so they are read again from `tag`, each taken in before it merges.
+    pub fn clean_saved_stacks(
+        &mut self,
+        tag: &horizon_core::nbt::Tag,
+        prototypes: &crate::item_data::ItemPrototypes,
+    ) {
+        villager::reload_container(self, tag, prototypes);
+        self.clean_stacks(prototypes);
+    }
+
     /// The name used by command replies: CustomName, style and all, comes before the type.
     pub fn command_name(&self) -> crate::text::Text {
         villager::command_name(self)
@@ -3032,37 +3068,45 @@ pub fn apply_brain_events(
     events: &mut Vec<MobEvent>,
     from: usize,
 ) {
+    apply_brain_events_slots(mobs, level, events, from);
+}
+pub fn apply_brain_events_slots<L: mob_slot::MobSlots + ?Sized>(
+    mobs: &mut L,
+    level: &mut DamageLevel<'_>,
+    events: &mut Vec<MobEvent>,
+    from: usize,
+) {
     let mut i = from;
     while i < events.len() {
         match events[i] {
             MobEvent::BreedTarget { mob, partner } => {
-                if let Some(m) = mobs.iter_mut().find(|m| m.id == mob) {
+                if let Some(m) = mobs.mob_by_id_mut(mob) {
                     animal_brain::set_breed_partner(m, partner);
                 }
                 events.remove(i);
             }
             MobEvent::LockGaze { mob, partner } => {
-                if let Some(m) = mobs.iter_mut().find(|m| m.id == mob) {
+                if let Some(m) = mobs.mob_by_id_mut(mob) {
                     animal_brain::lock_gaze(m, partner);
                     villager_brain::lock_gaze_half(m, Who::Mob(partner));
                 }
                 events.remove(i);
             }
             MobEvent::Retreat { mob, from, at } => {
-                if let Some(m) = mobs.iter_mut().find(|m| m.id == mob) {
+                if let Some(m) = mobs.mob_by_id_mut(mob) {
                     piglin::receive_retreat(m, from, at);
                 }
                 events.remove(i);
             }
             MobEvent::StartRiding { rider, vehicle } => {
-                i = riders::start_riding_event(mobs, events, i, rider, vehicle);
+                i = riders::start_riding_event_slots(mobs, events, i, rider, vehicle);
             }
             MobEvent::StartFollowing { fish, leader } => {
-                aquatic::start_following(mobs, fish, leader);
+                aquatic::start_following_slots(mobs, fish, leader);
                 events.remove(i);
             }
             MobEvent::SchoolSize { leader, by } => {
-                if let Some(m) = mobs.iter_mut().find(|m| m.id == leader) {
+                if let Some(m) = mobs.mob_by_id_mut(leader) {
                     m.extra.followers += by;
                 }
                 events.remove(i);
@@ -3072,7 +3116,7 @@ pub fn apply_brain_events(
             MobEvent::Breed {
                 parent, partner, ..
             } => {
-                if let Some(m) = mobs.iter_mut().find(|m| m.id == partner) {
+                if let Some(m) = mobs.mob_by_id_mut(partner) {
                     m.extra.age = 6000;
                     m.extra.in_love = 0;
                     animal_brain::forget_breed_target(m, parent);
@@ -3092,7 +3136,7 @@ pub fn apply_brain_events(
             } => {
                 let mut sound = None;
                 let mut raised = Vec::new();
-                let fish = mobs.iter().find(|m| m.id == mob);
+                let fish = mobs.iter_mobs().find(|m| m.id == mob);
                 if source.attacker_species.is_none() {
                     source.attacker_species = fish.map(Mob::species);
                 }
@@ -3125,7 +3169,7 @@ pub fn apply_brain_events(
                     .map(|(aim, pos, silent)| (Some(aim), Some(pos), silent))
                     .unwrap_or((None, None, true));
                 let mut hit_level = level.reborrow().attacked_by(&attack);
-                if let Some(t) = mobs.iter_mut().find(|m| m.id == target)
+                if let Some(t) = mobs.mob_by_id_mut(target)
                     && t.damage_aimed(&mut hit_level, amount, source, aim)
                 {
                     t.add_effect("minecraft:poison", poison_ticks, 0);
@@ -3859,6 +3903,17 @@ impl Mob {
             Species::Axolotl => axolotl::MAX_AIR,
             Species::Dolphin => 4800,
             _ => 300,
+        }
+    }
+    /// `Entity.getSoundSource`: the mixer group this mob's sounds play in,
+    /// hostile for a killer bunny whatever its species' default.
+    pub fn sound_source(&self) -> mod_api::SoundSource {
+        if (self.species() == Species::Rabbit && self.extra.variant == rabbit::EVIL)
+            || ai::hostile_species(self.species())
+        {
+            mod_api::SoundSource::Hostile
+        } else {
+            mod_api::SoundSource::Neutral
         }
     }
     /// `Mob.getMainArm`: the left arm when the mob is left-handed, a player's
