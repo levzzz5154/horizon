@@ -930,6 +930,12 @@ mod tests {
     }
 
     #[test]
+    fn the_stock_style_hands_mods_mojang_red_as_argb() {
+        assert_eq!(stock_style(false).background, 0xFFEF_323D);
+        assert_eq!(stock_style(true).background, 0xFF00_0000);
+    }
+
+    #[test]
     fn colours_are_opaque_rgba() {
         assert_eq!(opaque(Status::Full.color()), u32::MAX);
         assert_eq!(opaque(0), 0xFF00_0000);

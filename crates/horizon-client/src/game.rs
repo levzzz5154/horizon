@@ -8409,7 +8409,6 @@ impl Game<'_> {
         };
         if let Some((progress, next)) = self.loading_overlay_preview_frame() {
             let mut hud = HudBatch::new(size, self.settings.gui_scale_inputs());
-            hud.vertices = reused_hud_vertices();
             Self::draw_native_loading_overlay(
                 &mut hud,
                 &self.gui.atlas,
@@ -8425,7 +8424,6 @@ impl Game<'_> {
             if self.frame_drawn {
                 self.loading_overlay_preview.set(Some(next));
             }
-            store_hud_vertices(std::mem::take(&mut hud.vertices));
             return result;
         }
         pr.lap("pr_setup");
