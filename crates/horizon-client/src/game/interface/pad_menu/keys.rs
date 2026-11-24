@@ -98,11 +98,20 @@ impl Game<'_> {
         };
         if action.is_some_and(|action| {
             self.screen_action_canceled(action, ScreenActionSource::Keyboard, || {
+                // As below: without a keyboard or controller focus, the keys act on what a
+                // click focused, so that is the widget the action reaches.
                 self.pad
                     .menu
                     .focus
                     .filter(|_| self.pad_focus_mode())
                     .map(|target| target.rect)
+                    .or_else(|| {
+                        let origin = self.pad.menu.origin?;
+                        self.key_targets()
+                            .iter()
+                            .any(|t| t.rect.iter().zip(origin).all(|(a, b)| (a - b).abs() < 0.5))
+                            .then_some(origin)
+                    })
             })
         }) {
             return true;
