@@ -10100,6 +10100,8 @@ def check_boat_end_portal(host, guest, out):
                 # Paddle off the runway, then coast through the portal below it.
                 for _ in range(60):
                     player.wait(2)
+                    if player('state').get('dimension') == END:
+                        break
                     _, at = boat_status()
                     if at is not None and at[2] > z + 6:
                         break
