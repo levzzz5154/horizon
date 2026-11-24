@@ -9,11 +9,9 @@
 use super::api_values::TryIntoEngine as _;
 use super::{
     Game,
-    native_scene::{
-        ProjectedOverlay, SceneBlock, SceneQuad, face_shade, project_overlays, scene_matrix, shaded,
-    },
+    native_scene::{SceneBlock, SceneBlocks, SceneFrame, SceneQuad, face_shade, shaded},
 };
-use glam::{DVec3, Mat4, Quat, Vec3};
+use glam::{DVec3, Quat, Vec3};
 use horizon_client::{
     animate_tick::{AnimateContext, animate_scene},
     chunk::Chunk,
@@ -26,8 +24,7 @@ use horizon_client::{
 use horizon_core::geometry::Vec3 as Position;
 use mod_api::{
     GuiEntity, GuiEntityError, SCENE_ANIMATE_PICKS, SCENE_CATCH_UP, SCENE_MAX_ANIMATING,
-    SCENE_MAX_ENTITIES, SCENE_MAX_PARTICLES, Scene, SceneClock, SceneError, SceneOverlay,
-    SceneOverlayError, SceneView,
+    SCENE_MAX_ENTITIES, SCENE_MAX_PARTICLES, Scene, SceneClock, SceneError, SceneView,
 };
 use std::{
     cell::Cell,
@@ -204,81 +201,25 @@ fn entity_refusal(error: GuiEntityError, index: u32) -> SceneError {
 }
 
 impl Game<'_> {
-    /// `DrawContext::draw_scene`: `blocks` (`scene.blocks`, prepared) into `rect` seen as
-    /// `view` says. A scene of blocks alone takes the block-only path before any state
-    /// work: no clock read, nothing kept. A living one is drawn with its entities and the
-    /// particles its clock ticks. Refused whole, nothing drawn and nothing kept, for input
-    /// that fails `check`, an entity `DrawContext::entity` refuses or a particle; past the
-    /// frame's animating budget the blocks and the scene's last state are drawn, its clock
-    /// does not advance, and the call returns `TooManyScenes`.
+    /// Draws the prepared `blocks` into the given `frame`, with its textured quads.
+    /// A static scene keeps no state and reads no clock. A living one is drawn with
+    /// its entities and the particles its clock ticks. Invalid input draws nothing.
+    /// Past the frame's animating budget, the blocks, textured quads and the scene's
+    /// last state are drawn, its clock does not advance, and this returns `TooManyScenes`.
     pub(super) fn native_draw_scene(
         &self,
         batch: &mut HudBatch,
-        rect: [f32; 4],
-        blocks: &[SceneBlock<'_>],
+        blocks: &SceneBlocks<'_, '_>,
         scene: &Scene,
-        view: SceneView,
+        frame: SceneFrame,
     ) -> Result<(), SceneError> {
-        let m = self.scene_draw_matrix(rect, view)?;
-        self.draw_prepared_scene(batch, rect, blocks, scene, (view, m), &[])
-    }
-
-    pub(super) fn native_draw_scene_with_overlays(
-        &self,
-        batch: &mut HudBatch,
-        rect: [f32; 4],
-        blocks: &[SceneBlock<'_>],
-        scene: &Scene,
-        view: SceneView,
-        overlays: &[SceneOverlay],
-    ) -> Result<(), SceneOverlayError> {
-        let m = self.scene_draw_matrix(rect, view)?;
-        let overlays = project_overlays(m, overlays)?;
-        self.draw_prepared_scene(batch, rect, blocks, scene, (view, m), &overlays)?;
-        Ok(())
-    }
-
-    fn scene_draw_matrix(&self, rect: [f32; 4], view: SceneView) -> Result<Mat4, SceneError> {
         if !self.native_window() {
             return Err(SceneError::Unavailable);
         }
-        if !view.scale.is_finite() || view.scale <= 0.0 {
-            return Err(SceneError::BadView);
+        if !lives(scene) {
+            return self.draw_scene_quads(batch, blocks, frame, |_| {});
         }
-        Ok(scene_matrix(rect, view))
-    }
-
-    fn draw_prepared_scene(
-        &self,
-        batch: &mut HudBatch,
-        rect: [f32; 4],
-        blocks: &[SceneBlock<'_>],
-        scene: &Scene,
-        (view, m): (SceneView, Mat4),
-        overlays: &[ProjectedOverlay],
-    ) -> Result<(), SceneError> {
-        let start = batch.vertices.len();
-        let result = if lives(scene) {
-            self.native_draw_live_scene(batch, rect, blocks, scene, view, m)
-        } else {
-            self.draw_scene_quads(batch, m, blocks, |_| {})
-        };
-        if matches!(result, Ok(()) | Err(SceneError::TooManyScenes)) {
-            self.finish_scene(batch, start, rect, overlays);
-        }
-        result
-    }
-
-    fn native_draw_live_scene(
-        &self,
-        batch: &mut HudBatch,
-        rect: [f32; 4],
-        blocks: &[SceneBlock<'_>],
-        scene: &Scene,
-        view: SceneView,
-        m: Mat4,
-    ) -> Result<(), SceneError> {
-        let clock = check(rect, scene, view)?;
+        let clock = check(frame.rect, scene, frame.view)?;
         // Checked whole before anything is kept; an empty list allocates nothing.
         let added = scene
             .particles
@@ -306,7 +247,7 @@ impl Game<'_> {
             .live_scenes
             .try_borrow_mut()
             .map_err(|_| SceneError::Unavailable)?;
-        let key = scene_key(blocks);
+        let key = scene_key(blocks.cells);
         let at = scenes
             .live
             .iter()
@@ -319,23 +260,23 @@ impl Game<'_> {
                     .zip(&scene.entities)
                     .all(|(a, b)| *a == b.entity)
         };
-        let frame = self.frames;
-        if !scenes.admit(frame, owner, clock.id) {
-            // Past the budget: the blocks, and the scene's last state when it is this one's.
+        let frame_id = self.frames;
+        if !scenes.admit(frame_id, owner, clock.id) {
+            // Still draw the fixed geometry, and the last state when it is this scene's.
             let last = at.filter(|&i| same(&scenes.live[i]));
             match last {
                 Some(i) => {
                     let l = &mut scenes.live[i];
-                    l.frame = frame;
-                    self.draw_live(batch, m, blocks, facing_viewer(view), l, clock.partial)?;
+                    l.frame = frame_id;
+                    self.draw_live(batch, blocks, frame, l, clock.partial)?;
                 }
-                None => self.draw_scene_quads(batch, m, blocks, |_| {})?,
+                None => self.draw_scene_quads(batch, blocks, frame, |_| {})?,
             }
             return Err(SceneError::TooManyScenes);
         }
         let fresh = at.is_none_or(|i| !same(&scenes.live[i]) || clock.tick < scenes.live[i].tick);
         let i = if fresh {
-            let made = self.live_scene(blocks, scene, owner, clock, key)?;
+            let made = self.live_scene(blocks.cells, scene, owner, clock, key)?;
             match at {
                 Some(i) => {
                     scenes.live[i] = made;
@@ -355,7 +296,7 @@ impl Game<'_> {
             at.unwrap_or_default()
         };
         let l = &mut scenes.live[i];
-        l.frame = frame;
+        l.frame = frame_id;
         for (index, mob) in existing {
             l.mobs[index] = mob;
         }
@@ -363,16 +304,15 @@ impl Game<'_> {
         for (mob, e) in l.mobs.iter_mut().zip(&scene.entities) {
             pose(mob, e, clock);
         }
-        self.draw_live(batch, m, blocks, facing_viewer(view), l, clock.partial)
+        self.draw_live(batch, blocks, frame, l, clock.partial)
     }
 
     /// `l`'s blocks, entities and particles as they are, `partial` into the next tick.
     fn draw_live(
         &self,
         batch: &mut HudBatch,
-        m: Mat4,
-        blocks: &[SceneBlock<'_>],
-        facing: Quat,
+        blocks: &SceneBlocks<'_, '_>,
+        frame: SceneFrame,
         l: &mut Live,
         partial: f32,
     ) -> Result<(), SceneError> {
@@ -382,7 +322,8 @@ impl Game<'_> {
             verts,
             ..
         } = l;
-        self.draw_scene_quads(batch, m, blocks, |quads| {
+        let view = frame.view;
+        self.draw_scene_quads(batch, blocks, frame, |quads| {
             for mob in mobs.iter() {
                 verts.clear();
                 // `DrawContext::entity`'s submission, in the scene's coordinates.
@@ -390,7 +331,8 @@ impl Game<'_> {
                 entity_quads(verts, quads);
             }
             verts.clear();
-            engine.render(DVec3::ZERO, facing, partial, &|_| 0xFF, verts);
+            let base = facing_viewer(view);
+            engine.render(DVec3::ZERO, base, partial, &|_| 0xFF, verts);
             for q in verts.as_chunks::<4>().0 {
                 quads.push(SceneQuad {
                     corners: q.each_ref().map(|v| Vec3::from_array(v.pos)),
