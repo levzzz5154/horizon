@@ -525,8 +525,7 @@ fn submit_quads(
             uv,
             foil_uv: q.uv,
             gui_glint_uv: (atlas.is_some() || core_atlas.is_some())
-                .then_some(())
-                .and_then(|()| match last_glint {
+                .then(|| match last_glint {
                     Some((sprite, rect)) if sprite == q.material.sprite => rect,
                     _ => {
                         let name = sprite_name(&q.material.sprite);
@@ -539,6 +538,7 @@ fn submit_quads(
                         rect
                     }
                 })
+                .flatten()
                 .map(|r| {
                     q.uv.map(|[u, v]| [r.u0 + (r.u1 - r.u0) * u, r.v0 + (r.v1 - r.v0) * v])
                 }),

@@ -30,7 +30,8 @@ const ITEM: Glue = Glue {
             Normal = vec3((ivec3(bits, bits >> 8, bits >> 16) & 255) - 127) / 127.0;",
     // The GUI path sorts faces itself and has no depth attachment.
     finish: "",
-    vertex_id: "(int(gl_VertexIndex) / 6) * 4 + int(gl_VertexIndex) % 6 - (int(gl_VertexIndex) % 6 >= 3 ? 3 : 0)",
+    // `HudBatch::quad_3d` emits corners 0, 1, 2, 0, 2, 3.
+    vertex_id: "(int(gl_VertexIndex) / 6) * 4 + (int(gl_VertexIndex) % 6 < 3 ? int(gl_VertexIndex) % 6 : (int(gl_VertexIndex) % 6 == 3 ? 0 : int(gl_VertexIndex) % 6 - 2))",
 };
 
 /// `ModelFeatureRenderer.prepareModel`: pose and colour before the cardinal shade, and
@@ -56,7 +57,8 @@ const ENTITY: Glue = Glue {
 
 const WORLD_COLOR: FragmentGlue = FragmentGlue {
     prelude: "layout(std140,set=0,binding=10) uniform HorizonModelFrame { vec4 hz_frame; };",
-    color: "hz_frame.x != 0.0 ? vec4(pow(max(hz_color.rgb, vec3(0.0)), vec3(2.2)), hz_color.a) : hz_color",
+    // An `Rgba16Float` frame holds at most 65504; neither branch writes a negative colour.
+    color: "hz_frame.x != 0.0 ? vec4(min(pow(max(hz_color.rgb, vec3(0.0)), vec3(2.2)), vec3(65504.0)), hz_color.a) : vec4(max(hz_color.rgb, vec3(0.0)), hz_color.a)",
 };
 
 #[derive(Default)]
@@ -113,15 +115,32 @@ fn load(
     };
     let vertex = read(&vertex_path)?;
     let fragment = read(&fragment_path)?;
-    if base.read_to_string(&vertex_path).ok().as_deref() == Some(vertex.as_str())
-        && base.read_to_string(&fragment_path).ok().as_deref() == Some(fragment.as_str())
-    {
-        return None;
-    }
     let include = |id: &str| {
         let (ns, path) = id.split_once(':')?;
         read(&format!("assets/{ns}/{path}"))
     };
+    // Stock only when both stages match the base with their imports resolved: a pack may
+    // replace an include alone.
+    let base_include = |id: &str| {
+        let (ns, path) = id.split_once(':')?;
+        base.read_to_string(&format!("assets/{ns}/{path}")).ok()
+    };
+    let stock = |path: &str, text: &str| {
+        const CORE: &str = "minecraft:shaders/core/";
+        let Ok(base_text) = base.read_to_string(path) else {
+            return false;
+        };
+        match (
+            crate::core_shader::expand(text, CORE, &include),
+            crate::core_shader::expand(&base_text, CORE, &base_include),
+        ) {
+            (Ok(ours), Ok(theirs)) => ours == theirs,
+            _ => false,
+        }
+    };
+    if stock(&vertex_path, &vertex) && stock(&fragment_path, &fragment) {
+        return None;
+    }
     match translate_core_mapped(
         &vertex,
         &fragment,
@@ -175,14 +194,16 @@ impl Uniforms {
     }
 }
 
-fn uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+/// The layout states the size `Resources::group` binds, so a program whose uniform block is
+/// larger fails at pipeline creation (and falls back to native) rather than at draw time.
+fn uniform_entry(binding: u32, size: u64) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
         ty: wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Uniform,
             has_dynamic_offset: false,
-            min_binding_size: None,
+            min_binding_size: wgpu::BufferSize::new(size),
         },
         count: None,
     }
@@ -273,9 +294,12 @@ impl Resources {
             .iter()
             .position(|n| n == "Lighting")
             .map(other_binding);
-        let mut entries: Vec<_> = (0..4).chain(lighting).map(uniform_entry).collect();
+        let mut entries: Vec<_> = (0..4)
+            .map(|i| uniform_entry(i, SIZES[i as usize]))
+            .chain(lighting.map(|binding| uniform_entry(binding, SIZES[4])))
+            .collect();
         if world {
-            entries.extend([uniform_entry(10), uniform_entry(11)]);
+            entries.extend([uniform_entry(10, SIZES[5]), uniform_entry(11, 16)]);
         }
         for (_, binding) in crate::core_shader::SAMPLERS {
             entries.extend([
@@ -863,5 +887,19 @@ mod tests {
         assert!(ModelShaders::load(&no_vertex, &no_vertex).item.is_none());
         let no_import = resolved(&[(VSH, vertex), (FSH, pack)]);
         assert!(ModelShaders::load(&no_import, &no_import).item.is_none());
+        // A pack that replaces only an include the stock stages read still runs.
+        let base =
+            ResourceSource::indexed(indexed(&[(VSH, vertex), (FSH, pack), (INCLUDE, include)]));
+        let tint = "const vec4 tint = vec4(1.0, 0.0, 0.0, 1.0);";
+        let include_only = ResourceSource::layered(
+            indexed(&[(VSH, vertex), (FSH, pack), (INCLUDE, tint)]),
+            base.clone(),
+        );
+        assert!(ModelShaders::load(&base, &base).item.is_none());
+        assert!(
+            ModelShaders::load(&include_only, &include_only)
+                .item
+                .is_some()
+        );
     }
 }

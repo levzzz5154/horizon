@@ -451,7 +451,8 @@ void main() {
         .collect(),
     );
     let mut atlas = crate::hud::HudAtlas::boot();
-    atlas.width = 2;
+    // Two texels wide, so a sprite-local UV and the atlas UV pick different ones.
+    atlas.width = 4;
     atlas.height = 1;
     atlas.sprites.insert(
         "entity/test/body".into(),
@@ -460,7 +461,7 @@ void main() {
             v0: 0.0,
             u1: 1.0,
             v1: 1.0,
-            w: 1,
+            w: 2,
             h: 1,
         },
     );
@@ -468,17 +469,20 @@ void main() {
     let vertices =
         [[-0.75, -0.75], [0.75, -0.75], [0.75, 0.75], [-0.75, 0.75]].map(|[x, y]| Vertex {
             pos: [x, y, 0.5],
-            uv: [0.75, 0.5],
+            // The atlas's third texel, the sprite's first; read unmapped, the sprite's second.
+            uv: [0.625, 0.5],
             layer: 0,
             color: u32::from_le_bytes([128, 64, 255, 255]),
             light: 0xf0f0,
             normal: [0, 127, 0, 127],
             glint_uv: [0.5, -0.0],
         });
-    let pixels = [1, 2, 3, 255, 90, 160, 230, 255];
+    let pixels = [
+        1, 2, 3, 255, 1, 2, 3, 255, 90, 160, 230, 255, 40, 20, 10, 255,
+    ];
     let check = |core, expected: [u8; 4]| {
         let out =
-            render_with_core(&vertices, [2, 1], &pixels, Mat4::IDENTITY, false, core).unwrap();
+            render_with_core(&vertices, [4, 1], &pixels, Mat4::IDENTITY, false, core).unwrap();
         let at = ((SIZE / 2 * SIZE + SIZE / 2) * 4) as usize;
         let got = &out[at..at + 4];
         for (got, want) in got.iter().zip(expected) {

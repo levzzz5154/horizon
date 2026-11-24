@@ -3735,7 +3735,8 @@ mod tests {
                     assert!((v.glint_uv[0] - (v.uv[0] - 0.5) * 4.0).abs() < 1e-4);
                     assert!((v.glint_uv[1] - (v.uv[1] - 0.5) * 4.0).abs() < 1e-4);
                 } else {
-                    assert_eq!(v.glint_uv, [0.0, 0.0]);
+                    // The source rect's tag for the resource-pack model pass.
+                    assert_eq!(v.glint_uv, [0.5, -0.5]);
                 }
             }
         }

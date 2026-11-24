@@ -157,7 +157,7 @@ pub(crate) const MAX_EXPANDED: usize = 1 << 20;
 /// with `#moj_import`), `#version` and `#extension` lines dropped. An `#include` is pasted every
 /// time, as vanilla's shaderc does (the files' `#ifndef` guards keep one copy); a `#moj_import`
 /// once.
-fn expand(
+pub(crate) fn expand(
     text: &str,
     dir: &str,
     include: &dyn Fn(&str) -> Option<String>,
@@ -425,7 +425,7 @@ fn rewrite(
     // Where the pack's own code starts: the glue above it is left as it is.
     let pack_start = out.len();
     let mut outputs: Vec<&str> = Vec::new();
-    let mut color_output = None;
+    let mut color_output = false;
     let explicit: Vec<u32> = if vertex {
         text.lines()
             .flat_map(declaration_lines)
@@ -561,9 +561,18 @@ fn rewrite(
                             outputs.len() - 1
                         }) as u32
                     });
-                    if location == 0 && fragment_glue.is_some() {
-                        color_output = Some(decl.name);
-                        writeln!(out, "{} {};", decl.ty, decl.name).unwrap();
+                    let implicit = decl.location.is_none();
+                    if (location == 0 || implicit) && fragment_glue.is_some() {
+                        // Branches (`#ifdef PER_FACE_LIGHTING` ... `#else`) may name different
+                        // outputs, each first in its branch: the preprocessor keeps the first
+                        // active one as the colour.
+                        color_output = true;
+                        writeln!(
+                            out,
+                            "{} {};\n#ifndef hz_pack_color\n#define hz_pack_color {}\n#endif",
+                            decl.ty, decl.name, decl.name
+                        )
+                        .unwrap();
                     } else {
                         writeln!(
                             out,
@@ -578,13 +587,15 @@ fn rewrite(
     }
     if !vertex {
         if let Some(glue) = fragment_glue {
-            let name = color_output.ok_or("no colour output")?;
+            if !color_output {
+                return Err("no colour output".into());
+            }
             let pack = rename_main(&out[pack_start..]);
             let mut code = format!("{}{pack}", &out[..pack_start]);
             writeln!(
                 code,
                 "layout(location=0) out vec4 hz_out;\n\
-                 void main() {{ hz_main(); vec4 hz_color = {name}; hz_out = {}; }}",
+                 void main() {{ hz_main(); vec4 hz_color = hz_pack_color; hz_out = {}; }}",
                 glue.color,
             )
             .unwrap();
@@ -1037,6 +1048,33 @@ mod tests {
             error.contains("minecraft:shaders/include/nothing.glsl not found"),
             "{error}"
         );
+    }
+
+    /// `entity.fsh` in shape: each `PER_FACE_LIGHTING` branch names its own colour output.
+    #[test]
+    fn the_colour_output_follows_the_active_branch() {
+        let fsh = "#version 330\n#include <minecraft:dynamictransforms.glsl>\n\
+            uniform sampler2D Sampler0;\n\
+            layout(location = 2) in vec4 vertexColor;\nlayout(location = 3) in vec2 texCoord0;\n\
+            #ifdef PER_FACE_LIGHTING\nout vec4 litColor;\n#else\nout vec4 culledColor;\n#endif\n\
+            void main() {\n    vec4 color = texture(Sampler0, texCoord0) * vertexColor;\n\
+            #ifdef PER_FACE_LIGHTING\n    litColor = color;\n#else\n    culledColor = color;\n#endif\n}\n";
+        let output = FragmentGlue {
+            prelude: "",
+            color: "hz_color",
+        };
+        for defines in [&["PER_FACE_LIGHTING"][..], &[]] {
+            translate_core_mapped(
+                VANILLA_VSH,
+                fsh,
+                defines,
+                &include,
+                &GLUE,
+                &|_| false,
+                Some(&output),
+            )
+            .unwrap_or_else(|e| panic!("{defines:?}: {e}"));
+        }
     }
 
     #[test]

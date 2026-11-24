@@ -104,18 +104,6 @@ pub(super) fn build_renderer(
         .set_blit_shader(&renderer.device, atlas.blit_shader.as_deref());
     pack.item_renderer
         .prepare_glint_atlas(renderer.device.limits().max_texture_dimension_2d, filtering)?;
-    let model_lights = horizon_client::item_render::gui::items_flat_lights();
-    let block_lights = horizon_client::item_render::gui::items_3d_lights();
-    pack.item_renderer.install_core_gui(|sheet| {
-        renderer.set_core_model_shaders(
-            atlas,
-            sheet,
-            [
-                [model_lights.0, model_lights.1],
-                [block_lights.0, block_lights.1],
-            ],
-        )
-    });
     renderer.set_lines_shader(atlas.lines_shader.as_deref());
     renderer.set_world_text_shaders(&atlas.text_shaders);
     renderer.set_sky_shaders(atlas.sky_shader.as_deref(), atlas.stars_shader.as_deref());
@@ -131,6 +119,20 @@ pub(super) fn build_renderer(
         let r = atlas.sprites.get(name)?;
         Some([r.u0, r.v0, r.u1, r.v1])
     })?;
+    // After the last fallible step: the item renderer is shared with the renderer this one
+    // replaces, so a failed build must leave its GUI item state alone.
+    let model_lights = horizon_client::item_render::gui::items_flat_lights();
+    let block_lights = horizon_client::item_render::gui::items_3d_lights();
+    pack.item_renderer.install_core_gui(|sheet| {
+        renderer.set_core_model_shaders(
+            atlas,
+            sheet,
+            [
+                [model_lights.0, model_lights.1],
+                [block_lights.0, block_lights.1],
+            ],
+        )
+    });
     Ok(renderer)
 }
 
