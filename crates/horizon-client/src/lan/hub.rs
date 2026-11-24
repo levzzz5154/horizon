@@ -439,6 +439,10 @@ pub struct Hub {
     /// An integrated server's owner (`MinecraftServer.isSingleplayerOwner`),
     /// whose moves are never checked.
     pub singleplayer_owner: Option<u128>,
+    /// Splitscreen seats an integrated server gave the owner's permissions
+    /// (`IntegratedServer.joinSplit`): they are in `ops` for permission checks
+    /// but are no `ops.json` entries, so `PlayerList.isOp` does not name them.
+    pub split_players: std::collections::HashSet<u128>,
     /// The world is superflat (`ServerLevel.isFlat`, a world-wide flag, sent as
     /// `CommonPlayerSpawnInfo.isFlat` in every dimension).
     pub flat_world: bool,
@@ -853,6 +857,7 @@ impl Hub {
             chat_filter: None,
             far: None,
             singleplayer_owner: None,
+            split_players: Default::default(),
             flat_world: false,
             debug_world: false,
             riding: Default::default(),
@@ -3343,7 +3348,7 @@ impl Hub {
 
     /// `ParticleTypes.STREAM_CODEC`'s value for `options`: the type's
     /// network id and the data it carries (`state` for the block particles).
-    /// None for a particle whose data isn't sent from here (items, trails).
+    /// None for a particle whose data isn't sent from here (items).
     pub fn particle(
         &self,
         options: &crate::particles::ParticleOptions,
@@ -3404,7 +3409,12 @@ impl Hub {
                     ticks: *ticks,
                 })
             }
-            T::Item | T::Trail => return item_particles::encode(self, id, options),
+            T::Item => return item_particles::encode(self, id, options),
+            // `TrailParticleOption(target, color, duration)`.
+            T::Trail => {
+                let (target, duration) = options.trail?;
+                Some(ParticleData::Trail(target, rgb, duration))
+            }
             _ => None,
         };
         Some(Particle { id, data })
@@ -3789,12 +3799,13 @@ impl Hub {
                             now,
                             &mut g.advancements,
                             &mut g.recipe_book,
+                            &mut g.recipes_unlocked,
                         );
                         if let Some(add) = first.recipe_book_add {
                             g.send(&raw(ids::RECIPE_BOOK_ADD, add));
                         }
                         g.send(&raw(ids::UPDATE_ADVANCEMENTS, first.update_advancements));
-                        g.advancements_visible = sync.advancements.visibility(&g.advancements);
+                        g.advancements_visible = first.visible;
                         g.advancements_changed.clear();
                     }
                 });

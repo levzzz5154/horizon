@@ -29,6 +29,8 @@ enum State {
     Playing,
     Paused,
     Stopped,
+    /// Initial, held for a source a client mod paused (`Backend::hold`): it starts paused.
+    Held,
 }
 /// An OpenAL source.
 struct Channel {
@@ -424,7 +426,22 @@ pub struct MixerBackend {
     world: u32,
     /// How many other players share this output: alone, a sound never looks for its copy.
     shares: Arc<std::sync::atomic::AtomicUsize>,
+    /// Client mods' own samples (`Audio::play_mod_pcm`) by their sound's location, kept while
+    /// their instance may still start (a delayed play, or a loop's repeat after its delay).
+    mod_pcm: HashMap<String, ModPcm>,
+    /// The last `mod_pcm` location's number; never reused.
+    mod_pcm_next: u64,
 }
+/// A client mod's samples for one play (`Audio::play_mod_pcm`).
+struct ModPcm {
+    samples: Samples,
+    /// The frame its first start begins at; later repeats begin at 0.
+    start: u64,
+    /// Its engine instance, once added.
+    instance: Option<InstanceId>,
+}
+/// The namespace of client mods' sample locations (`Audio::play_mod_pcm`): no sound file has it.
+const MOD_PCM_LOCATION: &str = "horizon:mod_pcm/";
 /// A splitscreen player's backend leaving: its camera and sounds go with it.
 impl Drop for MixerBackend {
     fn drop(&mut self) {
@@ -501,16 +518,30 @@ struct Decode {
 }
 /// Give a channel waiting on its sound the decoded samples and start it, as
 /// the buffer future attaching and playing the source. A source stopped or
-/// released meanwhile stays so.
+/// released meanwhile stays so, and a held one starts paused.
 fn attach(mixer: &Mutex<Mixer>, channel: ChannelId, samples: Samples, looping: bool) {
+    attach_at(mixer, channel, samples, looping, 0);
+}
+/// [`attach`], starting `start` frames in.
+fn attach_at(
+    mixer: &Mutex<Mixer>,
+    channel: ChannelId,
+    samples: Samples,
+    looping: bool,
+    start: u64,
+) {
     if let Some(samples) = samples
         && let Ok(mut m) = mixer.lock()
         && let Some(c) = m.channels.get_mut(&channel)
-        && c.state == State::Initial
+        && matches!(c.state, State::Initial | State::Held)
     {
         c.samples = Some(samples);
-        c.position = 0.0;
-        c.state = State::Playing;
+        c.position = start as f64;
+        c.state = if c.state == State::Held {
+            State::Paused
+        } else {
+            State::Playing
+        };
         c.looping |= looping;
     }
 }
@@ -727,6 +758,12 @@ impl MixerBackend {
     /// nothing marks two copies of one event. Two different events alike in all four (two
     /// players' steps on grass, side by side, within 150 ms) are heard once. That is accepted:
     /// at that distance and timing they sound like one; a doubled sound is the louder fault.
+    ///
+    /// A copy held for a source a client mod paused (`Backend::hold`), or paused since it started,
+    /// is not heard, so it never counts as the copy heard. A held copy still looks for one: when
+    /// another player's copy is heard it is dropped, or it would play the sound a second time
+    /// once its source carries on. It keeps its sound, and carried on (`unpause`) it counts as
+    /// started then, so another player's copy started just after is dropped.
     fn duplicate(&self, channel: ChannelId, (namespace, path): (&str, &str)) -> bool {
         // Alone: nobody else's copy, and no lock taken for it.
         if self.shares.load(std::sync::atomic::Ordering::Relaxed) == 0 {
@@ -750,6 +787,7 @@ impl MixerBackend {
             o.owner != self.owner
                 && o.world == world
                 && !o.relative
+                && !matches!(o.state, State::Held | State::Paused)
                 && o.started
                     .as_ref()
                     .is_some_and(|(k, t)| k == key && t.elapsed() < SAME_SOUND)
@@ -894,6 +932,12 @@ impl Backend for MixerBackend {
         if !self.live {
             return;
         }
+        // A client mod's own samples: nothing to load, and no other player has a copy.
+        if let Some(pcm) = self.mod_pcm.get_mut(sound.location.as_str()) {
+            let start = std::mem::take(&mut pcm.start);
+            attach_at(&self.mixer, channel, pcm.samples.clone(), looping, start);
+            return;
+        }
         // A looping sound follows its entity in one client's tracking only: each keeps its own.
         if !looping && self.shares.load(std::sync::atomic::Ordering::Relaxed) != 0 {
             let (namespace, path) = sound.path();
@@ -967,9 +1011,23 @@ impl Backend for MixerBackend {
     }
     fn unpause(&mut self, channel: ChannelId) {
         self.with(channel, |c| {
-            if c.state == State::Paused {
-                c.state = State::Playing;
+            match c.state {
+                State::Paused => c.state = State::Playing,
+                // Let go before its sound arrived: it plays when it does.
+                State::Held => c.state = State::Initial,
+                _ => return,
             }
+            // Heard from now on: another player's copy started just after is its twin.
+            if let Some((_, at)) = c.started.as_mut() {
+                *at = std::time::Instant::now();
+            }
+        });
+    }
+    fn hold(&mut self, channel: ChannelId) {
+        self.with(channel, |c| match c.state {
+            State::Playing => c.state = State::Paused,
+            State::Initial => c.state = State::Held,
+            _ => {}
         });
     }
     fn stopped(&mut self, channel: ChannelId) -> bool {
@@ -1825,6 +1883,8 @@ impl Audio {
                 owner: 0,
                 world: 0,
                 shares: Arc::default(),
+                mod_pcm: HashMap::new(),
+                mod_pcm_next: 0,
             },
             record_heard: false,
             listener: [0.0; 3],
@@ -1996,6 +2056,8 @@ impl Audio {
                 owner,
                 world: self.backend.world,
                 shares: self.backend.shares.clone(),
+                mod_pcm: HashMap::new(),
+                mod_pcm_next: 0,
             },
             record_heard: false,
             listener: [0.0; 3],
@@ -2165,6 +2227,9 @@ impl Audio {
     }
     /// `SoundManager.tick(paused)`, once per client tick.
     pub fn tick(&mut self, paused: bool, ctx: &TickContext) {
+        if !self.backend.mod_pcm.is_empty() {
+            self.forget_mod_pcm();
+        }
         #[cfg(feature = "audio")]
         if self.backend.owner == 0 {
             // A splitscreen share leaves the output to the first player's. Lock the mixer
@@ -2295,9 +2360,14 @@ impl Audio {
             &mut self.backend,
         );
     }
-    /// `SoundManager.resume`.
+    /// `SoundManager.resume`: a source a client mod paused stays paused.
     pub fn resume(&mut self) {
         self.engine.resume(&mut self.backend);
+    }
+    /// A client mod's `sound_source_pause` (`SoundEngine::pause_source`): the sounds of one
+    /// `SoundSource` index pause, or carry on.
+    pub fn pause_source(&mut self, source: usize, paused: bool) {
+        self.engine.pause_source(source, paused, &mut self.backend);
     }
     /// `SoundManager.stop()`: every sound.
     pub fn stop_all(&mut self) {
@@ -2431,6 +2501,83 @@ impl Audio {
             self.stop_mod_sound(id);
         } else if let Some(instance) = self.engine.instance_mut(id) {
             instance.fade_to(volume, ticks);
+        }
+    }
+    /// A client mod's own samples (`ClientHost::play_local_pcm`): `samples` interleaved, -1 to
+    /// 1, `channels` to a frame at `rate`, played as `sound` says (its event names the play for
+    /// hooks, muffle exemptions and a subtitle, but no file of it is loaded), beginning `start`
+    /// frames in. It goes through the engine as `play_mod_sound`'s: the source's volume slider,
+    /// pausing, fades and the channel limits all apply.
+    pub fn play_mod_pcm(
+        &mut self,
+        sound: &mod_api::SoundPlay,
+        samples: Arc<Vec<f32>>,
+        rate: u32,
+        channels: u16,
+        start: u64,
+        after: u32,
+    ) -> InstanceId {
+        self.backend.mod_pcm_next += 1;
+        let location = format!("{MOD_PCM_LOCATION}{}", self.backend.mod_pcm_next);
+        self.backend.mod_pcm.insert(
+            location.clone(),
+            ModPcm {
+                samples: Some((samples, rate, channels)),
+                start,
+                instance: None,
+            },
+        );
+        let seed = self.random.next_long();
+        self.record_heard(&sound.identifier);
+        let mut instance = SoundInstance::from_play(sound, LegacyRandom::new(seed));
+        instance.identifier = crate::sound_events::normalize(&sound.identifier);
+        instance.ticking = crate::sound_engine::Ticking::Mod { fade: None };
+        instance.can_start_silent = true;
+        instance.event = Some(
+            self.engine
+                .registry
+                .get(&instance.identifier)
+                .and_then(|event| event.subtitle.clone()),
+        );
+        instance.sound = Some(Sound {
+            location: location.clone(),
+            volume: crate::sound_events::Sampled::Constant(1.0),
+            pitch: crate::sound_events::Sampled::Constant(1.0),
+            weight: 1,
+            event: false,
+            stream: false,
+            preload: false,
+            attenuation_distance: 16,
+            sentinel: crate::sound_events::Sentinel::None,
+        });
+        instance.chosen = true;
+        let id = if after == 0 {
+            self.play_instance(instance, false).0
+        } else {
+            self.sync_volumes();
+            let id = self.engine.add(instance, false);
+            self.engine.play_delayed(id, after as i32);
+            id
+        };
+        if let Some(pcm) = self.backend.mod_pcm.get_mut(&location) {
+            pcm.instance = Some(id);
+        }
+        self.forget_mod_pcm();
+        id
+    }
+    /// Lets go of client mods' samples whose instance is over (a playing channel keeps its own).
+    fn forget_mod_pcm(&mut self) {
+        let engine = &self.engine;
+        self.backend.mod_pcm.retain(|_, pcm| {
+            pcm.instance
+                .is_none_or(|id| engine.mod_sound_state(id) != mod_api::SoundState::Stopped)
+        });
+    }
+    /// A client mod's `SoundRef::set_position`: the sound moves there from the next tick it
+    /// plays, as a tickable sound following its entity does.
+    pub fn move_mod_sound(&mut self, id: InstanceId, position: [f64; 3]) {
+        if let Some(instance) = self.engine.instance_mut(id) {
+            instance.position = position;
         }
     }
     /// `SoundManager.playDelayed` of an instance the caller made: it starts

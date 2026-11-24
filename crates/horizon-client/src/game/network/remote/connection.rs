@@ -182,7 +182,9 @@ impl Game<'_> {
             },
             |a| (a.name.clone(), a.uuid),
         );
+        let transferred = local.is_none() && cookies.is_some();
         self.server_packs_connect_for(local.is_none().then_some(address), user, cookies.is_some());
+        let external_server = local.is_none();
         let session = match local {
             Some(pipe) => Session::connect_local(
                 pipe,
@@ -311,6 +313,7 @@ impl Game<'_> {
             selector_metadata_supported: true,
             professions: self.client_professions()?,
             session,
+            external_server,
             brand: "unknown".into(),
             recipe_viewer: Default::default(),
             features: ["minecraft:vanilla".to_string()].into(),
@@ -321,10 +324,15 @@ impl Game<'_> {
             far_terrain: None,
             splash_sound: Default::default(),
             builtin,
-            status: lang
-                .get("connect.connecting")
-                .cloned()
-                .unwrap_or_else(|| "Connecting to the server...".into()),
+            status: if transferred {
+                lang.get("connect.transferring")
+                    .cloned()
+                    .unwrap_or_else(|| "Transferring to new server...".into())
+            } else {
+                lang.get("connect.connecting")
+                    .cloned()
+                    .unwrap_or_else(|| "Connecting to the server...".into())
+            },
             lang,
             registries: Arc::new(Dynamic::default()),
             tags: None,
@@ -424,6 +432,7 @@ impl Game<'_> {
             seen_players: std::collections::HashSet::new(),
             glowing: Default::default(),
             own_invisible: false,
+            own_glowing: false,
             own_on_fire: false,
             own_arrows: 0,
             own_stingers: 0,
@@ -561,6 +570,7 @@ impl Game<'_> {
             selector_metadata_supported: true,
             professions: self.client_professions()?,
             session,
+            external_server: false,
             brand: "horizon-studio".into(),
             recipe_viewer: Default::default(),
             features: ["minecraft:vanilla".to_string()].into(),
@@ -675,12 +685,13 @@ impl Game<'_> {
             seen_players: std::collections::HashSet::new(),
             glowing: Default::default(),
             own_invisible: false,
+            own_glowing: false,
             own_on_fire: false,
             own_arrows: 0,
             own_stingers: 0,
             own_shoulders: [None; 2],
             own_pose: None,
-            profile: 0,
+            profile: horizon_client::studio::recorder::RECORDER_UUID,
             profile_name: String::new(),
             destroying: None,
             destroying_item: None,

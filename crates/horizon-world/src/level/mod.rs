@@ -447,6 +447,15 @@ pub enum LevelEvent {
         event: &'static str,
         state: Option<BlockStateId>,
     },
+    /// `Level.sendParticles` of one `TrailParticleOption` from the block's
+    /// centre (`Vec3.atCenterOf(pos)`) towards `target`, drawn for `duration`
+    /// ticks in `color` (RGB).
+    TrailParticle {
+        pos: BlockPos,
+        target: [f64; 3],
+        color: u32,
+        duration: i32,
+    },
 }
 
 /// What spreads from one block to another (`LevelAccess::allow_spread`).
@@ -1338,6 +1347,10 @@ pub trait LevelAccess: BlockEntityNeighbors {
     /// still shut. None when no shulker box block entity lives there, or the
     /// level keeps none: vanilla then reads the box as closed, a full cube.
     fn shulker_is_closed(&self, _pos: BlockPos) -> Option<bool> {
+        None
+    }
+    /// The current lid progress used by the box's collision shape.
+    fn shulker_lid_progress(&self, _pos: BlockPos) -> Option<f32> {
         None
     }
     /// Load saved block-entity data into the block entity of the block just
