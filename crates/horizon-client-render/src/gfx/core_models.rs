@@ -533,6 +533,7 @@ impl World {
         if variants.iter().all(Option::is_none) {
             return None;
         }
+        let oom = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Core entity textures"),
         });
@@ -562,6 +563,9 @@ impl World {
             materials.insert(key([rect.u0, rect.v0]), Material { groups });
         }
         queue.submit([encoder.finish()]);
+        if pollster::block_on(oom.pop()).is_some() {
+            return None;
+        }
         Some(Self {
             variants,
             materials,
@@ -619,7 +623,22 @@ impl World {
         native: &wgpu::RenderPipeline,
         group: &wgpu::BindGroup,
     ) {
-        for (quads, material) in &self.runs {
+        self.draw_range(pass, native, group, 0..u32::MAX);
+    }
+
+    pub(super) fn draw_range(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        native: &wgpu::RenderPipeline,
+        group: &wgpu::BindGroup,
+        quads: Range<u32>,
+    ) {
+        for (run, material) in &self.runs {
+            let start = run.start.max(quads.start);
+            let end = run.end.min(quads.end);
+            if start >= end {
+                continue;
+            }
             match material {
                 Some((key, i)) => {
                     pass.set_pipeline(self.variants[*i].as_ref().unwrap().pipeline.get(false));
@@ -630,7 +649,7 @@ impl World {
                     pass.set_bind_group(0, group, &[]);
                 }
             }
-            pass.draw_indexed(quads.start * 6..quads.end * 6, 0, 0..1);
+            pass.draw_indexed(start * 6..end * 6, 0, 0..1);
         }
     }
 }
@@ -715,6 +734,7 @@ impl Gui {
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &wgpu::vertex_attr_array![0=>Float32x2,1=>Float32x2,2=>Unorm8x4,3=>Float32,4=>Float32x2],
         }, false, coverage)?;
+        let oom = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let sheet = texture(device, "Core item sheet", size);
         let sampler = material_sampler(
             device,
@@ -770,6 +790,9 @@ impl Gui {
             accepted.insert(name.clone(), to);
         }
         queue.submit([encoder.finish()]);
+        if pollster::block_on(oom.pop()).is_some() {
+            return None;
+        }
         Some((
             Self {
                 variant: Variant {
