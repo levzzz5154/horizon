@@ -240,7 +240,7 @@ fn a_native_wrap_uses_fresh_baked_faces_and_reaches_the_render_catalog() {
             .reload(&ResourceRoot::directory(path.to_owned()))
             .unwrap()
     };
-    let quiet = mod_platform::testing::with_mods(Vec::new().into(), &reload);
+    let quiet = mod_platform::testing::with_mods(Vec::new().into(), reload);
     let alias = registry.default_state("fixture:alias").unwrap();
     let control = registry.default_state("fixture:panel").unwrap();
     assert_eq!(chosen(&quiet, alias).faces.len(), 2);
