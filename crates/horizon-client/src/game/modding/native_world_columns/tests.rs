@@ -279,6 +279,14 @@ fn client_map_reads_retained_surfaces_and_chunk_deltas() {
             log.try_into_api().unwrap(),
             "non-default state at the build ceiling"
         );
+        let states = mod_api::HostBlockStates::block_states(host);
+        assert_eq!(
+            (
+                mod_api::BlockMetadata::name(&states, top.block.block()),
+                top.block.property(&states, "axis")
+            ),
+            (Ok("minecraft:oak_log"), Ok(Some("x")))
+        );
         assert_eq!(
             (&*top.biome, top.sky_light, top.block_light),
             ("minecraft:desert", 9, 3)
@@ -303,7 +311,9 @@ fn client_map_reads_retained_surfaces_and_chunk_deltas() {
             surface[0], surface[4],
             "duplicate columns stay in input order"
         );
-        let too_many = vec![columns[0]; super::MAX_COLUMNS + 1];
+        let limit = vec![columns[0]; 65_536];
+        assert!(host.client_surface_columns(&limit, heights).is_ok());
+        let too_many = vec![columns[0]; 65_537];
         assert!(host.client_surface_columns(&too_many, heights).is_err());
         let idle = poll(host, Some(arrivals.cursor));
         assert!(

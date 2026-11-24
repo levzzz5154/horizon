@@ -118,10 +118,12 @@ reading any column.
 
 Poll `level_chunk_deltas(level, None)` with the client's current `host.level(dimension)` to
 get the loaded chunk keys. Pass the returned `cursor` back on the next poll, including in
-singleplayer. If `full` is true, replace the old roster; otherwise redraw keys marked `loaded`
-and remove those marked not loaded. The keys are unique and sorted by chunk x and z. Reacquire
-the level handle when the client switches dimensions; missed history automatically returns a
-full snapshot. Neither call loads chunks.
+singleplayer. If `full` is true, replace the old roster: redraw every returned chunk, since its
+blocks may have changed while the history was missed, and drop tiles for keys not in it. Otherwise
+redraw keys marked `loaded` and remove those marked not loaded. The keys are unique and sorted by
+chunk x and z. Reacquire the level handle when the client switches dimensions or reconnects (a
+handle from an earlier connection returns `None`, even for the same dimension); missed history
+automatically returns a full snapshot. Neither call loads chunks.
 
 ## Far terrain reads
 
