@@ -1742,7 +1742,9 @@ impl Game<'_> {
         {
             // Name the live owner's file before Level::write; an imported
             // server world may not have a singleplayer_uuid yet.
-            self.level.player_uuid = Some(playerdata::uuid_ints(uuid));
+            self.level
+                .player_uuid
+                .get_or_insert_with(|| playerdata::uuid_ints(uuid));
             let live = Some(self.player_state.attachments.clone());
             // The warden spawn tracker is saved with the player (#16696).
             let warden = self.warden_tracker_tag();

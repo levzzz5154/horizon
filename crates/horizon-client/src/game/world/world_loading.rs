@@ -197,31 +197,7 @@ impl WorldRequest {
             ..Level::default()
         });
         let mut level = level;
-        if created && let Some((_, profile)) = &owner {
-            // IntegratedServer.initServer saves with its profile before the
-            // first tick, including an offline profile with a custom name.
-            level.player_uuid = Some(horizon_client::lan::playerdata::uuid_ints(*profile));
-        }
-        // `IntegratedServer.setSingleplayerProfile`: a world older Horizon builds made
-        // under the offline profile moves its owner to the account at open — the player
-        // file, its `UUID` and level.dat's `singleplayer_uuid`. Its entities follow as
-        // their chunks load (`owner_migration`, `entity_nbt::migrate_player_uuid`).
-        let owner_migration = owner.and_then(|(player, account)| {
-            let old = horizon_protocol::crypto::offline_uuid(&player);
-            (old != account).then(|| {
-                if !created
-                    && horizon_client::lan::playerdata::migrate_owner(
-                        &save_root, &mut level, old, account,
-                    )
-                {
-                    log::info!(
-                        "Horizon: \"{folder}\" was made under the offline profile; \
-                         its owner moved to the account's UUID"
-                    );
-                }
-                (old, account)
-            })
-        });
+        let owner_migration = resolve_owner_uuid(&save_root, &folder, created, owner, &mut level);
         // CreateWorldScreen's choices, before streaming reads the generator.
         if created && let Some(o) = create {
             level.hardcore = o.hardcore;
@@ -1378,9 +1354,103 @@ pub(super) fn make_streaming(
     Ok((streaming, save, locator))
 }
 
+/// Assign or migrate `level.player_uuid` for an integrated-server owner when
+/// creating or opening a world so `load_guest_records` and `store_owner` read
+/// and write the same owner files.
+fn resolve_owner_uuid(
+    save_root: &std::path::Path,
+    folder: &str,
+    created: bool,
+    owner: Option<(String, u128)>,
+    level: &mut Level,
+) -> Option<(u128, u128)> {
+    // `IntegratedServer.setSingleplayerProfile`: a world older Horizon builds made
+    // under the offline profile moves its owner to the account at open — the player
+    // file, its `UUID` and level.dat's `singleplayer_uuid`. Its entities follow as
+    // their chunks load (`owner_migration`, `entity_nbt::migrate_player_uuid`).
+    let owner_migration = owner.as_ref().and_then(|(player, account)| {
+        let old = horizon_protocol::crypto::offline_uuid(player);
+        (old != *account).then(|| {
+            if !created
+                && horizon_client::lan::playerdata::migrate_owner(
+                    save_root, level, old, *account,
+                )
+            {
+                log::info!(
+                    "Horizon: \"{folder}\" was made under the offline profile; \
+                     its owner moved to the account's UUID"
+                );
+            }
+            (old, *account)
+        })
+    });
+    if level.player_uuid.is_none()
+        && let Some((_, profile)) = &owner
+    {
+        // IntegratedServer.initServer saves with its profile before the first
+        // tick, including an offline profile with a custom name, and an opened
+        // world without `singleplayer_uuid` (e.g. copied from a dedicated
+        // server) adopts the active profile before owner records are loaded.
+        level.player_uuid = Some(horizon_client::lan::playerdata::uuid_ints(*profile));
+    }
+    owner_migration
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opened_world_without_singleplayer_uuid_adopts_offline_owner_for_records() {
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-owner-records-uuid-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let offline = horizon_protocol::crypto::offline_uuid("RoundTrip");
+        let expected_ints = horizon_client::lan::playerdata::uuid_ints(offline);
+        let adv_path = super::super::stats::player_json(&dir, "advancements", expected_ints);
+        std::fs::create_dir_all(adv_path.parent().unwrap()).unwrap();
+        let saved_adv = r#"{"minecraft:story/root":{"done":true}}"#;
+        std::fs::write(&adv_path, saved_adv).unwrap();
+
+        let mut level = Level::default();
+        assert!(level.player_uuid.is_none());
+        let migration = resolve_owner_uuid(
+            &dir,
+            "copied-server-world",
+            false,
+            Some(("RoundTrip".into(), offline)),
+            &mut level,
+        );
+        assert!(migration.is_none());
+        assert_eq!(level.player_uuid, Some(expected_ints));
+        assert_eq!(
+            std::fs::read_to_string(super::super::stats::player_json(
+                &dir,
+                "advancements",
+                level.player_uuid.unwrap(),
+            ))
+            .unwrap(),
+            saved_adv
+        );
+
+        // An existing world that already names another owner keeps it.
+        let mut owned = Level {
+            player_uuid: Some([1, 2, 3, 4]),
+            ..Level::default()
+        };
+        resolve_owner_uuid(
+            &dir,
+            "owned-world",
+            false,
+            Some(("RoundTrip".into(), offline)),
+            &mut owned,
+        );
+        assert_eq!(owned.player_uuid, Some([1, 2, 3, 4]));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// A world whose level.dat does not read but whose level.dat_old does: only the
     /// dedicated server restores it unasked. Every role here carries the launch configuration
