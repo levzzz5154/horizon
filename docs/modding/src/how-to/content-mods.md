@@ -396,6 +396,13 @@ block's `thickness` outline). Omitted `collision_shapes` preserves the existing 
 outline also becomes collision, otherwise the template collision is retained. An explicit collision
 table can be used without an outline override, and overrides `thickness` collision too.
 
+`"scaffolding_collision": true` (native: `scaffolding_collision` on `mod_api::Block`) gives every state
+of the block the collision of vanilla's supported scaffolding: a full top face to stand on when the
+entity is above it and not sneaking down, and nothing inside, so entities pass through and can descend.
+The flagged states are also climbable, like scaffolding, without adding the block to
+`#minecraft:climbable`. For movement, the flag takes the place of `collision_shapes`; the outline,
+rendering and lighting are unchanged.
+
 ### Entity-context shape declarations
 
 Native declarations use the same fields on `mod_api::Block`, with API-owned
