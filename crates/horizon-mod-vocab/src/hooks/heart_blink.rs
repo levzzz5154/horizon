@@ -1,5 +1,5 @@
 //! The `heart_blink` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0354
+// catalog-order: 0357
 
 pub trait Hooks {
     /// The local player's vanilla heart blink for this HUD frame. Set `blink` to change only

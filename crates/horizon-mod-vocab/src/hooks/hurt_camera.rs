@@ -1,5 +1,5 @@
 //! The `hurt_camera` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0353
+// catalog-order: 0356
 
 pub trait Hooks {
     /// Before `GameRenderer.bobHurt` draws a damage or death frame, once for both the world
