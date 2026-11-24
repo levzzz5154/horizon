@@ -95,7 +95,7 @@ pub enum BakedQuadChange {
 pub enum BakedModelEditError {
     /// The named model is not in this bake.
     UnknownModel,
-    /// A replacement has non-finite coordinates or no usable facing. No edits to the model were applied.
+    /// A replacement has non-finite coordinates, UVs outside `[0, 2)`, or no usable facing. No edits to the model were applied.
     InvalidGeometry,
 }
 

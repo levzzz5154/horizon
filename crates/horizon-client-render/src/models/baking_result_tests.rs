@@ -106,6 +106,16 @@ impl Hooks for PanelWrap {
         });
         assert_eq!(invalid, Err(BakedModelEditError::InvalidGeometry));
         assert_eq!(event.models.model(WRAPPED).unwrap().quads().len(), 2);
+        // A UV the terrain packing would clamp is rejected, not stored.
+        let clamped = event
+            .models
+            .edit_quads(WRAPPED, |quad| BakedQuadChange::Replace {
+                positions: *quad.positions,
+                uvs: quad.uvs.map(|[u, v]| [u - 1.0, v]),
+                cull_face: None,
+            });
+        assert_eq!(clamped, Err(BakedModelEditError::InvalidGeometry));
+        assert_eq!(event.models.model(WRAPPED).unwrap().quads().len(), 2);
 
         event
             .models

@@ -8,8 +8,8 @@ use mod_api::{
         built::{BakedModelFaces, BakedModelsAccess, baked_model_quad},
         game::RegistrationContextNew,
     },
-    BakedModelEditError, BakedModelKey, BakedModelQuad, BakedModelView, BakedModels, BakedQuadChange,
-    Direction as ApiDirection, HookId, RegistrationContext,
+    BakedModelEditError, BakedModelKey, BakedModelQuad, BakedModelView, BakedModels,
+    BakedQuadChange, Direction as ApiDirection, HookId, RegistrationContext,
 };
 
 /// The client-only hook target. Its catalog's borrow ends before the candidate can publish.
@@ -115,11 +115,9 @@ impl BakedModelsAccess for Candidate<'_> {
                     if positions == quad.positions && uvs == quad.uv && cull == quad.cull {
                         continue;
                     }
-                    if !positions
-                        .iter()
-                        .flatten()
-                        .chain(uvs.iter().flatten())
-                        .all(|v| v.is_finite())
+                    // UVs pack into `[0, 2)` fixed point (`mesher::baked_uv`): reject what would clamp.
+                    if !positions.iter().flatten().all(|v| v.is_finite())
+                        || !uvs.iter().flatten().all(|v| (0.0..2.0).contains(v))
                     {
                         return Err(BakedModelEditError::InvalidGeometry);
                     }

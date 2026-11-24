@@ -50,7 +50,7 @@ impl QuadShape {
         const SOUTH: usize = 3;
         const WEST: usize = 4;
         const EAST: usize = 5;
-        let (mut min, mut max) = ([32f32; 3], [-32f32; 3]);
+        let (mut min, mut max) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
         for p in positions {
             for i in 0..3 {
                 min[i] = min[i].min(p[i]);
