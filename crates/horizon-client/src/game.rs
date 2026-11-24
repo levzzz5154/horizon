@@ -81,6 +81,7 @@ use window_handler::ClientQuit;
 // `Action` here is the title screen's buttons (`title::Action`).
 use self::api_values::TryIntoApi;
 pub(crate) use api_values::{block_jump_factor, block_speed_factor, is_ladder};
+pub(crate) use graphics_tuning::exit_if_supervisor_is_gone;
 use horizon_client::actions::Action as Mapping;
 use horizon_client::spans::{startup, time as span};
 use horizon_client::{
@@ -6411,7 +6412,7 @@ impl Game<'_> {
         &self,
         chunks: impl IntoIterator<Item = &'a Arc<horizon_client::chunk::Chunk>>,
     ) -> Vec<Arc<horizon_client::chunk::Chunk>> {
-        horizon_client::save::chunks_with_block_entities(
+        horizon_client::save::chunks_with_revised_block_entities(
             chunks,
             &self.world.block_entities,
             &self.world.block_names,
@@ -7898,7 +7899,7 @@ impl Game<'_> {
     }
     /// Copy the live player and world state into the `Level` that gets saved.
     pub(super) fn sync_level(&mut self) {
-        self.level.player_impulse_grace = self.player.as_ref().map(|p| p.impulse.reset_grace_time);
+        self.level.player_impulse = self.player.as_ref().map(|p| p.impulse);
         self.level.player_fall_particles = self
             .player
             .as_ref()
