@@ -157,23 +157,12 @@ impl Game<'_> {
             Ok(code) => match toggle_slot(code) {
                 Some(slot) => self.toggles.0[slot].click(),
                 None => {
-                    let hotbar_slot = match code {
-                        KeyCode::Digit1 => Some(0),
-                        KeyCode::Digit2 => Some(1),
-                        KeyCode::Digit3 => Some(2),
-                        KeyCode::Digit4 => Some(3),
-                        KeyCode::Digit5 => Some(4),
-                        KeyCode::Digit6 => Some(5),
-                        KeyCode::Digit7 => Some(6),
-                        KeyCode::Digit8 => Some(7),
-                        KeyCode::Digit9 => Some(8),
-                        _ => None,
-                    };
-                    if let Some(slot) = hotbar_slot {
-                        if self.screen == crate::game::Screen::Playing {
-                            self.press_hotbar_slot(slot, true);
-                        }
-                    } else if let Err(error) = self.key_pressed(code, code) {
+                    // A number key goes through `key_pressed` like any other, with its guards;
+                    // `press_hotbar_slot` reads the flag to queue it FIFO.
+                    self.mod_hotbar_click = true;
+                    let pressed = self.key_pressed(code, code);
+                    self.mod_hotbar_click = false;
+                    if let Err(error) = pressed {
                         log::warn!("click_mapping {key}: {error:#}");
                     }
                 }

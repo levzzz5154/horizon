@@ -278,7 +278,7 @@ impl Game<'_> {
                     KeyCode::Digit8 => 7,
                     _ => 8,
                 };
-                self.press_hotbar_slot(slot, false);
+                self.press_hotbar_slot(slot);
             }
             _ if self.screen == Screen::Paused && self.pause_menu => {
                 self.pause_key(key)?;
@@ -293,9 +293,10 @@ impl Game<'_> {
     }
 
     /// Handle a hotbar number key (`0..9`) while playing. Physical/gamepad presses queue into
-    /// `physical_hotbar_presses` (ascending `0..9`, once per key per tick), while mod
-    /// `ClientHost::click_mapping` calls queue into `hotbar_presses` (FIFO, 64/drain, 1,024 max).
-    pub(in crate::game) fn press_hotbar_slot(&mut self, slot: usize, from_mod: bool) {
+    /// `physical_hotbar_presses` (ascending `0..9`, once per key per tick), while a mod's
+    /// `ClientHost::click_mapping` (`mod_hotbar_click`) queues into `hotbar_presses` (FIFO,
+    /// 64/drain, 1,024 max).
+    fn press_hotbar_slot(&mut self, slot: usize) {
         // Minecraft.handleKeybinds: a spectator's number keys drive
         // the spectator menu, not the hotbar; a creative player
         // holding the load or save toolbar key loads or saves a
@@ -305,7 +306,7 @@ impl Game<'_> {
             self.spectator_hotbar_key(slot as i32);
         } else if self.creative && (load || self.mapped_key_down("key.saveToolbarActivator")) {
             self.hotbar_load_or_save(slot, load);
-        } else if from_mod {
+        } else if self.mod_hotbar_click {
             self.hotbar_presses.push(slot);
         } else {
             self.physical_hotbar_presses.push(slot);

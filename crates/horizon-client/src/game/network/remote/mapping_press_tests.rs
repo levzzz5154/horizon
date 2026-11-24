@@ -243,6 +243,12 @@ fn the_host_presses_by_name_and_refuses_the_others() {
         // `MultiPlayerGameMode.tick` tells the server first thing in the next tick.
         game.remote_handle_input();
         assert_eq!(sent(packets), ["minecraft:set_carried_item"]);
+        // A mod's clicks keep their order (the last one wins), where the keyboard's go 0..9.
+        for key in ["key.hotbar.7", "key.hotbar.2"] {
+            assert_eq!(ClientInputClientHost::click_mapping(game, key), Ok(()));
+        }
+        game.remote_handle_input();
+        assert_eq!(game.selected, 1);
         assert_eq!(
             ClientInputClientHost::click_mapping(game, "key.screenshot"),
             Err(MappingError::NotGameplay {

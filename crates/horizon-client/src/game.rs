@@ -1886,6 +1886,9 @@ struct Game<'a> {
     /// `Minecraft.handleKeybinds` visits slots `0..9` in ascending order, at most once per slot
     /// per tick.
     physical_hotbar_presses: horizon_client::input_queue::HotbarQueue,
+    /// Set while a mod's `ClientHost::click_mapping` runs `key_pressed`: its number keys
+    /// queue into `hotbar_presses` instead of `physical_hotbar_presses`.
+    mod_hotbar_click: bool,
     /// `Player.entityInteractionRange` and `blockInteractionRange`, refreshed
     /// each tick from the attribute (a server's reach modifier, creative's
     /// +2): the pick helpers' `&self` reach.
@@ -11597,6 +11600,7 @@ impl<'a> Game<'a> {
             physical_hotbar_presses: horizon_client::input_queue::HotbarQueue::new(
                 hand::PHYSICAL_HOTBAR_PRESSES,
             ),
+            mod_hotbar_click: false,
             entity_reach: 3.0,
             block_reach: 4.5,
             client_targeting: Default::default(),
