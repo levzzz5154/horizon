@@ -44,10 +44,26 @@ impl Game<'_> {
             .get(gi)
             .filter(|g| g.conn == conn)
             .map(|g| Dim::from_id(&g.dimension))?;
+        // Close any open ender chest of the outer player in the outer level before switching
+        // levels: `enter_guest_at` / `leave_guest` would otherwise close and restore it in the
+        // guest's level.
+        let outer_ender = if theirs != back {
+            let key = self.ender_open;
+            self.close_ender_chest();
+            key
+        } else {
+            None
+        };
         if theirs != back
             && let Err(e) = self.enter_level(theirs)
         {
             log::error!("could not open {}: {e}", theirs.id());
+            if let Some(key) = outer_ender {
+                self.world
+                    .block_entities
+                    .insert(key, BlockEntity::Chest(self.ender_items.clone()));
+                self.ender_open = Some(key);
+            }
             return None;
         }
         let swap = match self.enter_guest_at(gi, conn, back) {
@@ -57,6 +73,14 @@ impl Game<'_> {
                     && let Err(e) = self.enter_level(back)
                 {
                     log::error!("could not reopen {}: {e}", back.id());
+                }
+                if self.dim == back
+                    && let Some(key) = outer_ender
+                {
+                    self.world
+                        .block_entities
+                        .insert(key, BlockEntity::Chest(self.ender_items.clone()));
+                    self.ender_open = Some(key);
                 }
                 return None;
             }
@@ -68,6 +92,14 @@ impl Game<'_> {
             && let Err(e) = self.enter_level(back)
         {
             log::error!("could not reopen {}: {e}", back.id());
+        }
+        if self.dim == back
+            && let Some(key) = outer_ender
+        {
+            self.world
+                .block_entities
+                .insert(key, BlockEntity::Chest(self.ender_items.clone()));
+            self.ender_open = Some(key);
         }
         match result {
             Ok(result) => Some(result),
