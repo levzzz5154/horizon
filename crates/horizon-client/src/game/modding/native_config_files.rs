@@ -40,11 +40,21 @@ const BULK_QUOTA: Quota = Quota {
 // work of finding the calling mod's top-level files even in a legacy tree.
 const SHARED_CONFIG_SCAN_MAX: usize = 65_536;
 
+/// Serializes quota-checked writes and deletes across all host callers so
+/// disk-based quota accounting never races with concurrent mutations.
+static STORAGE_LOCK: Mutex<()> = Mutex::new(());
+
 /// The game directory or a particular save, selected by the game rather than
 /// the mod. Resolve the storage directory relative to this trusted anchor.
 struct FileRoot {
     path: PathBuf,
     bulk: bool,
+    /// `path` itself is opened from its parent without following a link: a
+    /// world's `serverconfig/` came with the world, not from the player.
+    unlinked: bool,
+    /// `path` already names the storage directory (`config/` or `serverconfig/`),
+    /// as passed by `read_config`/`write_config`.
+    direct_storage: bool,
 }
 
 impl FileRoot {
@@ -76,13 +86,43 @@ impl FileRoot {
         if self.bulk {
             return open_child(&self.open()?, self.storage());
         }
+        if self.unlinked {
+            let (Some(parent), Some(name)) = (self.path.parent(), self.path.file_name()) else {
+                return Ok(None);
+            };
+            let parent = match Dir::open_ambient_dir(parent, cap_std::ambient_authority()) {
+                Ok(dir) => dir,
+                Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+                Err(e) => return Err(io(e)),
+            };
+            let Some(name) = name.to_str() else {
+                return Err(ConfigFileError::NotFound);
+            };
+            return open_child(&parent, name);
+        }
         // The configured root is chosen by the operator, not the mod.
         // Follow that root as before, then keep all mod paths below its handle.
-        match Dir::open_ambient_dir(self.path.join("config"), cap_std::ambient_authority()) {
+        let target = if self.direct_storage {
+            self.path.clone()
+        } else {
+            self.path.join(self.storage())
+        };
+        match Dir::open_ambient_dir(target, cap_std::ambient_authority()) {
             Ok(dir) => Ok(Some(dir)),
             Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
             Err(e) => Err(io(e)),
         }
+    }
+
+    fn create_storage(&self) -> Result<Dir, ConfigFileError> {
+        if self.direct_storage && !self.bulk {
+            if self.unlinked {
+                return Err(ConfigFileError::NotFound);
+            }
+            std::fs::create_dir_all(&self.path).map_err(io)?;
+            return Dir::open_ambient_dir(&self.path, cap_std::ambient_authority()).map_err(io);
+        }
+        make_child(&self.open()?, self.storage())
     }
 }
 
@@ -123,10 +163,19 @@ fn io(error: std::io::Error) -> ConfigFileError {
 fn calling_mod(root: &FileRoot, path: &ConfigPath) -> Result<&'static str, ConfigFileError> {
     let mod_id =
         mod_api::content::crash::current_native_mod().ok_or(ConfigFileError::NoCallingMod)?;
+    check_ownership(root, path, mod_id)?;
+    Ok(mod_id)
+}
+
+fn check_ownership(
+    root: &FileRoot,
+    path: &ConfigPath,
+    mod_id: &str,
+) -> Result<(), ConfigFileError> {
     if !root.bulk && !path.owned_by(mod_id) {
         return Err(ConfigFileError::NotOwned);
     }
-    Ok(mod_id)
+    Ok(())
 }
 
 fn components<'a>(
@@ -149,10 +198,20 @@ fn checked_metadata(dir: &Dir, name: &str) -> Result<Option<Metadata>, ConfigFil
 }
 
 fn open_child(dir: &Dir, name: &str) -> Result<Option<Dir>, ConfigFileError> {
-    if checked_metadata(dir, name)?.is_none() {
+    let Some(meta) = checked_metadata(dir, name)? else {
         return Ok(None);
+    };
+    if !meta.is_dir() {
+        return Err(ConfigFileError::NotAFile);
     }
-    dir.open_dir_nofollow(name).map(Some).map_err(io)
+    dir.open_dir_nofollow(name).map(Some).map_err(|e| {
+        // A file where a folder of the path should be: the path names no file.
+        if e.kind() == ErrorKind::NotADirectory {
+            ConfigFileError::NotAFile
+        } else {
+            io(e)
+        }
+    })
 }
 
 fn make_child(dir: &Dir, name: &str) -> Result<Dir, ConfigFileError> {
@@ -171,6 +230,17 @@ fn resolve<'a>(
     path: &'a ConfigPath,
 ) -> Result<(Dir, &'a str, Metadata), ConfigFileError> {
     let mod_id = calling_mod(root, path)?;
+    resolve_for(root, path, mod_id)
+}
+
+/// [`resolve`] for `mod_id`, named by the game rather than taken from the
+/// running hook: a registered config's owner.
+fn resolve_for<'a>(
+    root: &FileRoot,
+    path: &'a ConfigPath,
+    mod_id: &'a str,
+) -> Result<(Dir, &'a str, Metadata), ConfigFileError> {
+    check_ownership(root, path, mod_id)?;
     let mut directory = root.open_storage()?.ok_or(ConfigFileError::NotFound)?;
     let mut components = components(root.bulk, mod_id, path.as_str()).peekable();
     while let Some(part) = components.next() {
@@ -205,7 +275,13 @@ fn stat_of(meta: &Metadata) -> ConfigStat {
 }
 
 fn read(root: &FileRoot, file: &ConfigPath) -> Result<Vec<u8>, ConfigFileError> {
-    let (directory, name, meta) = resolve(root, file)?;
+    let mod_id =
+        mod_api::content::crash::current_native_mod().ok_or(ConfigFileError::NoCallingMod)?;
+    read_for(root, file, mod_id)
+}
+
+fn read_for(root: &FileRoot, file: &ConfigPath, mod_id: &str) -> Result<Vec<u8>, ConfigFileError> {
+    let (directory, name, meta) = resolve_for(root, file, mod_id)?;
     if !meta.is_file() {
         return Err(ConfigFileError::NotAFile);
     }
@@ -331,10 +407,31 @@ fn write(root: &FileRoot, file: &ConfigPath, bytes: &[u8]) -> Result<(), ConfigF
     write_with_quota(root, file, bytes, root.quota())
 }
 
+fn write_for(
+    root: &FileRoot,
+    file: &ConfigPath,
+    bytes: &[u8],
+    mod_id: &str,
+) -> Result<(), ConfigFileError> {
+    write_for_with_quota(root, file, bytes, mod_id, root.quota())
+}
+
 fn write_with_quota(
     root: &FileRoot,
     file: &ConfigPath,
     bytes: &[u8],
+    quota: Quota,
+) -> Result<(), ConfigFileError> {
+    let mod_id =
+        mod_api::content::crash::current_native_mod().ok_or(ConfigFileError::NoCallingMod)?;
+    write_for_with_quota(root, file, bytes, mod_id, quota)
+}
+
+fn write_for_with_quota(
+    root: &FileRoot,
+    file: &ConfigPath,
+    bytes: &[u8],
+    mod_id: &str,
     mut quota: Quota,
 ) -> Result<(), ConfigFileError> {
     if bytes.len() as u64 > root.cap() {
@@ -343,7 +440,7 @@ fn write_with_quota(
     if file.as_str().is_empty() {
         return Err(ConfigFileError::NotAFile);
     }
-    let mod_id = calling_mod(root, file)?;
+    check_ownership(root, file, mod_id)?;
     // A config mod folder cannot be a file either.
     if !root.bulk && file.as_str() == mod_id {
         return Err(ConfigFileError::NotAFile);
@@ -352,8 +449,7 @@ fn write_with_quota(
     // Serialize admission through rename for all host callers, including
     // different instances that might name the same directory differently.
     // Account from disk, not from a cache that misses edits or older saves.
-    static WRITE_LOCK: Mutex<()> = Mutex::new(());
-    let _write = WRITE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+    let _write = STORAGE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     let storage = root.open_storage()?;
     let (parents, name) = file
         .as_str()
@@ -395,7 +491,7 @@ fn write_with_quota(
 
     let mut directory = match parent.or(storage) {
         Some(dir) => dir,
-        None => make_child(&root.open()?, root.storage())?,
+        None => root.create_storage()?,
     };
     for part in remaining {
         directory = make_child(&directory, part)?;
@@ -486,11 +582,32 @@ fn stat(root: &FileRoot, path: &ConfigPath) -> Result<Option<ConfigStat>, Config
     }
 }
 
+fn delete(root: &FileRoot, file: &ConfigPath) -> Result<(), ConfigFileError> {
+    let mod_id =
+        mod_api::content::crash::current_native_mod().ok_or(ConfigFileError::NoCallingMod)?;
+    delete_for(root, file, mod_id)
+}
+
+fn delete_for(root: &FileRoot, file: &ConfigPath, mod_id: &str) -> Result<(), ConfigFileError> {
+    // Neither the implicit bulk root nor a config mod folder can be deleted as a file.
+    if file.as_str().is_empty() || (!root.bulk && file.as_str() == mod_id) {
+        return Err(ConfigFileError::NotAFile);
+    }
+    let _lock = STORAGE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+    let (directory, name, meta) = resolve_for(root, file, mod_id)?;
+    if !meta.is_file() {
+        return Err(ConfigFileError::NotAFile);
+    }
+    directory.remove_file(name).map_err(io)
+}
+
 impl GameConfigFiles {
     fn root(&self) -> FileRoot {
         FileRoot {
             path: Game::game_dir(),
             bulk: self.bulk,
+            unlinked: false,
+            direct_storage: false,
         }
     }
 }
@@ -502,6 +619,8 @@ fn world_root(game: &Game<'_>) -> Result<FileRoot, ConfigFileError> {
     Ok(FileRoot {
         path: game.world_root.clone(),
         bulk: true,
+        unlinked: false,
+        direct_storage: false,
     })
 }
 
@@ -525,6 +644,9 @@ macro_rules! files {
             fn stat(&self, path: &ConfigPath) -> Result<Option<ConfigStat>, ConfigFileError> {
                 stat(&$root(self)?, path)
             }
+            fn delete(&self, file: &ConfigPath) -> Result<(), ConfigFileError> {
+                delete(&$root(self)?, file)
+            }
         }
     };
 }
@@ -536,6 +658,43 @@ files!(GameConfigFiles, |service: &GameConfigFiles| Ok::<
     service.root()
 ));
 files!(Game<'_>, world_root);
+
+/// A registered config's file in `dir` (the game's `config/` or, `in_world`,
+/// a world's `serverconfig/`), read as `mod_id`'s own the way the service
+/// reads it: no symbolic link on the path, at most `CONFIG_FILE_MAX` bytes.
+/// A world's `serverconfig/` may not be a link itself either; the player's
+/// own `config/` may.
+pub(super) fn read_config(
+    dir: &std::path::Path,
+    in_world: bool,
+    mod_id: &str,
+    file: &ConfigPath,
+) -> Result<Vec<u8>, ConfigFileError> {
+    let root = FileRoot {
+        path: dir.to_path_buf(),
+        bulk: false,
+        unlinked: in_world,
+        direct_storage: true,
+    };
+    read_for(&root, file, mod_id)
+}
+
+/// Writes a registered config's file in `dir` as `mod_id`'s own, as
+/// [`read_config`] reads it.
+pub(super) fn write_config(
+    dir: &std::path::Path,
+    mod_id: &str,
+    file: &ConfigPath,
+    bytes: &[u8],
+) -> Result<(), ConfigFileError> {
+    let root = FileRoot {
+        path: dir.to_path_buf(),
+        bulk: false,
+        unlinked: false,
+        direct_storage: true,
+    };
+    write_for(&root, file, bytes, mod_id)
+}
 
 #[cfg(test)]
 mod tests {
@@ -554,6 +713,8 @@ mod tests {
             Self(FileRoot {
                 path: root,
                 bulk: false,
+                unlinked: false,
+                direct_storage: false,
             })
         }
     }
@@ -1318,6 +1479,74 @@ mod tests {
                     });
                 });
             });
+        });
+    }
+
+    #[test]
+    fn delete_removes_owned_files_and_refuses_foreign_dirs_and_missing() {
+        let config_root = Root::new("delete-config");
+        assert_eq!(
+            delete(&config_root.0, &path("fd/settings.toml")),
+            Err(ConfigFileError::NoCallingMod)
+        );
+        as_mod("fd", || {
+            write(&config_root.0, &path("fd/settings.toml"), b"a = 1").unwrap();
+            assert!(stat(&config_root.0, &path("fd/settings.toml")).unwrap().is_some());
+            assert_eq!(
+                delete(&config_root.0, &path("fd")),
+                Err(ConfigFileError::NotAFile)
+            );
+            assert_eq!(
+                delete(&config_root.0, &ConfigPath::root()),
+                Err(ConfigFileError::NotAFile)
+            );
+            assert_eq!(
+                delete(&config_root.0, &path("other/settings.toml")),
+                Err(ConfigFileError::NotOwned)
+            );
+            delete(&config_root.0, &path("fd/settings.toml")).unwrap();
+            assert_eq!(stat(&config_root.0, &path("fd/settings.toml")).unwrap(), None);
+            assert_eq!(
+                delete(&config_root.0, &path("fd/settings.toml")),
+                Err(ConfigFileError::NotFound)
+            );
+        });
+
+        let mut bulk_root = Root::new("delete-bulk");
+        bulk_root.0.bulk = true;
+        as_mod("fd", || {
+            write(&bulk_root.0, &path("tiles/0_0.bin"), b"tile").unwrap();
+            assert_eq!(
+                delete(&bulk_root.0, &path("tiles")),
+                Err(ConfigFileError::NotAFile)
+            );
+            assert_eq!(
+                delete(&bulk_root.0, &ConfigPath::root()),
+                Err(ConfigFileError::NotAFile)
+            );
+            delete(&bulk_root.0, &path("tiles/0_0.bin")).unwrap();
+            assert_eq!(stat(&bulk_root.0, &path("tiles/0_0.bin")).unwrap(), None);
+        });
+    }
+
+    #[test]
+    fn delete_reclaims_quota_for_subsequent_writes() {
+        let root = Root::new("delete-quota");
+        let quota = Quota {
+            bytes: 10,
+            entries: 3, // fd/, fd/a.txt, fd/b.txt
+        };
+        as_mod("fd", || {
+            write_with_quota(&root.0, &path("fd/a.txt"), b"123456", quota).unwrap();
+            write_with_quota(&root.0, &path("fd/b.txt"), b"1234", quota).unwrap();
+            // Both byte budget (10/10) and entry budget (3/3) are full.
+            assert_eq!(
+                write_with_quota(&root.0, &path("fd/c.txt"), b"x", quota),
+                Err(ConfigFileError::TooLarge)
+            );
+            delete(&root.0, &path("fd/a.txt")).unwrap();
+            write_with_quota(&root.0, &path("fd/c.txt"), b"abcdef", quota).unwrap();
+            assert_eq!(read(&root.0, &path("fd/c.txt")).unwrap(), b"abcdef");
         });
     }
 }
