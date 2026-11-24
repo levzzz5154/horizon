@@ -390,10 +390,11 @@ impl Game<'_> {
         }
 
         let mut out = Vec::new();
-        let mut changed: Vec<(i32, i32, i32)> = self.world.block_log.take().unwrap_or_default();
-        changed.sort_unstable();
-        changed.dedup();
-        for p in changed {
+        let mut changed = changed_positions(
+            self.world.block_log.take().unwrap_or_default(),
+            before.keys().copied(),
+        );
+        for p in changed.drain(..) {
             let now = self.world.block(p.0, p.1, p.2).0;
             if before.get(&p).copied().unwrap_or(self.res.facts().air.0) != now {
                 out.push(format!("set {},{},{} {now}", p.0, p.1, p.2));
@@ -1387,11 +1388,17 @@ impl Game<'_> {
         let mut line = format!("T {index} ");
         match *target {
             Target::Boat(id) => match self.boats.iter().find(|b| b.id == id) {
-                Some(b) => line.push_str(&b.entity_type()),
+                Some(b) => {
+                    line.push_str(&b.entity_type());
+                    append_container_slots(&mut line, &b.items);
+                }
                 None => line.push_str("removed"),
             },
             Target::Cart(id) => match self.carts.iter().find(|c| c.id == id) {
-                Some(c) => line.push_str(c.kind.id()),
+                Some(c) => {
+                    line.push_str(c.kind.id());
+                    append_container_slots(&mut line, &c.items);
+                }
                 None => line.push_str("removed"),
             },
             Target::Stand(id) => {
@@ -1605,5 +1612,55 @@ impl Game<'_> {
             };
             out.push(line(kind, centre(f.bounds()), [0.0; 3], ""));
         }
+    }
+}
+
+/// Positions to diff against `before`: everything `block_log` recorded plus every initial input
+/// cell so quiet edits without `UPDATE_CLIENTS` (such as sapling stage growth) are compared too.
+fn changed_positions(
+    mut logged: Vec<(i32, i32, i32)>,
+    inputs: impl IntoIterator<Item = (i32, i32, i32)>,
+) -> Vec<(i32, i32, i32)> {
+    logged.extend(inputs);
+    logged.sort_unstable();
+    logged.dedup();
+    logged
+}
+
+/// Appends ` slot<i>=<canon>` for each non-empty container slot, matching
+/// `VanillaDispenserOracle.describe`'s `Container` branch.
+fn append_container_slots(line: &mut String, items: &[Option<ItemStack>]) {
+    for (slot, stack) in items.iter().enumerate() {
+        if let Some(stack) = stack
+            && stack.count > 0
+        {
+            let _ = write!(line, " slot{slot}={}", canon_stack(Some(stack)));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn container_slots_and_quiet_input_cells_appear_in_fixture_summary() {
+        let mut line = "T 0 minecraft:hopper_minecart".to_owned();
+        append_container_slots(
+            &mut line,
+            &[
+                Some(ItemStack::new("minecraft:stone", 3)),
+                None,
+                Some(ItemStack::new("minecraft:dirt", 1)),
+            ],
+        );
+        assert_eq!(
+            line,
+            r#"T 0 minecraft:hopper_minecart slot0={count:3,id:"minecraft:stone"} slot2={count:1,id:"minecraft:dirt"}"#
+        );
+        assert_eq!(
+            changed_positions(vec![(1, 2, 3)], [(0, 64, 0), (1, 2, 3)]),
+            vec![(0, 64, 0), (1, 2, 3)]
+        );
     }
 }
