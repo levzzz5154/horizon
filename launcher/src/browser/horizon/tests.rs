@@ -859,7 +859,7 @@ fn install_passes_over_a_newer_version_this_horizon_cant_load() {
     assert_eq!(installable(&index, p).unwrap().version, loadable);
     assert_eq!(newest(&index, p).unwrap().version, loadable);
     let home = scratch("unknown-capability");
-    let done = install_from(&index, true, &hud(&index), &home, &|_, _| {}).unwrap();
+    let done = install_from(&index, true, &hud(&index), &home, None, false, &|_, _| {}).unwrap();
     assert_eq!(done[0].version, loadable);
     fs::remove_dir_all(&home).unwrap();
     let mut only = index.clone();
