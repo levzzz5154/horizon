@@ -2579,31 +2579,43 @@ impl HudBatch {
             );
             self.blend_since(start, Blend::GuiFill(mode, None));
         } else {
-            let u = (r.u0 + r.u1) / 2.0;
-            let v = (r.v0 + r.v1) / 2.0;
-            self.rect_uv(
-                x,
-                y,
-                w,
-                h,
-                Rect {
-                    u0: u,
-                    v0: v,
-                    u1: u,
-                    v1: v,
-                    ..r
-                },
-                color,
-            );
-            self.blend_since(
-                start,
-                match mode {
-                    GuiFill::Alpha => Blend::Alpha,
-                    GuiFill::Invert => Blend::Invert,
-                    GuiFill::Additive => Blend::Additive,
-                },
-            );
+            let blend = match mode {
+                GuiFill::Alpha => Blend::Alpha,
+                GuiFill::Invert => Blend::Invert,
+                GuiFill::Additive => Blend::Additive,
+            };
+            self.fill_native(atlas, [x, y, w, h], color, blend);
         }
+    }
+    /// A solid rectangle drawn natively with `blend`, never with the pack's `core/gui`: for
+    /// fills whose own pipeline replaces `RenderPipelines.GUI` (the End portal, an inverting
+    /// crosshair), so their vertices are recorded under that one blend only.
+    pub fn fill_native(
+        &mut self,
+        atlas: &HudAtlas,
+        [x, y, w, h]: [f32; 4],
+        color: u32,
+        blend: Blend,
+    ) {
+        let start = self.vertices.len();
+        let r = atlas.white;
+        let u = (r.u0 + r.u1) / 2.0;
+        let v = (r.v0 + r.v1) / 2.0;
+        self.rect_uv(
+            x,
+            y,
+            w,
+            h,
+            Rect {
+                u0: u,
+                v0: v,
+                u1: u,
+                v1: v,
+                ..r
+            },
+            color,
+        );
+        self.blend_since(start, blend);
     }
     /// Any four-cornered shape in one colour, corners in order round it.
     pub fn fill_quad(&mut self, atlas: &HudAtlas, corners: [[f32; 2]; 4], color: u32) {

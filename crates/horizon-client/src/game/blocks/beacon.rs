@@ -552,7 +552,7 @@ impl Game<'_> {
         self.render_transparent_background("beacon", batch);
         let atlas = &self.gui.atlas;
         // `BeaconScreen.extractBackground`.
-        batch.texture_blit(
+        batch.texture_blit_baked(
             atlas,
             "gui/container/beacon",
             [bx, by, 230.0, HEIGHT],

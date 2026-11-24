@@ -41,7 +41,7 @@ impl Game<'_> {
                 "Dropper",
             ),
         };
-        batch.texture_blit(
+        batch.texture_blit_baked(
             atlas,
             texture,
             [ox, oy, 176.0, height],

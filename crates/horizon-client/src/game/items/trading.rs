@@ -795,7 +795,7 @@ impl Game<'_> {
         self.render_transparent_background("merchant", batch);
         let atlas = &self.gui.atlas;
         // `MerchantScreen.extractBackground` uses a 512x256 source texture.
-        batch.texture_blit(
+        batch.texture_blit_baked(
             atlas,
             "gui/container/villager",
             [ox + SHIFT, oy, 276.0, 166.0],

@@ -145,7 +145,8 @@ impl HudBatch {
     }
 
     /// `GuiGraphicsExtractor.innerBlit` for a standalone texture's region, not a GUI atlas sprite.
-    /// The fallback keeps the baked atlas sample; it never loads the standalone image.
+    /// The fallback keeps the baked atlas sample, cut as `dims` says; it never loads the
+    /// standalone image.
     pub fn texture_blit(
         &mut self,
         atlas: &HudAtlas,
@@ -154,9 +155,32 @@ impl HudBatch {
         source: [f32; 2],
         dims: [f32; 2],
     ) {
+        self.texture_blit_cut(atlas, texture, dest, source, dims, false);
+    }
+
+    /// [`Self::texture_blit`] whose fallback cuts the baked sprite by its own pixel size
+    /// (`Rect.w`, `Rect.h`), as these screens always did; only the pack's shader gets `dims`.
+    pub fn texture_blit_baked(
+        &mut self,
+        atlas: &HudAtlas,
+        texture: &str,
+        dest: [f32; 4],
+        source: [f32; 2],
+        dims: [f32; 2],
+    ) {
+        self.texture_blit_cut(atlas, texture, dest, source, dims, true);
+    }
+
+    fn texture_blit_cut(
+        &mut self,
+        atlas: &HudAtlas,
+        texture: &str,
+        dest: [f32; 4],
+        [u, v]: [f32; 2],
+        dims: [f32; 2],
+        baked: bool,
+    ) {
         let [x, y, w, h] = dest;
-        let [u, v] = source;
-        let [tw, th] = dims;
         self.pack_blit(
             atlas,
             texture,
@@ -166,6 +190,11 @@ impl HudBatch {
             u32::MAX,
             |batch| {
                 if let Some(mut r) = atlas.sprites.get(texture).copied() {
+                    let [tw, th] = if baked {
+                        [r.w as f32, r.h as f32]
+                    } else {
+                        dims
+                    };
                     let (du, dv) = ((r.u1 - r.u0) / tw, (r.v1 - r.v0) / th);
                     r.u0 += u * du;
                     r.v0 += v * dv;

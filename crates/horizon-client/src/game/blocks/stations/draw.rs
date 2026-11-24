@@ -56,7 +56,7 @@ impl Game<'_> {
                 (b.fuel, b.total_fuel, b.brew_time, b.total_brew_time);
             let atlas = &self.gui.atlas;
             // `BrewingStandScreen.extractBackground`: the panel is not a GUI atlas sprite.
-            batch.texture_blit(
+            batch.texture_blit_baked(
                 atlas,
                 "gui/container/brewing_stand",
                 [ox, oy, 176.0, 166.0],
@@ -147,7 +147,7 @@ impl Game<'_> {
             crate::game::screen_info::name_container(|| title.plain());
             {
                 let atlas = &self.gui.atlas;
-                batch.texture_blit(
+                batch.texture_blit_baked(
                     atlas,
                     kind.texture(),
                     [ox, oy, 176.0, 166.0],

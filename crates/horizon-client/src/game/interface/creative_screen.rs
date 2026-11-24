@@ -153,7 +153,7 @@ impl Game<'_> {
             "gui/container/creative_inventory/tab_items"
         };
         // `CreativeModeInventoryScreen.extractBackground`: the selected tab's original image.
-        batch.texture_blit(
+        batch.texture_blit_baked(
             &self.gui.atlas,
             background,
             [ox, oy, Creative::WIDTH, Creative::HEIGHT],

@@ -614,6 +614,44 @@ fn loaded_core_gui_preserves_gradient_scissor_and_hdr_coverage() {
 }
 
 #[test]
+fn special_blend_fills_record_one_run_with_core_gui() {
+    let stock = tempfile::tempdir().unwrap();
+    let pack = tempfile::tempdir().unwrap();
+    write_gui_fixture_shader(
+        pack.path(),
+        "gui",
+        "#version 330\n\
+         layout(std140) uniform Projection { mat4 ProjMat; };\n\
+         layout(std140) uniform DynamicTransforms { mat4 ModelViewMat; };\n\
+         in vec3 Position; in vec4 Color; out vec4 shade;\n\
+         void main() { shade = Color; gl_Position = ProjMat * ModelViewMat * vec4(Position, 1.0); }\n",
+        "#version 330\n\
+         in vec4 shade; out vec4 frag;\n\
+         void main() { frag = shade; }\n",
+    );
+    let atlas = HudAtlas::build_over(
+        &crate::resource_source::ResourceSource::directory(pack.path().to_owned()),
+        &crate::resource_source::ResourceSource::directory(stock.path().to_owned()),
+    )
+    .unwrap();
+    assert!(atlas.gui_shader.is_some());
+    let mut batch = HudBatch::scratch([4, 2]);
+    batch.fill(&atlas, 0.0, 0.0, 4.0, 2.0, u32::MAX);
+    // The End poem's portal background, then an inverting crosshair run.
+    batch.fill_native(&atlas, [0.0, 0.0, 4.0, 2.0], u32::MAX, Blend::EndPortal);
+    batch.fill_native(&atlas, [1.0, 0.0, 2.0, 1.0], u32::MAX, Blend::Invert);
+    assert_eq!(
+        batch.runs(),
+        vec![
+            (0..6, Blend::GuiFill(GuiFill::Alpha, None)),
+            (6..12, Blend::EndPortal),
+            (12..18, Blend::Invert),
+        ]
+    );
+    assert_eq!(batch.blends.len(), 3, "no vertex is under two blends");
+}
+
+#[test]
 fn loaded_gui_textured_blit_samples_and_rescales_the_original_inventory_texture() {
     let _gpu = crate::gfx::test_gpu::lock();
     let root = tempfile::tempdir().unwrap();
