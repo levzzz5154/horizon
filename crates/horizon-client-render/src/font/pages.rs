@@ -339,6 +339,63 @@ impl PageSet {
         }
     }
 
+    /// Metrics-only lookup matching [`Self::request`] without stitching or caching a glyph.
+    pub(super) fn metric(&mut self, font: &Font, cache: &mut Cache, ch: char) -> Glyph {
+        if let Some(&baked) = self.glyphs.get(&ch) {
+            return baked.glyph;
+        }
+        for provider in &mut self.providers {
+            match provider {
+                Provider::Space(advances) => {
+                    if let Some(&advance) = advances.get(&ch) {
+                        return Glyph {
+                            advance,
+                            offset: 1.0,
+                            ..Default::default()
+                        };
+                    }
+                }
+                Provider::Bitmap(filter, glyphs) if filter.passes(font.uniform, font.japanese) => {
+                    match glyphs.get(&ch) {
+                        Some(BitmapGlyph::Sheet(cell)) => {
+                            if cell.w > SIZE || cell.h > SIZE {
+                                return self.missing.glyph;
+                            }
+                            return cell.glyph;
+                        }
+                        Some(BitmapGlyph::Atlas(empty)) => return *empty,
+                        None => continue,
+                    }
+                }
+                Provider::Unihex(filter, lazy, loaded)
+                    if filter.passes(font.uniform, font.japanese) =>
+                {
+                    let table = ensure_unihex(&font.source, lazy, loaded, &mut cache.unihex);
+                    if let Some(advance) = table.advance(u32::from(ch)) {
+                        return Glyph {
+                            advance,
+                            offset: 0.5,
+                            ..Default::default()
+                        };
+                    }
+                }
+                Provider::TrueType(filter, ttf) if filter.passes(font.uniform, font.japanese) => {
+                    let Some(id) = ttf.glyph_id(ch) else { continue };
+                    if !ttf.fits_atlas(id, (SIZE, SIZE)) {
+                        return self.missing.glyph;
+                    }
+                    return Glyph {
+                        advance: ttf.advance(id),
+                        offset: 1.0,
+                        ..Default::default()
+                    };
+                }
+                _ => continue,
+            }
+        }
+        self.missing.glyph
+    }
+
     /// `FontSet.DelayedBake.get`: choose the provider before uploading, and bake only
     /// the selected glyph on first request (not when enumerating a provider's sheet).
     pub(super) fn request(
