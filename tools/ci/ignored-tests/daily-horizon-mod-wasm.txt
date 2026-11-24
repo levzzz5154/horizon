@@ -8,5 +8,6 @@ horizon-mod-wasm runtime::equip_scope_tests::equip_scope_copies_once_per_instanc
 horizon-mod-wasm module_cache::tests::child_failures_refuse_without_unbounded_compilation lib daily slow
 horizon-mod-wasm module_cache::tests::child_success_avoids_in_process_compile lib daily child-process
 horizon-mod-wasm runtime::runtime_tests::contended_hook_times_out_without_poisoning_the_group lib daily slow
+horizon-mod-wasm runtime::runtime_tests::looping_constructor_of_an_import_less_group_hits_the_load_deadline lib daily slow
 horizon-mod-wasm runtime::runtime_tests::shared_memory_and_atomics_are_refused_and_an_ordinary_member_links lib daily child-process
 horizon-mod-wasm runtime::threads_tests::guest_polling_a_host_shared_flag_returns_once_the_host_sets_it lib daily slow

@@ -1088,40 +1088,42 @@ impl WasmMod {
         // first import this game changed or doesn't have.
         let mut imported = std::collections::BTreeSet::new();
         let mut unlinked = None;
-        let mut group = Group::link_cached_with(store, members, cache, |store, module, name| {
-            // Compilation is not guest execution and must not consume its load deadline.
-            if epoch_guard.is_none() {
-                store.set_epoch_deadline(horizon_mod_runtime::MAX_GUEST_CALL_BUDGET_MILLIS);
-                epoch_guard = Some(EPOCH_TICKER.enter());
-            }
-            if module != "horizon" {
-                return None;
-            }
-            match name {
-                "host" => Some(Extern::Func(Func::wrap(store, control))),
-                "host_reply" => Some(Extern::Func(Func::wrap(store, host_reply))),
-                name => match crate::boundary::import_by_name(name) {
-                    Ok(id) => {
-                        imported.insert(crate::calls::key(name).to_owned());
-                        Some(Extern::Func(Func::wrap(
-                            store,
-                            move |caller: Caller<'_, State>, ptr, len, out, cap| {
-                                host(caller, id, ptr, len, out, cap)
-                            },
-                        )))
-                    }
-                    Err(changed) => {
-                        unlinked.get_or_insert(Refusal::Call {
-                            call: crate::calls::key(name).to_owned(),
-                            changed,
-                        });
-                        None
-                    }
-                },
-            }
-        })
-        .map_err(|error| unlinked.take().unwrap_or_else(|| Refusal::from_link(error)))?;
-        let _epoch_guard = epoch_guard.unwrap_or_else(|| EPOCH_TICKER.enter());
+        let compiled = |store: &mut Store<State>| {
+            // Compilation is not guest execution and must not consume its load deadline; the
+            // constructors that run next are, even in a group that imports nothing.
+            store.set_epoch_deadline(horizon_mod_runtime::MAX_GUEST_CALL_BUDGET_MILLIS);
+            epoch_guard = Some(EPOCH_TICKER.enter());
+        };
+        let mut group =
+            Group::link_cached_with(store, members, cache, compiled, |store, module, name| {
+                if module != "horizon" {
+                    return None;
+                }
+                match name {
+                    "host" => Some(Extern::Func(Func::wrap(store, control))),
+                    "host_reply" => Some(Extern::Func(Func::wrap(store, host_reply))),
+                    name => match crate::boundary::import_by_name(name) {
+                        Ok(id) => {
+                            imported.insert(crate::calls::key(name).to_owned());
+                            Some(Extern::Func(Func::wrap(
+                                store,
+                                move |caller: Caller<'_, State>, ptr, len, out, cap| {
+                                    host(caller, id, ptr, len, out, cap)
+                                },
+                            )))
+                        }
+                        Err(changed) => {
+                            unlinked.get_or_insert(Refusal::Call {
+                                call: crate::calls::key(name).to_owned(),
+                                changed,
+                            });
+                            None
+                        }
+                    },
+                }
+            })
+            .map_err(|error| unlinked.take().unwrap_or_else(|| Refusal::from_link(error)))?;
+        let _epoch_guard = epoch_guard;
         group.store.data_mut().memory = Some(group.memory);
         let mut exports = Vec::new();
         // Every mod of a group shares its memory and std: they must agree exactly.

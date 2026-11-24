@@ -2434,3 +2434,31 @@ fn epoch_ticker_parks_while_idle_and_interrupts_active_guest_calls() {
         thread.join().unwrap();
     });
 }
+
+#[test]
+#[ignore = "daily"]
+fn looping_constructor_of_an_import_less_group_hits_the_load_deadline() {
+    crate::test_stack::on_guest_stack(|| {
+        let engine = engine().unwrap();
+        let bytes = wat::parse_str(
+            r#"(module (@custom "dylink.0" "\01\04\00\00\00\00")
+            (func (export "__wasm_call_ctors") (loop br 0)))"#,
+        )
+        .unwrap();
+        let refusal = WasmMod::instantiate(
+            &engine,
+            DEFAULT_GROUP_MEMORY_MIB,
+            &[Member {
+                name: "spin",
+                module: &bytes,
+            }],
+            None,
+        )
+        .err()
+        .expect("a constructor that never returns must be interrupted");
+        assert!(
+            format!("{refusal:?}").contains("__wasm_call_ctors"),
+            "{refusal:?}"
+        );
+    })
+}

@@ -380,6 +380,7 @@ fn group_linker_uses_cache_and_programmatic_linking_leaves_it_empty() {
                 Store::new(&engine, ()),
                 &members,
                 Some(&cache),
+                |_| {},
                 |_, _, _| None,
             )
             .unwrap();

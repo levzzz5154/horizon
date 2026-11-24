@@ -170,13 +170,16 @@ impl<T: 'static> Group<T> {
         members: &[Member<'_>],
         host: impl FnMut(&mut Store<T>, &str, &str) -> Option<Extern>,
     ) -> Result<Self, LinkError> {
-        Self::link_cached_with(store, members, None, host)
+        Self::link_cached_with(store, members, None, |_| {}, host)
     }
 
+    /// `compiled` runs once every member is compiled, before any import is resolved or any
+    /// guest code runs.
     pub(crate) fn link_cached_with(
         mut store: Store<T>,
         members: &[Member<'_>],
         cache: Option<&crate::module_cache::ModuleCache>,
+        compiled: impl FnOnce(&mut Store<T>),
         mut host: impl FnMut(&mut Store<T>, &str, &str) -> Option<Extern>,
     ) -> Result<Self, LinkError> {
         let _timer = crate::load_times::timer(crate::load_times::Phase::Group);
@@ -185,6 +188,7 @@ impl<T: 'static> Group<T> {
         for member in members {
             parsed.push(Layout::read(engine, member, cache)?);
         }
+        compiled(&mut store);
         let mut next = STACK;
         let mut table_next = 1u64;
         let mut got_funcs = 0u64;
