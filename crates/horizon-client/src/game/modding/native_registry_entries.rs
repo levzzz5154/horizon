@@ -151,6 +151,11 @@ impl Game<'_> {
             if registry == "minecraft:game_rule" {
                 return self.ui.rules.registry().position(id).is_some();
             }
+            if registry == horizon_client::mobs::villager_types::REGISTRY_ID {
+                return self
+                    .declared_villager_types()
+                    .is_ok_and(|table| table.contains(id));
+            }
             return network_id(&remote.builtin, &remote.registries, registry, id).is_some()
                 || self
                     .registry_datapacks(registry)
@@ -220,6 +225,12 @@ impl Game<'_> {
         if let Some(remote) = &self.remote {
             if registry == "minecraft:game_rule" {
                 return identifiers(LocalRegistry::Rules(self.ui.rules.registry()).ids());
+            }
+            if registry == horizon_client::mobs::villager_types::REGISTRY_ID {
+                return self
+                    .declared_villager_types()
+                    .ok()
+                    .and_then(|table| identifiers(table.ids()));
             }
             return network_entries(&remote.builtin, &remote.registries, &registry);
         }
