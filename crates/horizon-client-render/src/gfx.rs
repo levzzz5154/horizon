@@ -388,8 +388,8 @@ fn translucent_pulled(info: &wgpu::AdapterInfo, multi_draw: bool, flat_page_grou
 /// Whether the adapter is one of Apple's tiled GPUs: the only ones where a
 /// discard costs hidden-surface removal enough to split solid terrain into
 /// opaque and cutout passes. Metal is just the API on a Mac — Intel and AMD
-/// Macs use it too, with no tiled-memory discard penalty. `graphics::lod_capped`
-/// names Apple's GPUs this way already because Metal reports no PCI vendor.
+/// Macs use it too, with no tiled-memory discard penalty. Metal reports no PCI
+/// vendor, so the name is what tells Apple's GPUs apart.
 fn tiled_solid_gpu(info: &wgpu::AdapterInfo) -> bool {
     info.backend == wgpu::Backend::Metal && info.name.starts_with("Apple")
 }
@@ -571,6 +571,8 @@ pub mod native_entity;
 mod native_executor;
 mod native_material;
 mod native_pack;
+mod native_pack_async;
+pub use native_pack_async::{NativePackData, NativePackOutcome};
 mod native_post;
 use crate::render_slots as native_render;
 mod native_shadow;
@@ -1542,6 +1544,61 @@ impl AnimatedTickCache {
     }
 }
 
+/// Pins a clip-space projection matrix to reversed-Z `z = 0.0` (the cleared
+/// far plane) while keeping `x`, `y` and `w` bit-identical so sky geometry
+/// drawn after solid terrain passes `CompareFunction::Equal` only on pixels
+/// untouched by opaque terrain.
+fn zero_z_row(m: Mat4) -> [[f32; 4]; 4] {
+    let mut cols = m.to_cols_array_2d();
+    for col in &mut cols {
+        col[2] = 0.0;
+    }
+    cols
+}
+
+/// Inputs that decide whether the world sky can be deferred until after solid
+/// and cutout terrain at reversed-Z `z = 0.0` with `CompareFunction::Equal`.
+#[derive(Clone, Copy)]
+struct SkyDeferral {
+    title: bool,
+    msaa_on: bool,
+    sky_visible: bool,
+    skybox: bool,
+    end_sky: bool,
+    custom_sky_drawing: bool,
+    /// `!pack_post` already gates `pack_draws_sky`, `pack_draws_celestial`, and
+    /// non-default `pack_sky_visibility`; loosening this check must also gate
+    /// all three so the sky and celestial bodies are never drawn twice or when
+    /// hidden by `shaders.properties`.
+    pack_post: bool,
+    external_pack: bool,
+    executor_active: bool,
+    visbuf_active: bool,
+    world_primitives: bool,
+    gl_backend: bool,
+    has_stars: bool,
+    core_sky_draws_disc: bool,
+    core_sky_draws_stars: bool,
+}
+
+/// Whether the vanilla sky pass can run after solid and cutout terrain so
+/// early-Z skips shading every sky pixel occluded by opaque terrain.
+fn should_defer_sky(s: SkyDeferral) -> bool {
+    !s.title
+        && !s.msaa_on
+        && s.sky_visible
+        && (s.skybox || s.end_sky)
+        && !s.custom_sky_drawing
+        && !s.pack_post
+        && !s.external_pack
+        && !s.executor_active
+        && !s.visbuf_active
+        && !s.world_primitives
+        && !s.gl_backend
+        && !s.core_sky_draws_disc
+        && !(s.has_stars && s.core_sky_draws_stars)
+}
+
 pub struct Renderer {
     msaa: msaa::Msaa,
     instance: wgpu::Instance,
@@ -1660,9 +1717,14 @@ pub struct Renderer {
     /// geometry over it. The mirror keeps `sky`: its per-pixel fan is cheap at
     /// the reflection's size and needs no second projection.
     sky_base: wgpu::RenderPipeline,
+    /// Depth-tested (`CompareFunction::Equal` at reversed-Z `z = 0.0`) variants
+    /// drawn after solid terrain so occluded sky pixels are skipped by early-Z.
+    sky_base_after_solid: wgpu::RenderPipeline,
     sunrise_pipeline: wgpu::RenderPipeline,
+    sunrise_after_solid: wgpu::RenderPipeline,
     sunrise_buffer: wgpu::Buffer,
     dark_disc: wgpu::RenderPipeline,
+    dark_disc_after_solid: wgpu::RenderPipeline,
     /// Clears the world pass's depth to the far plane so the first-person hand draws in the
     /// same pass (`hand_in_world`), as the hand's own pass would clear it.
     depth_reset: wgpu::RenderPipeline,
@@ -1734,6 +1796,12 @@ pub struct Renderer {
     fluid_pipeline: wgpu::RenderPipeline,
     terrain_model_pipelines: [wgpu::RenderPipeline; 3],
     celestial: celestial::Celestial,
+    /// Depth-equal (`CompareFunction::Equal` at reversed-Z `z = 0.0`) celestial
+    /// pipelines and far-plane-pinned globals for drawing sun, moon and End sky
+    /// after solid terrain.
+    celestial_after_solid: celestial::Celestial,
+    celestial_after_solid_globals: wgpu::Buffer,
+    celestial_after_solid_group: wgpu::BindGroup,
     celestial_buffer: wgpu::Buffer,
     end_sky: end_sky::EndSky,
     stars: stars::Stars,
@@ -1801,6 +1869,10 @@ pub struct Renderer {
     /// past the ones in use, the Mipmap Levels option's levels), for native mods
     /// (`WorldDrawn::block_sprites`).
     sprite_views: Vec<wgpu::TextureView>,
+    /// Incremented whenever `sprite_views` is rebuilt (e.g. Mipmap Levels or texture filtering
+    /// changes), so an in-flight async native RT pack build compiled against older views is
+    /// rejected as stale and rebuilt.
+    sprite_views_generation: u64,
     /// Nearest, repeating, nearest mip level: for drawing a sprite's texels sharp elsewhere.
     sprite_nearest: wgpu::Sampler,
     mip_levels: u32,
@@ -1876,6 +1948,9 @@ pub struct Renderer {
     lod_leaving: Vec<(SectionKey, std::time::Instant)>,
     /// Finished tile meshes `upload_lods` has yet to upload.
     lod_pending: Option<lod::Pending>,
+    /// Tracks dying, stand-in, and unshown far tiles so calm frames
+    /// (`upload_lods`) avoid scanning `lods`.
+    lod_tracker: lod::LodTracker,
     detail_columns: FxHashMap<(i32, i32), SectionMask>,
     /// Bumped whenever a column becomes or stops being complete.
     detail_revision: u64,
@@ -1995,6 +2070,8 @@ pub struct Renderer {
     pack_post: Option<(i32, Option<pack_post::PackPost>)>,
     /// A `shaders/` pack whose pipelines build on a thread of their own (`load_shader_pack`).
     pack_loading: Option<PackLoading>,
+    /// Horizon's own shader pack building on a background worker thread (`load_native_shader_pack`).
+    native_pack_loader: native_pack_async::NativePackLoader,
     /// The manifest of the Horizon pack `external` runs, as the game reads it.
     pack_metadata: Option<native_pack::Metadata>,
     /// What `external` does in the renderer's place, kept from its install on (`replace_executor`).
@@ -2707,7 +2784,6 @@ impl Renderer {
         let mut bound = BoundArrays::set(&BOUND_SPRITE_ARRAYS, bound_arrays);
         let info = adapter.get_info();
         surface_setup::log_sprite_split(&info, split, layers);
-        crate::graphics::suggest_reduced_far_detail(crate::graphics::lod_capped(&info));
         let size = window.inner_size();
         let max_side = device.limits().max_texture_dimension_2d;
         let configured = match (&surface, configured) {
@@ -3134,6 +3210,57 @@ impl Renderer {
             false,
             None,
         );
+        // Depth-equal (`z == 0.0` in reversed-Z) sky pipelines for drawing after
+        // solid terrain: only pixels left untouched at the cleared far plane run
+        // the sky fragment shaders.
+        let sky_depth_equal = |label: &str,
+                               vertex: &str,
+                               fragment: &str,
+                               buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
+                               blend: Option<wgpu::BlendState>| {
+            let mut constants = sprite_constants.to_vec();
+            constants.extend(linear_blend::frame_constants(frame_format, linear_light));
+            kept.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some(vertex),
+                    compilation_options: Default::default(),
+                    buffers,
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: tri,
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(wgpu::CompareFunction::Equal),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(fragment),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants: &constants,
+                        ..Default::default()
+                    },
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: frame_format,
+                        blend,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let sky_base_after_solid =
+            sky_depth_equal("Sky base (after solid)", "vs_sky", "fs_sky_base", &[], None);
         let sunrise_attributes = wgpu::vertex_attr_array![0=>Float32x4, 1=>Float32];
         let sunrise_buffers = [Some(wgpu::VertexBufferLayout {
             array_stride: 20,
@@ -3164,6 +3291,13 @@ impl Renderer {
             false,
             Some(sunrise_blend),
         );
+        let sunrise_after_solid = sky_depth_equal(
+            "Sunrise fan (after solid)",
+            "vs_sunrise_depth",
+            "fs_sunrise",
+            &sunrise_buffers,
+            Some(sunrise_blend),
+        );
         let dark_disc = pipeline(
             "Dark disc",
             "vs_sky",
@@ -3173,6 +3307,13 @@ impl Renderer {
             None,
             false,
             false,
+            Some(alpha_blend),
+        );
+        let dark_disc_after_solid = sky_depth_equal(
+            "Dark disc (after solid)",
+            "vs_sky",
+            "fs_dark_disc",
+            &[],
             Some(alpha_blend),
         );
         let depth_reset = kept.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -3298,6 +3439,12 @@ impl Renderer {
         });
         let hand_globals = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("First-person hand globals"),
+            size: std::mem::size_of::<Globals>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let celestial_after_solid_globals = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Sky celestial globals"),
             size: std::mem::size_of::<Globals>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -3779,6 +3926,44 @@ impl Renderer {
                 },
             ],
         });
+        let celestial_after_solid_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Sky celestial resources"),
+            layout: &entity_bindings,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: celestial_after_solid_globals.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&atlas_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&atlas_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&lightmap_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::Sampler(&lightmap_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(&glint_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::Sampler(&glint_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::TextureView(&glint_armor_view),
+                },
+            ],
+        });
         let entity_layout = kept.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Entity layout"),
             bind_group_layouts: &[Some(&entity_bindings)],
@@ -4177,6 +4362,15 @@ impl Renderer {
             &entity_shader,
             &entity_vertex,
             (frame_format, linear_light),
+            wgpu::CompareFunction::Always,
+        );
+        let celestial_after_solid = celestial::Celestial::new(
+            &kept,
+            &entity_layout,
+            &entity_shader,
+            &entity_vertex,
+            (frame_format, linear_light),
+            wgpu::CompareFunction::Equal,
         );
         drop(entity_step);
         // WorldBorderRenderer: misc/forcefield.png as a MipmappedTexture
@@ -4667,17 +4861,25 @@ impl Renderer {
         });
         // HORIZON_GPU_CULL=0 turns occlusion culling off, `all` culls every
         // frame however few its draws and little it hides, `shader` tests in
-        // the shader as on Metal (A/B checks).
+        // the fragment shader (`InShader`), `early` forces early-depth box
+        // rasterization (`Early`) where supported (A/B checks).
         let cull_env = std::env::var("HORIZON_GPU_CULL");
         let adapter_info = adapter.get_info();
         let cull = cull::Cull::supported(&adapter, &device)
             .filter(|_| occlusion_culling_requested(&adapter_info, cull_env.as_deref().ok()))
             .map(|depth_test| match cull_env.as_deref() {
                 Ok("shader") => cull::DepthTest::InShader,
+                Ok("early")
+                    if device
+                        .features()
+                        .contains(wgpu::Features::SHADER_EARLY_DEPTH_TEST) =>
+                {
+                    cull::DepthTest::Early
+                }
                 _ => depth_test,
             })
             .and_then(|depth_test| {
-                let mut cull = cull::Cull::new(&device, frame_format, depth_test)?;
+                let mut cull = cull::Cull::pick(&adapter, &device, frame_format, depth_test)?;
                 cull.always = cull_env.as_deref() == Ok("all");
                 if !cull.always && tiled_solid_gpu(&adapter_info) {
                     cull.min_sections = cull::TILED_MIN_SECTIONS;
@@ -4784,9 +4986,12 @@ impl Renderer {
             mesh_visible_scratch: Vec::new(),
             sky,
             sky_base,
+            sky_base_after_solid,
             sunrise_pipeline,
+            sunrise_after_solid,
             sunrise_buffer,
             dark_disc,
+            dark_disc_after_solid,
             depth_reset,
             lines,
             lines_secondary,
@@ -4835,6 +5040,9 @@ impl Renderer {
             fluid_pipeline,
             terrain_model_pipelines,
             celestial,
+            celestial_after_solid,
+            celestial_after_solid_globals,
+            celestial_after_solid_group,
             celestial_buffer,
             end_sky: end_sky::EndSky::default(),
             stars,
@@ -4884,6 +5092,7 @@ impl Renderer {
             sprite_unused,
             sprite_arrays: bound_arrays,
             sprite_views,
+            sprite_views_generation: 0,
             mip_levels,
             mipmaps: mip_levels - 1,
             terrain_layout: bindings,
@@ -4929,6 +5138,7 @@ impl Renderer {
             lod_retiring: Default::default(),
             lod_leaving: Vec::new(),
             lod_pending: None,
+            lod_tracker: lod::LodTracker::default(),
             detail_columns: Default::default(),
             detail_revision: 0,
             upload_retries: UploadRetries::default(),
@@ -4984,6 +5194,7 @@ impl Renderer {
             hdr_driver,
             pack_post: None,
             pack_loading: None,
+            native_pack_loader: native_pack_async::NativePackLoader::default(),
             pack_metadata: None,
             executor: None,
             pass_timing: false,
@@ -5182,6 +5393,12 @@ impl Renderer {
         self.hud.forget_pictures();
         if let Some(gpu) = &mut self.gpu_culling {
             gpu.forget();
+        }
+        if let Some(vis) = &mut self.visbuf {
+            vis.forget();
+        }
+        if let Some(mesh_terrain) = &mut self.mesh_terrain {
+            mesh_terrain.forget_uploads();
         }
         for section in self.sections.values_mut() {
             section.sort.forget();
@@ -5478,12 +5695,18 @@ impl Renderer {
         if let Some(why) = self.gpu_culling_offer.reason() {
             return Err(why.into());
         }
-        let test = self
-            .cull
-            .as_ref()
-            .filter(|c| c.early())
-            .map(|_| self.output.frame.format);
-        let Some(mut gpu) = gpu_culling::GpuCulling::new(&self.device, test) else {
+        let gpu = match self.cull.as_ref().and_then(|c| c.hiz_read_layout()) {
+            Some(hiz_layout) => gpu_culling::GpuCulling::new_hiz(&self.device, hiz_layout),
+            None => {
+                let test = self
+                    .cull
+                    .as_ref()
+                    .filter(|c| c.early())
+                    .map(|_| self.output.frame.format);
+                gpu_culling::GpuCulling::new(&self.device, test)
+            }
+        };
+        let Some(mut gpu) = gpu else {
             // Not offered from now on: its switch greys out.
             self.offer_gpu_culling(crate::graphics::GpuCullingOffer::Unsupported);
             return Err("GPU culling could not be set up on this device".into());
@@ -6316,6 +6539,7 @@ impl Renderer {
         self.lod_retiring.clear();
         self.lod_leaving.clear();
         self.lod_pending = None;
+        self.lod_tracker.clear();
         self.detail_columns.clear();
         self.detail_revision += 1;
         self.upload_retries.clear();
@@ -6331,6 +6555,9 @@ impl Renderer {
         }
         if let Some(flat) = &mut self.flat {
             flat.clear();
+        }
+        if let Some(vis) = &mut self.visbuf {
+            vis.clear();
         }
         if let Some(mesh_terrain) = &mut self.mesh_terrain {
             mesh_terrain.store.clear();
@@ -7198,9 +7425,19 @@ impl Renderer {
         let report = self.install_shader_pack(loading.dimension, built.map(Some));
         Some((loading.dimension, loading.label, loading.started, report))
     }
-    /// Whether a `shaders/` pack is still building (`load_shader_pack`).
+    /// Whether a shader pack (either `shaders/` or Horizon native) is still building in the
+    /// background.
     pub fn shader_pack_loading(&self) -> bool {
-        self.pack_loading.is_some()
+        self.pack_loading.is_some() || self.native_pack_loader.is_loading()
+    }
+    /// Whether a Horizon native shader pack is still building in the background
+    /// (`load_native_shader_pack`).
+    pub fn native_pack_loading(&self) -> bool {
+        self.native_pack_loader.is_loading()
+    }
+    /// Cancels any queued or in-flight background build of a Horizon native shader pack.
+    pub fn cancel_native_shader_pack(&mut self) {
+        self.native_pack_loader.cancel();
     }
     /// The finalized classic pack's material-map demand, even while no maps are loaded.
     pub fn shader_pack_material_maps(&self) -> bool {
@@ -7220,6 +7457,7 @@ impl Renderer {
     pub fn drop_shader_packs(&mut self) {
         self.world_held = false;
         self.pack_loading = None;
+        self.native_pack_loader.cancel();
         self.pack_post = None;
         self.replace_executor(None);
         self.pack_atlas = None;
@@ -7239,20 +7477,196 @@ impl Renderer {
     pub fn set_pack_lava_layers(&mut self, layers: Vec<u16>) {
         self.pack_lava_layers = layers;
     }
+    /// Builds one of Horizon's own shader packs on a background worker thread while the
+    /// currently running pack (if any) keeps drawing. A newer call supersedes and cancels any
+    /// earlier in-flight build (latest-wins).
+    ///
+    /// `prepare` runs on the worker thread and produces the checked pack data plus caller metadata
+    /// `M`, or `Err(problems)`. Poll with [`Self::poll_native_shader_pack`] or block
+    /// deterministically with [`Self::wait_native_shader_pack`].
+    pub fn load_native_shader_pack<C, M, F>(
+        &mut self,
+        context: C,
+        prepare: F,
+    ) -> std::result::Result<(), (C, String)>
+    where
+        C: Send + 'static,
+        M: Send + 'static,
+        F: FnOnce(
+                &std::sync::atomic::AtomicBool,
+            ) -> std::result::Result<(NativePackData, M), Vec<String>>
+            + Send
+            + 'static,
+    {
+        let device = self.device.clone();
+        let queue = self.queue.clone();
+        let adapter = self.adapter.clone();
+        let owned = native_pack_async::OwnedTerrainShape {
+            globals: self.terrain_layout.clone(),
+            flat: self.flat.as_ref().map(|f| f.draw_layout.clone()),
+            sprites: self.terrain_sprites,
+            sprite_views: self.sprite_views.clone(),
+            format: self.output.frame.format,
+            linear: self.output.frame.linear_light,
+            msaa: self.msaa.built(),
+            entities: self.entity_bindings.clone(),
+            retained_entities: self.static_entity_pipeline.get_bind_group_layout(1),
+            weather_groups: [
+                self.weather.entity_layout.clone(),
+                self.weather.time_layout.clone(),
+            ],
+            pbr: self
+                .pbr_maps
+                .as_ref()
+                .and_then(|arrays| arrays.first().cloned()),
+            looks_layout: self.looks_layout.clone(),
+        };
+        let snapshot = self.native_build_snapshot();
+        self.native_pack_loader
+            .submit(context, move |cancel| {
+                use std::sync::atomic::Ordering;
+                if cancel.load(Ordering::Relaxed) {
+                    return native_pack_async::WorkerOutcome::Cancelled;
+                }
+                let ((report, constants, sprite_tags, sprite_materials, lights), meta) =
+                    match prepare(cancel) {
+                        Ok(prepared) => prepared,
+                        Err(_) if cancel.load(Ordering::Relaxed) => {
+                            return native_pack_async::WorkerOutcome::Cancelled;
+                        }
+                        Err(problems) => {
+                            return native_pack_async::WorkerOutcome::Refused(problems);
+                        }
+                    };
+                if cancel.load(Ordering::Relaxed) {
+                    return native_pack_async::WorkerOutcome::Cancelled;
+                }
+                let terrain_looks = match looks::wanted(&adapter, report.looks()) {
+                    Ok(wanted) => wanted,
+                    Err(why) => return native_pack_async::WorkerOutcome::Refused(vec![why]),
+                };
+                let looks_layout = terrain_looks.then(|| {
+                    owned
+                        .looks_layout
+                        .clone()
+                        .unwrap_or_else(|| looks::layout(&device))
+                });
+                let metadata = native_pack::Metadata::of(&report);
+                let terrain =
+                    owned.as_shape(&sprite_tags, &sprite_materials, looks_layout.as_ref());
+                match native_pack::NativePack::new_cancellable(
+                    &device, &queue, &terrain, report, &constants, lights, cancel,
+                ) {
+                    Ok((pack, labels)) => native_pack_async::WorkerOutcome::Ready {
+                        built: Box::new(native_pack_async::BuiltNativePack {
+                            pack,
+                            labels,
+                            metadata,
+                            looks_layout,
+                            snapshot,
+                        }),
+                        meta: Box::new(meta),
+                    },
+                    Err(native_pack::BuildError::Cancelled) => {
+                        native_pack_async::WorkerOutcome::Cancelled
+                    }
+                    Err(native_pack::BuildError::Refused(why)) => {
+                        native_pack_async::WorkerOutcome::Refused(vec![why])
+                    }
+                }
+            })
+            .map_err(|(context, e)| (context, format!("no thread to build shader pack on: {e}")))
+    }
+    fn native_build_snapshot(&self) -> native_pack_async::BuildSnapshot {
+        native_pack_async::BuildSnapshot {
+            format: self.output.frame.format,
+            linear: self.output.frame.linear_light,
+            sprite_views_generation: self.sprite_views_generation,
+        }
+    }
+    /// Non-blocking poll for a finished background native shader pack build. Installs the pack
+    /// into the renderer when ready.
+    pub fn poll_native_shader_pack<C: 'static, M: 'static>(
+        &mut self,
+    ) -> Option<NativePackOutcome<C, M>> {
+        let done = self.native_pack_loader.poll()?;
+        Some(self.finish_native_shader_pack(done))
+    }
+    /// Waits for any in-flight background native shader pack build to finish and installs it.
+    /// Returns `None` if no native pack build is in flight.
+    pub fn wait_native_shader_pack<C: 'static, M: 'static>(
+        &mut self,
+    ) -> Option<NativePackOutcome<C, M>> {
+        let done = self.native_pack_loader.wait()?;
+        Some(self.finish_native_shader_pack(done))
+    }
+    fn finish_native_shader_pack<C: 'static, M: 'static>(
+        &mut self,
+        done: native_pack_async::CompletedJob,
+    ) -> NativePackOutcome<C, M> {
+        let context = *done
+            .context
+            .downcast::<C>()
+            .expect("native shader pack context type");
+        let outcome = match done.outcome {
+            Ok(outcome) => outcome,
+            Err(panic) => {
+                return NativePackOutcome::Refused {
+                    context,
+                    problems: vec![format!("building it panicked: {panic}")],
+                };
+            }
+        };
+        match outcome {
+            native_pack_async::WorkerOutcome::Cancelled => NativePackOutcome::Cancelled,
+            native_pack_async::WorkerOutcome::Refused(problems) => {
+                NativePackOutcome::Refused { context, problems }
+            }
+            native_pack_async::WorkerOutcome::Ready { built, meta } => {
+                let meta = *meta
+                    .downcast::<M>()
+                    .expect("native shader pack metadata type");
+                if built.snapshot != self.native_build_snapshot() {
+                    return NativePackOutcome::Stale;
+                }
+                self.world_held = false;
+                if self.output.frame.format != LINEAR_FRAME
+                    && !std::mem::replace(&mut self.frame_kept_logged, true)
+                {
+                    log::info!(
+                        "Horizon renderer: the {:?} frame stays until the renderer is made again; a shader pack picked or dropped since runs on it",
+                        self.output.frame.format
+                    );
+                }
+                if let Some(layout) = built.looks_layout {
+                    self.looks_layout.get_or_insert(layout);
+                }
+                if let Some(refused) = self.replace_executor(Some(Box::new(built.pack))) {
+                    return NativePackOutcome::Refused {
+                        context,
+                        problems: vec![refused],
+                    };
+                }
+                self.pack_metadata = Some(built.metadata);
+                self.pack_post = None;
+                self.pack_atlas = None;
+                self.pack_material_atlases = None;
+                NativePackOutcome::Installed {
+                    context,
+                    labels: built.labels,
+                    meta,
+                }
+            }
+        }
+    }
     /// Runs the sky, material and post stages of one of Horizon's own shader packs from now
     /// on (`None`: no pack), with its options' values; replaces a `shaders/` pack. Returns the
     /// stages' labels; on an error the pack that ran keeps running.
     pub fn set_native_shader_pack(
         &mut self,
-        pack: Option<(
-            horizon_shader_api::Report,
-            Vec<(String, f64)>,
-            Vec<(u32, u32)>,
-            Vec<(u32, u32)>,
-            // The `[[lights]]` colours, and the light sources rays read (`NativePack::new`).
-            (block_light::LightTable, ray_lights::Sources),
-        )>,
+        pack: Option<NativePackData>,
     ) -> std::result::Result<Vec<String>, String> {
+        self.native_pack_loader.cancel();
         self.world_held = false;
         let linear = pack.is_some();
         if (linear || self.output.frame.format == LINEAR_FRAME)
@@ -7463,6 +7877,7 @@ impl Renderer {
             Some(self.mipmaps + 1),
             self.sprite_arrays,
         );
+        self.sprite_views_generation = self.sprite_views_generation.wrapping_add(1);
         self.group = terrain_group(
             &self.device,
             "Horizon terrain resources",
@@ -7922,6 +8337,9 @@ impl Renderer {
                 Some(page) => translucent.is_some_and(|a| a.has_page(page)),
                 None => self.arena.has_page(key),
             });
+        }
+        if let Some(vis) = &mut self.visbuf {
+            vis.trim(|page| self.arena.has_page(page));
         }
         if let Some(mesh_terrain) = &mut self.mesh_terrain {
             mesh_terrain.store.trim(|page| self.arena.has_page(page));
@@ -9452,12 +9870,21 @@ impl Renderer {
         let pack_reads_world = pack_post || native_post;
         // Before the frame chooses how it draws translucent things: the world's size decides
         // whether improved transparency has the room for its targets.
-        let scaled = self.world_post.prepare(
-            &self.device,
-            [self.config.width, self.config.height],
-            pack_reads_world || fg || msaa_on,
-            pack_post,
-        );
+        let world_window = [self.config.width, self.config.height];
+        let world_always = pack_reads_world || fg || msaa_on;
+        // Release occlusion culling's retained depth view and Hi-Z pyramid before
+        // `world_post.prepare` drops and replaces a scaled target so the old
+        // depth texture's memory is freed before allocating the replacement.
+        if self
+            .world_post
+            .will_replace_target(world_window, world_always, pack_post)
+            && let Some(cull) = &mut self.cull
+        {
+            cull.forget_depth();
+        }
+        let scaled = self
+            .world_post
+            .prepare(&self.device, world_window, world_always, pack_post);
         // GameRenderer.useImprovedTransparency. A shader pack keeps its own
         // path. Without the room for its targets (#13624) this frame draws translucent things
         // the ordinary way.
@@ -9910,6 +10337,39 @@ impl Renderer {
             (outline_base, outlined / 4),
             [self.config.width, self.config.height],
         );
+        self.custom_sky.prepare(
+            &mut self.uploads,
+            &mut encoder,
+            jittered,
+            &self.custom_sky_draws,
+            &globals,
+        );
+        let celestial_vertices = frame.celestial.len().min(2048 * 4);
+        // In vanilla frames (no shader pack, custom sky, core/sky, visbuffer,
+        // world primitives, MSAA, or GL depth remapping), draw the sky after solid
+        // terrain at reversed-Z `z = 0.0` with `CompareFunction::Equal` so
+        // early-Z skips shading every sky pixel occluded by opaque terrain.
+        // `!pack_post` already gates `pack_draws_sky`, `pack_draws_celestial`, and
+        // non-default `pack_sky_visibility`; loosening `!pack_post` here must also
+        // check all three so the sky and celestial bodies are never drawn twice or
+        // when hidden by `shaders.properties`.
+        let defer_sky = should_defer_sky(SkyDeferral {
+            title: frame.title,
+            msaa_on,
+            sky_visible,
+            skybox: frame.skybox,
+            end_sky: frame.end_sky,
+            custom_sky_drawing: self.custom_sky.is_drawing(),
+            pack_post,
+            external_pack: self.external.is_some(),
+            executor_active: self.executor.is_some(),
+            visbuf_active: self.visbuf.is_some(),
+            world_primitives,
+            gl_backend: self.info.backend == wgpu::Backend::Gl,
+            has_stars: frame.stars.is_some(),
+            core_sky_draws_disc: self.core_sky.as_ref().is_some_and(|c| c.draws_disc()),
+            core_sky_draws_stars: self.core_sky.as_ref().is_some_and(|c| c.draws_stars()),
+        });
         let pack_tilt = self
             .external
             .as_ref()
@@ -9921,16 +10381,9 @@ impl Renderer {
                 jittered * native_pack::sky_turn(pack_tilt, frame.end_sky) * rotation,
                 brightness,
                 &globals,
+                defer_sky,
             );
         }
-        self.custom_sky.prepare(
-            &mut self.uploads,
-            &mut encoder,
-            jittered,
-            &self.custom_sky_draws,
-            &globals,
-        );
-        let celestial_vertices = frame.celestial.len().min(2048 * 4);
         if frame.end_sky && !frame.title {
             self.end_sky.prepare(&self.device, frame.end_sky_sprite);
         }
@@ -9940,6 +10393,18 @@ impl Renderer {
                 &self.celestial_buffer,
                 0,
                 &native_pack::celestial_bytes(pack_tilt, frame, celestial_vertices),
+            );
+        }
+        if defer_sky && (celestial_vertices > 0 || frame.end_sky) {
+            let sky_celestial_globals = Globals {
+                view_proj: zero_z_row(jittered),
+                ..globals
+            };
+            self.uploads.buffer(
+                &mut encoder,
+                &self.celestial_after_solid_globals,
+                0,
+                bytemuck::bytes_of(&sky_celestial_globals),
             );
         }
         let max_quads =
@@ -10177,7 +10642,7 @@ impl Renderer {
             let low_y = mirror_low.unwrap_or(eye_xyz[1]).min(eye_xyz[1]);
             let mesh_calls = mesh_terrain.prepare_gpu_cull_frame(
                 &self.device,
-                &self.queue,
+                &mut self.uploads,
                 &mut encoder,
                 flat,
                 view.planes.map(|p| p.to_array()),
@@ -10273,7 +10738,11 @@ impl Renderer {
             Some((color, depth)) => (color, depth),
             None => (&view_target, self.depth.as_ref().expect(WINDOW_DEPTH)),
         };
-        if culling && let Some(cull) = &mut self.cull {
+        // GPU culling's occlusion test splits the world pass and shares `cull`'s Hi-Z pyramid.
+        let gpu_occluding = gpu_frame && self.gpu_culling.as_ref().is_some_and(|g| g.occluding());
+        if (culling || gpu_occluding)
+            && let Some(cull) = &mut self.cull
+        {
             cull.bind_depth(&self.device, world_depth);
         }
         // The hand draws at the end of the world pass, after a depth reset, when nothing runs
@@ -10569,11 +11038,18 @@ impl Renderer {
         let pack_flat_msaa = material
             .filter(|_| msaa.is_some())
             .and_then(|m| m.msaa?.1.as_ref());
+        // A material's depth pre-pass (`TerrainLayers::depth`): drawn over each solid draw
+        // before the material's own pipeline, which then shades the nearest point alone.
+        let solid_depth = material.and_then(|m| m.depth);
+        let depth_msaa = solid_depth.and_then(|d| d.msaa).filter(|_| msaa.is_some());
+        let depth_solid = solid_depth.map(|d| depth_msaa.map_or(d.solid, |(solid, _)| solid));
+        let depth_flat = solid_depth.and_then(|d| match depth_msaa {
+            Some((_, flat)) => flat.as_ref(),
+            None => d.flat,
+        });
         // A material stage's translucent pass reads a copy of the depth the solid terrain
         // left: it is stored across the pass that ends before the copy.
         let keep_depth = keep_depth || material.is_some() || msaa_on;
-        // GPU culling's occlusion test splits the world pass as cull.rs's does.
-        let gpu_occluding = gpu_frame && self.gpu_culling.as_ref().is_some_and(|g| g.occluding());
         let pack_frame = |pass: &mut wgpu::RenderPass<'_>| {
             if let Some(m) = material {
                 m.bind(pass);
@@ -10655,7 +11131,7 @@ impl Renderer {
             );
             pass.set_bind_group(0, &self.group, &[]);
             pack_frame(&mut pass);
-            if frame.title || (sky_visible && (frame.skybox || frame.end_sky)) {
+            if !defer_sky && (frame.title || (sky_visible && (frame.skybox || frame.end_sky))) {
                 pass.stage(self.own_timing.as_mut(), "sky");
                 let native_sky = !frame.title
                     && frame.skybox
@@ -10808,10 +11284,11 @@ impl Renderer {
                     };
                     drop(ids);
                     if let Some(cull) = cull {
-                        // The test's pipeline draws into the world's colour.
-                        let mut test = plain_pass(&mut encoder);
-                        cull.test(&mut test);
-                        drop(test);
+                        if cull.early() {
+                            // The test's pipeline draws into the world's colour.
+                            let mut test = plain_pass(&mut encoder);
+                            cull.test(&mut test);
+                        }
                         cull.test_pass(&mut encoder, self.own_timing.as_mut());
                         if !mesh_frame {
                             let vertices =
@@ -10827,6 +11304,7 @@ impl Renderer {
                             vis.draw_ids_phase2(&mut ids, flat, vertices);
                         }
                     }
+                    let vis = self.visbuf.as_mut().expect("a visibility buffer frame");
                     if let Some(pages) = &mesh_pages {
                         vis.resolve_pages(
                             &self.device,
@@ -10904,13 +11382,15 @@ impl Renderer {
                     pass.stage(self.own_timing.as_mut(), "solid terrain");
                     mesh_terrain.draw_solid(&mut pass, flat, hdr);
                     if let Some(cull) = cull {
-                        if surface.is_some() {
-                            drop(pass);
-                            pass = plain_pass(&mut encoder);
+                        if cull.early() {
+                            if surface.is_some() {
+                                drop(pass);
+                                pass = plain_pass(&mut encoder);
+                            }
+                            pass.split(self.own_timing.as_mut(), "occlusion boxes");
+                            pass.stage(self.own_timing.as_mut(), "occlusion boxes");
+                            cull.test(&mut pass);
                         }
-                        pass.split(self.own_timing.as_mut(), "occlusion boxes");
-                        pass.stage(self.own_timing.as_mut(), "occlusion boxes");
-                        cull.test(&mut pass);
                         drop(pass);
                         cull.test_pass(&mut encoder, self.own_timing.as_mut());
                         pass = match &surface {
@@ -10979,11 +11459,21 @@ impl Renderer {
                     let phase2_calls = flat.solid_calls - flat.phase1_calls;
                     type Calls = std::ops::Range<usize>;
                     let passes: &[(&wgpu::RenderPipeline, Calls, Calls)] = match pack_flat {
-                        Some(p) => &[(
-                            pack_flat_msaa.unwrap_or(&p.0),
-                            0..flat.phase1_calls,
-                            0..phase2_calls,
-                        )],
+                        Some(p) => match depth_flat {
+                            Some(depth) => &[
+                                (depth, 0..flat.phase1_calls, 0..phase2_calls),
+                                (
+                                    pack_flat_msaa.unwrap_or(&p.0),
+                                    0..flat.phase1_calls,
+                                    0..phase2_calls,
+                                ),
+                            ],
+                            None => &[(
+                                pack_flat_msaa.unwrap_or(&p.0),
+                                0..flat.phase1_calls,
+                                0..phase2_calls,
+                            )],
+                        },
                         None if split_solid => &[
                             (flat.solid_opaque.get(hdr), 0..opaque, 0..phase2_split),
                             (
@@ -11010,13 +11500,15 @@ impl Renderer {
                         // that the test saw, copied after it.
                         Some(cull) => {
                             draw(&mut pass);
-                            if surface.is_some() {
-                                drop(pass);
-                                pass = plain_pass(&mut encoder);
+                            if cull.early() {
+                                if surface.is_some() {
+                                    drop(pass);
+                                    pass = plain_pass(&mut encoder);
+                                }
+                                pass.split(self.own_timing.as_mut(), "occlusion boxes");
+                                pass.stage(self.own_timing.as_mut(), "occlusion boxes");
+                                cull.test(&mut pass);
                             }
-                            pass.split(self.own_timing.as_mut(), "occlusion boxes");
-                            pass.stage(self.own_timing.as_mut(), "occlusion boxes");
-                            cull.test(&mut pass);
                             drop(pass);
                             cull.test_pass(&mut encoder, self.own_timing.as_mut());
                             flat.flatten_phase2(&mut encoder, self.own_timing.as_mut());
@@ -11065,7 +11557,13 @@ impl Renderer {
                                 phase2_cutout..solid_draws,
                             ),
                         ],
-                        _ => &[(solid_pipeline, 0..phase1_draws, phase1_draws..solid_draws)],
+                        _ => match depth_solid {
+                            Some(depth) => &[
+                                (depth, 0..phase1_draws, phase1_draws..solid_draws),
+                                (solid_pipeline, 0..phase1_draws, phase1_draws..solid_draws),
+                            ],
+                            None => &[(solid_pipeline, 0..phase1_draws, phase1_draws..solid_draws)],
+                        },
                     };
                     // The solid pipelines, a native material's too, read the page themselves.
                     let pulled = self.flat.is_some();
@@ -11089,13 +11587,15 @@ impl Renderer {
                                     pulled,
                                 );
                             }
-                            if surface.is_some() {
-                                drop(pass);
-                                pass = plain_pass(&mut encoder);
+                            if cull.early() {
+                                if surface.is_some() {
+                                    drop(pass);
+                                    pass = plain_pass(&mut encoder);
+                                }
+                                pass.split(self.own_timing.as_mut(), "occlusion boxes");
+                                pass.stage(self.own_timing.as_mut(), "occlusion boxes");
+                                cull.test(&mut pass);
                             }
-                            pass.split(self.own_timing.as_mut(), "occlusion boxes");
-                            pass.stage(self.own_timing.as_mut(), "occlusion boxes");
-                            cull.test(&mut pass);
                             drop(pass);
                             cull.test_pass(&mut encoder, self.own_timing.as_mut());
                             pass = match &surface {
@@ -11167,14 +11667,28 @@ impl Renderer {
                             // As cull.rs's arm: the boxes against phase 1's depth, then
                             // phase 2 and the CPU's draws in a pass that loads both targets.
                             if let Some(gpu) = gpu.filter(|_| occluding) {
-                                if surface.is_some() {
+                                if gpu.uses_hiz() {
                                     drop(pass);
-                                    pass = plain_pass(&mut encoder);
+                                    if let Some(cull) = self.cull.as_ref() {
+                                        cull.build_hiz(&mut encoder, self.own_timing.as_mut());
+                                        if let Some(hiz) = cull.hiz_read_group() {
+                                            gpu.test_hiz(
+                                                &mut encoder,
+                                                hiz,
+                                                self.own_timing.as_mut(),
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    if surface.is_some() {
+                                        drop(pass);
+                                        pass = plain_pass(&mut encoder);
+                                    }
+                                    pass.split(self.own_timing.as_mut(), "occlusion boxes");
+                                    pass.stage(self.own_timing.as_mut(), "occlusion boxes");
+                                    gpu.test(&mut pass);
+                                    drop(pass);
                                 }
-                                pass.split(self.own_timing.as_mut(), "occlusion boxes");
-                                pass.stage(self.own_timing.as_mut(), "occlusion boxes");
-                                gpu.test(&mut pass);
-                                drop(pass);
                                 gpu.compact(&mut encoder, self.own_timing.as_mut());
                                 pass = match &surface {
                                     Some(surface) => terrain_pass(&mut encoder, surface, false),
@@ -11237,6 +11751,44 @@ impl Renderer {
             } else if surface.is_some() {
                 drop(pass);
                 pass = plain_pass(&mut encoder);
+            }
+            if defer_sky {
+                pass.stage(self.own_timing.as_mut(), "sky");
+                pass.set_bind_group(0, &self.group, &[]);
+                if frame.skybox {
+                    pass.set_pipeline(&self.sky_base_after_solid);
+                    pass.draw(0..3, 0..1);
+                    if frame.sky.sunrise_color[3] > 0.001 {
+                        pass.set_pipeline(&self.sunrise_after_solid);
+                        pass.set_vertex_buffer(0, self.sunrise_buffer.slice(..));
+                        pass.draw(0..sunrise_fan::VERTICES as u32, 0..1);
+                    }
+                }
+                if celestial_vertices > 0 || frame.end_sky {
+                    pass.set_pipeline(&self.celestial_after_solid.added);
+                    pass.set_bind_group(0, &self.celestial_after_solid_group, &[]);
+                    pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+                    if frame.end_sky {
+                        self.end_sky.draw(&mut pass);
+                    }
+                    if celestial_vertices > 0 {
+                        let lifted = hdr_gain && self.hdr.as_ref().is_some_and(|h| h.lighting);
+                        let quads = &frame.celestial[..celestial_vertices];
+                        let bodies = celestial::bodies(quads, false, false);
+                        pass.set_vertex_buffer(0, self.celestial_buffer.slice(..));
+                        self.celestial_after_solid
+                            .draw_bodies(&mut pass, lifted, bodies);
+                    }
+                    pass.set_bind_group(0, &self.group, &[]);
+                }
+                if frame.stars.is_some() {
+                    self.stars.draw(&mut pass);
+                    pass.set_bind_group(0, &self.group, &[]);
+                }
+                if frame.dark_disc {
+                    pass.set_pipeline(&self.dark_disc_after_solid);
+                    pass.draw(0..3, 0..1);
+                }
             }
             // RenderLevelStageEvent.AfterOpaqueBlocks: after solid and cutout terrain, before
             // entities.
@@ -11497,7 +12049,8 @@ impl Renderer {
             // pass of its own too, copies or not. Drawn on in the solid world's pass, a pack
             // with `[displacement]` under HDR output lost the Vulkan device (an NVIDIA GPU
             // fault, cause not found); a pass of its own avoids it.
-            let reads_opaque = material.is_some_and(|m| m.reads_opaque);
+            let reads_opaque = material.is_some_and(|m| m.reads_opaque)
+                || native.is_some_and(|p| p.reads_opaque());
             let per_section = material.is_some()
                 && !pack_draws_water
                 && oit.is_none()
@@ -11631,7 +12184,11 @@ impl Renderer {
                         quads(pass, &f.additive[s], additive_quads, world_quads);
                         self.weather
                             .draw_with(pass, &f.weather[s], &self.entity_group);
-                        if let Some(b) = frame.border.as_ref().filter(|_| !frame.title) {
+                        if let Some(b) = frame
+                            .border
+                            .as_ref()
+                            .filter(|b| !frame.title && !b.sides.is_empty())
+                        {
                             pass.set_pipeline(&f.border[s]);
                             pass.set_bind_group(0, &self.border_group, &[]);
                             pass.set_vertex_buffer(0, self.border_vertices.slice(..));
@@ -11641,10 +12198,31 @@ impl Renderer {
                             }
                         }
                     };
+                    let has_oit_features = oit::FeatureCounts {
+                        text_quads,
+                        crumbling_quads: if hdr_gain {
+                            0
+                        } else {
+                            translucent_crumbling_quads
+                        },
+                        swirl_quads,
+                        shadow_quads,
+                        particle_quads: translucent_particle_quads,
+                        item_quads: translucent_item_quads,
+                        entity_quads: oit_entity_quads,
+                        additive_quads,
+                        weather_quads,
+                        lightning_bolts: !frame.lightning.bolts.is_empty(),
+                        world_border: frame
+                            .border
+                            .as_ref()
+                            .is_some_and(|b| !frame.title && !b.sides.is_empty()),
+                    }
+                    .any();
                     let extras = oit::Extras {
                         water_mask: (water_mask_quads > 0).then_some(&mask as _),
                         clouds: (cloud_quads > 0).then_some(&clouds as _),
-                        features: Some(&features),
+                        features: has_oit_features.then_some(&features as _),
                     };
                     // The draw closure below borrows all of `self`, so the timer is taken out.
                     let mut own_timing = self.own_timing.take();
@@ -12378,6 +12956,17 @@ impl Renderer {
             self.given_up = 0;
         }
         let failed = checks.and_then(GpuChecks::pop);
+        if failed.is_some() {
+            // A scaled screenshot's encoder hit a GPU error and may have been rejected:
+            // invalidate incremental caches and re-upload on the next frame.
+            self.frame_lost = true;
+            if let Some(vis) = &mut self.visbuf {
+                vis.forget();
+            }
+            if let Some(mesh_terrain) = &mut self.mesh_terrain {
+                mesh_terrain.forget_uploads();
+            }
+        }
         if let Some((request, buffer)) = readback {
             // Out of memory on the way: the PNG would be black; taken again at half the size.
             if let Some(e) = failed {
@@ -13278,8 +13867,7 @@ mod tests {
 
     /// The two solid passes and the tiled culling gate are for Apple's GPUs only:
     /// Metal is merely the API on an Intel or AMD Mac, which has no tiled-memory
-    /// discard penalty. The name is the discriminator Metal leaves us, the same
-    /// one `graphics::lod_capped` uses.
+    /// discard penalty. The name is the discriminator Metal leaves us.
     #[test]
     fn tiled_solid_passes_are_for_apple_gpus_on_metal_only() {
         let metal = |name: &str| {
@@ -14809,6 +15397,168 @@ mod tests {
             ]]
         );
         assert!(super::outline_vertices(&[], glam::DVec3::ZERO).is_empty());
+    }
+    #[test]
+    fn zero_z_row_pins_clip_depth_to_zero_without_moving_xyw() {
+        for view in [
+            crate::camera::view_matrix(37.5, -18.0),
+            crate::camera::view_matrix_rolled(37.5, -18.0, 12.5),
+        ] {
+            let proj = super::world_projection(70.0, 16.0 / 9.0, 768.0) * view;
+            let pinned = glam::Mat4::from_cols_array_2d(&super::zero_z_row(proj));
+            for p in [
+                glam::Vec4::new(10.0, 100.0, -30.0, 1.0),
+                glam::Vec4::new(-80.0, 25.0, -100.0, 1.0),
+                glam::Vec4::new(100.0, -100.0, 100.0, 1.0),
+            ] {
+                let orig = proj * p;
+                let flat = pinned * p;
+                assert_eq!(flat.x.to_bits(), orig.x.to_bits());
+                assert_eq!(flat.y.to_bits(), orig.y.to_bits());
+                assert_eq!(flat.w.to_bits(), orig.w.to_bits());
+                assert_eq!(flat.z, 0.0);
+            }
+        }
+    }
+    fn deferrable_sky() -> super::SkyDeferral {
+        super::SkyDeferral {
+            title: false,
+            msaa_on: false,
+            sky_visible: true,
+            skybox: true,
+            end_sky: false,
+            custom_sky_drawing: false,
+            pack_post: false,
+            external_pack: false,
+            executor_active: false,
+            visbuf_active: false,
+            world_primitives: false,
+            gl_backend: false,
+            has_stars: true,
+            core_sky_draws_disc: false,
+            core_sky_draws_stars: false,
+        }
+    }
+    #[test]
+    fn should_defer_sky_allows_vanilla_world_and_end_sky() {
+        let base = deferrable_sky();
+        assert!(super::should_defer_sky(base));
+        assert!(super::should_defer_sky(super::SkyDeferral {
+            skybox: false,
+            end_sky: true,
+            ..base
+        }));
+        // A core/stars override does not block deferral when no stars are drawn (daytime).
+        assert!(super::should_defer_sky(super::SkyDeferral {
+            has_stars: false,
+            core_sky_draws_stars: true,
+            ..base
+        }));
+    }
+    #[test]
+    fn should_defer_sky_rejects_each_exclusion() {
+        let base = deferrable_sky();
+        let exclusions = [
+            (
+                "title",
+                super::SkyDeferral {
+                    title: true,
+                    ..base
+                },
+            ),
+            (
+                "sky_hidden",
+                super::SkyDeferral {
+                    sky_visible: false,
+                    ..base
+                },
+            ),
+            (
+                "no_skybox_or_end_sky",
+                super::SkyDeferral {
+                    skybox: false,
+                    end_sky: false,
+                    ..base
+                },
+            ),
+            (
+                "msaa",
+                super::SkyDeferral {
+                    msaa_on: true,
+                    ..base
+                },
+            ),
+            (
+                "custom_sky",
+                super::SkyDeferral {
+                    custom_sky_drawing: true,
+                    ..base
+                },
+            ),
+            (
+                "pack_post",
+                super::SkyDeferral {
+                    pack_post: true,
+                    ..base
+                },
+            ),
+            (
+                "external_pack",
+                super::SkyDeferral {
+                    external_pack: true,
+                    ..base
+                },
+            ),
+            (
+                "executor",
+                super::SkyDeferral {
+                    executor_active: true,
+                    ..base
+                },
+            ),
+            (
+                "visbuf",
+                super::SkyDeferral {
+                    visbuf_active: true,
+                    ..base
+                },
+            ),
+            (
+                "world_primitives",
+                super::SkyDeferral {
+                    world_primitives: true,
+                    ..base
+                },
+            ),
+            (
+                "gl_backend",
+                super::SkyDeferral {
+                    gl_backend: true,
+                    ..base
+                },
+            ),
+            (
+                "core_sky_disc",
+                super::SkyDeferral {
+                    core_sky_draws_disc: true,
+                    ..base
+                },
+            ),
+            (
+                "core_sky_stars",
+                super::SkyDeferral {
+                    has_stars: true,
+                    core_sky_draws_stars: true,
+                    ..base
+                },
+            ),
+        ];
+        for (name, inputs) in exclusions {
+            assert!(
+                !super::should_defer_sky(inputs),
+                "expected deferral disabled for exclusion `{name}`"
+            );
+        }
     }
     #[test]
     fn lightmap_key_tracks_every_input_and_normalizes_fullbright() {
