@@ -97,6 +97,13 @@ impl Game<'_> {
         }
     }
 
+    /// A local `Hud.setOverlayMessage`, not a server action or packet.
+    pub(in crate::game) fn show_action_bar(&mut self, line: horizon_client::text::Text) {
+        if self.native_window() && self.lan_acting.is_none() {
+            self.titles.set_overlay(line, false);
+        }
+    }
+
     pub(super) fn native_authoritative(&self) -> bool {
         self.is_logical_server()
     }
@@ -403,6 +410,9 @@ impl mod_api::LevelHost for super::GameLevel<'_> {
     fn state_block(&self, state: mod_api::BlockState) -> Option<&str> {
         self.native_state_block(state.try_into_engine(&()).ok()?)
     }
+    fn state_property(&self, state: mod_api::BlockState, key: &str) -> Option<&str> {
+        self.native_state_property(state.try_into_engine(&()).ok()?, key)
+    }
     fn state_string(&self, state: mod_api::BlockState) -> Option<String> {
         self.registry
             .state(state.try_into_engine(&()).ok()?)
@@ -504,6 +514,9 @@ impl mod_api::AttachmentHost for super::GameLevel<'_> {
 }
 
 impl mod_api::LevelRandomHost for super::GameLevel<'_> {
+    fn is_client_side(&self) -> bool {
+        horizon_world::level::LevelAccess::is_client_side(self)
+    }
     fn attachments(&mut self) -> &mut dyn mod_api::AttachmentStore {
         self
     }
@@ -547,6 +560,13 @@ impl mod_api::LevelHost for super::native_hooks::HitLevel<'_> {
             .registry()
             .state(state.try_into_engine(&()).ok()?)
             .map(|s| &*s.name)
+    }
+    fn state_property(&self, state: mod_api::BlockState, key: &str) -> Option<&str> {
+        super::native_hooks::state_property(
+            self.0.registry(),
+            state.try_into_engine(&()).ok()?,
+            key,
+        )
     }
     fn state_string(&self, state: mod_api::BlockState) -> Option<String> {
         self.0
@@ -595,6 +615,9 @@ impl mod_api::LevelRandomHost for super::native_hooks::HitLevel<'_> {
     fn is_client_side(&self) -> bool {
         self.0.client_side()
     }
+    fn swept_entity(&self) -> Option<mod_api::SweptEntity> {
+        self.1.copied()
+    }
     fn attachments(&mut self) -> &mut dyn mod_api::AttachmentStore {
         self
     }
@@ -629,6 +652,9 @@ impl<'a: 'b, 'b, L: std::ops::Deref<Target = super::GameLevel<'a>>> mod_api::Lev
     }
     fn state_block(&self, state: mod_api::BlockState) -> Option<&str> {
         mod_api::LevelHost::state_block(&*self.level, state)
+    }
+    fn state_property(&self, state: mod_api::BlockState, key: &str) -> Option<&str> {
+        mod_api::LevelHost::state_property(&*self.level, state, key)
     }
     fn state_string(&self, state: mod_api::BlockState) -> Option<String> {
         mod_api::LevelHost::state_string(&*self.level, state)
@@ -680,6 +706,9 @@ impl<'a: 'b, 'b, L: std::ops::Deref<Target = super::GameLevel<'a>>> mod_api::Lev
 }
 
 impl<'a: 'b, 'b> mod_api::LevelRandomHost for LevelTicks<'b, &mut super::GameLevel<'a>> {
+    fn is_client_side(&self) -> bool {
+        mod_api::LevelRandomHost::is_client_side(&*self.level)
+    }
     fn attachments(&mut self) -> &mut dyn mod_api::AttachmentStore {
         mod_api::LevelRandomHost::attachments(&mut *self.level)
     }
