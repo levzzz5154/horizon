@@ -53,6 +53,8 @@ use serde_json::{Map, Value};
 use stubs::*;
 struct Text;
 struct ScreenshotImage;
+struct LogicalSide;
+struct CreativeTabEdit;
 #[derive(Debug, PartialEq)]
 struct Zoom(u32);
 enum Flow {

@@ -179,6 +179,7 @@ impl SearchEntry {
 fn edit_search(
     items: &mut Vec<ItemStack>,
     index: &mut Vec<SearchEntry>,
+    exported_search: &[(ItemStack, SearchEntry, bool)],
     edit: &CatalogEdit,
     category: bool,
 ) {
@@ -196,8 +197,15 @@ fn edit_search(
         items.truncate(kept);
         index.truncate(kept);
     } else if let Some((at, stack)) = edit.insertion(items, category) {
+        let mut entry = SearchEntry::for_stack(stack);
+        if let Some((_, existing, _)) = exported_search
+            .iter()
+            .find(|(s, _, _)| s.item == stack.item)
+        {
+            entry.tags = existing.tags.clone();
+        }
         items.insert(at, stack.clone());
-        index.insert(at, SearchEntry::for_stack(stack));
+        index.insert(at, entry);
     }
 }
 pub struct Creative {
@@ -231,6 +239,8 @@ pub struct Creative {
     /// Whether both-side edits have been collected for this catalog.
     catalog_built: bool,
     available: bool,
+    /// Tab ID preserved across an intermediate permission-change baseline rebuild.
+    pending_selected_tab: Option<String>,
     base: OnceLock<CatalogContents>,
     /// The stacks mods added to item tabs in the last build
     /// (`BuildCreativeModeTabContentsEvent`), by tab id, in the order asked.
@@ -577,6 +587,7 @@ impl Creative {
             built: false,
             catalog_built: false,
             available: true,
+            pending_selected_tab: None,
             base: OnceLock::new(),
             added: Vec::new(),
             edits: Vec::new(),
@@ -627,11 +638,20 @@ impl Creative {
         self.available
     }
 
+    pub fn catalog_built(&self) -> bool {
+        self.catalog_built
+    }
+
     /// Publish a permission-safe baseline before invoking listeners for a different view.
     pub fn update_catalog_permissions(&mut self, permissions: bool, names: &Names) {
         if self.permissions != permissions {
+            let keep = self
+                .pending_selected_tab
+                .take()
+                .unwrap_or_else(|| self.tab().id.clone());
             self.build_catalog(permissions, None, Some(Vec::new()), names);
             self.invalidate_catalog();
+            self.pending_selected_tab = Some(keep);
         }
     }
 
@@ -729,11 +749,23 @@ impl Creative {
                     {
                         continue;
                     }
-                    edit_search(&mut search_items, &mut search_index, edit, true);
+                    edit_search(
+                        &mut search_items,
+                        &mut search_index,
+                        &self.exported_search,
+                        edit,
+                        true,
+                    );
                 }
             }
             for edit in search_edits {
-                edit_search(&mut search_items, &mut search_index, edit, false);
+                edit_search(
+                    &mut search_items,
+                    &mut search_index,
+                    &self.exported_search,
+                    edit,
+                    false,
+                );
             }
         }
         let mut exported = self.exported.iter();
@@ -864,7 +896,10 @@ impl Creative {
         edits: Option<Vec<(String, Vec<CatalogEdit>)>>,
         names: &Names,
     ) {
-        let selected = self.tab().id.clone();
+        let selected = self
+            .pending_selected_tab
+            .take()
+            .unwrap_or_else(|| self.tab().id.clone());
         let row = if self.scroll == 0.0 {
             0
         } else {
