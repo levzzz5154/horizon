@@ -161,7 +161,10 @@ impl ItemData {
             .entries()
             .iter()
             .filter_map(|(item, components)| {
-                let key = components.get("minecraft:item_name")?.get("translate")?.as_str()?;
+                let key = components
+                    .get("minecraft:item_name")?
+                    .get("translate")?
+                    .as_str()?;
                 Some((item.clone(), key.to_owned()))
             })
             .collect();
