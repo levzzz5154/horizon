@@ -1,7 +1,6 @@
 use super::*;
 
-#[path = "../../../../tools/headless_bench_support.rs"]
-mod bench_support;
+use crate::bench_support;
 #[path = "../../examples/support/palette_workload.rs"]
 mod palette_workload;
 

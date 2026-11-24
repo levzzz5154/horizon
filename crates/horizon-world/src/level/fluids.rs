@@ -1000,8 +1000,7 @@ pub(crate) fn merged_face_occludes(
 }
 
 #[cfg(test)]
-#[path = "../../../../tools/headless_bench_support.rs"]
-mod bench_support;
+use crate::bench_support;
 #[cfg(test)]
 #[path = "../../examples/support/tag_fixture.rs"]
 mod tag_fixture;

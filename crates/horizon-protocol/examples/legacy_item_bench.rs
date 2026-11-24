@@ -21,7 +21,7 @@ use std::{
     time::Instant,
 };
 
-#[path = "../../../tools/headless_bench_support.rs"]
+#[path = "protocol_bench/bench_support.rs"]
 mod bench_support;
 #[path = "protocol_bench/common.rs"]
 mod common;

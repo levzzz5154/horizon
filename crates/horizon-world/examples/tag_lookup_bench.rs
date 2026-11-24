@@ -4,7 +4,7 @@ use horizon_world as world;
 use serde_json::json;
 use std::{hint::black_box, io, time::Instant};
 
-#[path = "../../../tools/headless_bench_support.rs"]
+#[path = "support/bench_support.rs"]
 mod bench_support;
 #[path = "support/tag_fixture.rs"]
 mod tag_fixture;

@@ -2,7 +2,7 @@
 //! --example palette_bench -- --json --repeats 7`.
 use horizon_world::chunk::PalettedContainer;
 
-#[path = "../../../tools/headless_bench_support.rs"]
+#[path = "support/bench_support.rs"]
 mod bench_support;
 #[path = "support/palette_workload.rs"]
 mod palette_workload;
