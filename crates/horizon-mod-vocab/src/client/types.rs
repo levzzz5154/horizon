@@ -724,6 +724,17 @@ pub struct ScreenId {
     pub id: String,
 }
 
+/// The topmost screen's identity, without render or input state.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+// exhaustive: the game builds it with a literal; mods only read it
+#[derive(horizon_mod_api_macros::Wire)]
+pub struct ScreenIdentity {
+    /// The same stable identifier as [`ScreenView::id`], such as `inventory` or `dialog`.
+    pub id: String,
+    /// The same menu type as [`ScreenView::menu`], if the screen has one.
+    pub menu: Option<String>,
+}
+
 /// The sign the sign editor is on (`ScreensClientHost::sign_editor`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 // exhaustive: the game builds it with a literal; mods only read it
@@ -782,6 +793,28 @@ pub struct ScreenView<'a> {
     /// This frame's partial tick (`getGameTimeDeltaPartialTick(false)`, 0 to
     /// 1): what the screen draws animation against.
     pub partial_tick: f32,
+}
+
+/// Mouse input about to be handled by a container screen.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, horizon_mod_api_macros::Wire)]
+pub enum ContainerMouseInput {
+    /// A press or release. Buttons use GLFW indices: 0 left, 1 right, 2 middle.
+    Button {
+        /// The GLFW button index.
+        button: i32,
+        /// `true` for a press, `false` for a release.
+        pressed: bool,
+    },
+    /// Scrolling in x and y, with the same scaling as `screen_mouse_scrolled_pre`.
+    Scroll([f64; 2]),
+    /// A pointer movement with a held button.
+    Drag {
+        /// The GLFW button index.
+        button: i32,
+        /// The pointer movement in GUI pixels.
+        delta: [f32; 2],
+    },
 }
 
 /// A camera-local visual light, with no gameplay light or shadow writes.

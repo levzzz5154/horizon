@@ -182,6 +182,7 @@ impl Game<'_> {
             },
             |a| (a.name.clone(), a.uuid),
         );
+        let transferred = local.is_none() && cookies.is_some();
         self.server_packs_connect_for(local.is_none().then_some(address), user, cookies.is_some());
         let session = match local {
             Some(pipe) => Session::connect_local(
@@ -276,7 +277,7 @@ impl Game<'_> {
         self.set_screen(Screen::Playing);
         self.hide_title();
         self.dim = Dim::Overworld;
-        self.clear_lod();
+        self.clear_lod_for_world_entry();
         self.pending_uploads.clear();
         if let Some(r) = self.renderer.as_mut() {
             r.clear_sections(self.world.layout());
@@ -321,10 +322,15 @@ impl Game<'_> {
             far_terrain: None,
             splash_sound: Default::default(),
             builtin,
-            status: lang
-                .get("connect.connecting")
-                .cloned()
-                .unwrap_or_else(|| "Connecting to the server...".into()),
+            status: if transferred {
+                lang.get("connect.transferring")
+                    .cloned()
+                    .unwrap_or_else(|| "Transferring to new server...".into())
+            } else {
+                lang.get("connect.connecting")
+                    .cloned()
+                    .unwrap_or_else(|| "Connecting to the server...".into())
+            },
             lang,
             registries: Arc::new(Dynamic::default()),
             tags: None,
@@ -424,6 +430,7 @@ impl Game<'_> {
             seen_players: std::collections::HashSet::new(),
             glowing: Default::default(),
             own_invisible: false,
+            own_glowing: false,
             own_on_fire: false,
             own_arrows: 0,
             own_stingers: 0,
@@ -542,7 +549,7 @@ impl Game<'_> {
         self.set_screen(Screen::Playing);
         self.title = None;
         self.dim = Dim::Overworld;
-        self.clear_lod();
+        self.clear_lod_for_world_entry();
         self.pending_uploads.clear();
         if let Some(r) = self.renderer.as_mut() {
             r.clear_sections(self.world.layout());
@@ -675,12 +682,13 @@ impl Game<'_> {
             seen_players: std::collections::HashSet::new(),
             glowing: Default::default(),
             own_invisible: false,
+            own_glowing: false,
             own_on_fire: false,
             own_arrows: 0,
             own_stingers: 0,
             own_shoulders: [None; 2],
             own_pose: None,
-            profile: 0,
+            profile: horizon_client::studio::recorder::RECORDER_UUID,
             profile_name: String::new(),
             destroying: None,
             destroying_item: None,
@@ -850,6 +858,7 @@ impl Game<'_> {
         self.set_screen(Screen::Playing);
         self.container = None;
         self.clear_lod();
+        self.lod_first_load = false;
         self.pending_uploads.clear();
         if let Some(r) = self.renderer.as_mut() {
             r.clear_sections(self.world.layout());
