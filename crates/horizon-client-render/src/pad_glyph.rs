@@ -351,7 +351,13 @@ pub fn draw(batch: &mut HudBatch, atlas: &HudAtlas, glyph: Glyph, x: f32, y: f32
 }
 
 /// Draw a control glyph with a colour multiplier (packed as [`rgba`]), in its layout box.
-pub fn draw_tinted(batch: &mut HudBatch, atlas: &HudAtlas, glyph: Glyph, rect: [f32; 4], tint: u32) {
+pub fn draw_tinted(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    glyph: Glyph,
+    rect: [f32; 4],
+    tint: u32,
+) {
     let [left, top, wide, tall] = rect;
     if let Some(name) = art(atlas, glyph) {
         batch.sprite_scaled(
