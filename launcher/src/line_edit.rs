@@ -365,6 +365,8 @@ impl LineEdit {
                 self.redo();
                 Key::Edited
             }
+            // Nothing selected: the clipboard keeps what it holds.
+            "c" | "x" if command && lo == hi => Key::Moved,
             "c" if command => Key::Copy(self.selected()),
             "x" if command => {
                 let cut = self.selected();
@@ -375,10 +377,14 @@ impl LineEdit {
             }
             "v" if command => Key::Paste,
             _ if command => Key::Pass,
-            // Not every platform gives Space a character.
+            // Not every platform gives Space a character, and a layout may give another space
+            // (a no-break space on AltGr+Space).
             "space" => {
+                let ch = key_char
+                    .filter(|c| !c.is_empty() && !c.chars().any(char::is_control))
+                    .unwrap_or(" ");
                 let run = if lo == hi { Run::Typing } else { Run::Other };
-                self.edit(run, false, |e| e.put(" "));
+                self.edit(run, false, |e| e.put(ch));
                 Key::Edited
             }
             _ => match key_char {
@@ -634,6 +640,17 @@ mod tests {
         assert_eq!(e.text(), "-name teve");
     }
 
+    /// A layout may put another space on Space (a no-break space on AltGr+Space): it is typed as
+    /// given. Without a character, Space types a plain space.
+    #[test]
+    fn space_types_the_character_the_layout_gives() {
+        let mut e = edit("a");
+        e.key("space", Some("\u{a0}"), false, false);
+        e.key("space", None, false, false);
+        e.key("space", Some(" "), false, false);
+        assert_eq!(e.text(), "a\u{a0}  ");
+    }
+
     #[test]
     fn undo_steps_back_a_run_at_a_time_and_redo_returns() {
         let mut e = edit("");
@@ -687,6 +704,18 @@ mod tests {
         assert_eq!(e.text(), "y");
         e.insert("a\nb c");
         assert_eq!(e.text(), "yab c");
+    }
+
+    /// With nothing selected, Copy and Cut have nothing to put on the clipboard: they leave it as
+    /// it is instead of emptying it, and the text stays.
+    #[test]
+    fn copy_and_cut_with_nothing_selected_keep_the_clipboard() {
+        let mut e = edit("--name Steve");
+        assert_eq!(e.key("c", None, true, false), Key::Moved);
+        assert_eq!(e.key("x", None, true, false), Key::Moved);
+        assert_eq!(e.text(), "--name Steve");
+        e.key("left", None, false, true);
+        assert_eq!(e.key("c", None, true, false), Key::Copy("e".into()));
     }
 
     #[test]
