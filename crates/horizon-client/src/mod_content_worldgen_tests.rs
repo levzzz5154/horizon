@@ -428,6 +428,7 @@ fn content_root_inherits_simple_block_template_placement() {
             layers: vec![("minecraft:grass_block".into(), 1)],
             biome: "meadow:meadow".into(),
             structure_overrides: Some(vec![]),
+            structure_candidates: None,
             features: true,
             lakes: false,
         },
