@@ -274,7 +274,7 @@ fn star_build_and_cancellation_reach_world_pixels() {
                 "cancellation removes only stars"
             );
 
-            renderer.set_sky_shaders(None, Some(&core_stars()));
+            renderer.set_sky_shaders(None, Some(&core_stars()), None);
             probe.cancel.store(false, Relaxed);
             let shaded = read_rgb(&mut renderer, &frame);
             assert_eq!(shaded[center][0], bodies[center][0]);
