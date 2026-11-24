@@ -54,7 +54,9 @@ impl LoadConditions {
     /// World-less loads use the built-in vanilla flag through [`Self::new`].
     pub fn for_features<'a>(ids: impl IntoIterator<Item = &'a str>, features: &[String]) -> Self {
         Self {
-            features: (features != [VANILLA_FEATURE]).then(|| features.into()),
+            // An empty list is a save's default: vanilla's flag alone.
+            features: (!features.is_empty() && features != [VANILLA_FEATURE])
+                .then(|| features.into()),
             ..Self::new(ids)
         }
     }
@@ -589,6 +591,16 @@ mod tests {
             LoadConditions::new(["minecraft"]),
             LoadConditions::vanilla()
         );
+    }
+
+    /// A save with no enabled_features list runs vanilla's default set.
+    #[test]
+    fn an_empty_feature_list_is_vanilla() {
+        let conditions = LoadConditions::for_features(["gem"], &[]);
+        assert!(conditions.feature_flags().is_none());
+        assert!(conditions.allows(&json!({"neoforge:conditions":[{
+            "type":"neoforge:feature_flags_enabled", "flags":["minecraft:vanilla"]
+        }]})));
     }
 
     struct GemItems;
