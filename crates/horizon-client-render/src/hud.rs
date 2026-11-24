@@ -2126,6 +2126,7 @@ impl HudBatch {
         self.game_time = 0.0;
         self.blur_at = 0;
         self.inline_profiles.clear();
+        self.stock_hotbar_origin = None;
     }
     /// Draw the vertices added since `start` with the inverting blend.
     pub fn invert_since(&mut self, start: usize) {
@@ -6526,6 +6527,7 @@ texture=wide",
             game_time: 0.0,
             blur_at: 0,
             inline_profiles: Vec::new(),
+            stock_hotbar_origin: None,
         };
         assert_eq!(literal.width, 320.0);
 
