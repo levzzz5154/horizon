@@ -11,13 +11,18 @@ if not defined version (
 )
 cargo.exe build --locked --profile fast -p horizon-game --bin horizon-client --target-dir "%checkout%\target"
 set "status=%errorlevel%"
-popd
-if not "%status%"=="0" exit /b %status%
+if not "%status%"=="0" (
+    popd
+    exit /b %status%
+)
 
+rem Keep the checkout pushed until the game exits: for a UNC checkout, pushd maps a
+rem temporary drive that %checkout% points at, and popd would remove it.
 set "scratch=%TEMP%\horizon-dev-%RANDOM%-%RANDOM%"
-mkdir "%scratch%" || exit /b 1
-mkdir "%scratch%\game" || exit /b 1
-mkdir "%scratch%\runtime" || exit /b 1
+mkdir "%scratch%\game" "%scratch%\runtime" || (
+    popd
+    exit /b 1
+)
 echo Development run: "%scratch%"
 set "HORIZON_HOME=%scratch%\home"
 set "HORIZON_LAUNCHER_HOME=%scratch%\launcher"
@@ -34,8 +39,12 @@ set "XDG_CONFIG_HOME=%scratch%\config"
 set "XDG_CACHE_HOME=%scratch%\cache"
 set "XDG_RUNTIME_DIR=%scratch%\runtime"
 
-pushd "%scratch%\game" || exit /b 1
+pushd "%scratch%\game" || (
+    popd
+    exit /b 1
+)
 "%checkout%\target\fast\horizon-client.exe" --resources "%checkout%\.local\horizon-client\%version%" --game-dir "%scratch%\game" %*
 set "status=%errorlevel%"
+popd
 popd
 exit /b %status%

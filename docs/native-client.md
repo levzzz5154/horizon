@@ -121,7 +121,7 @@ cargo run --release -p horizon-game -- --render-distance 12
 
 Development builds that link quickly: `cargo build --profile fast -p horizon-game`.
 
-On Windows, with the build prerequisites and prepared resources above, run
+On Windows, with the build prerequisites and prepared resources above and `python` on `PATH`, run
 `tools\build-and-run.bat --world "Dev World" --render-distance 8` from the checkout.
 It builds `target\fast\horizon-client.exe`, passes along game arguments, and prints the new
 temporary run directory. Saves, options and logs stay there by default, not in the checkout
