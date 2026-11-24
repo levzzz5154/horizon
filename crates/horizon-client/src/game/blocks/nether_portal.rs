@@ -941,20 +941,35 @@ impl Game<'_> {
         }
     }
     /// `Entity.load`: the saved `PortalCooldown` (an entity that just came
-    /// through stands in its exit portal for 300 ticks without going back).
+    /// through stands in its exit portal until its own cooldown expires).
+    /// It sets the counter and leaves a portal process the entity already
+    /// has, and a zero counter is a counter like any other.
     pub(super) fn restore_portal_cooldown(&mut self, id: u32, tag: &Tag) {
-        if let Some(cooldown) = tag
+        let cooldown = tag
             .get("PortalCooldown")
             .and_then(horizon_client::nbt_path::int_value)
-            && cooldown != 0
-        {
-            self.portals.entities.insert(
-                id,
-                PortalState {
-                    cooldown,
-                    process: None,
-                },
-            );
+            .unwrap_or(0);
+        if let Some(traveller) = self.end.gateways.get_mut(&id) {
+            traveller.set_cooldown(cooldown);
+        }
+        if cooldown != 0 || self.portals.entities.contains_key(&id) {
+            let state = self.portals.entities.entry(id).or_default();
+            state.cooldown = cooldown;
+            if cooldown == 0 && state.process.is_none() {
+                self.portals.entities.remove(&id);
+            }
+        }
+    }
+    /// `Entity.load` on a live entity (`/data merge`): `getIntOr("PortalCooldown", 0)`
+    /// takes any numeric tag and leaves the portal process as it is.
+    pub(super) fn reload_portal_cooldown(&mut self, id: u32, tag: &Tag) {
+        if let Some(portal) = self.portals.entities.get_mut(&id) {
+            portal.cooldown = tag
+                .get("PortalCooldown")
+                .and_then(horizon_client::nbt_path::int_value)
+                .unwrap_or(0);
+        } else {
+            self.restore_portal_cooldown(id, tag);
         }
     }
     /// `Entity.saveWithoutId` writes the live `PortalCooldown`: the countdown
@@ -963,28 +978,22 @@ impl Game<'_> {
     /// portal state, as the projectile writer does. An entity the portal
     /// state does not know is not on a cooldown, and writes 0.
     pub(super) fn save_portal_cooldown(&self, id: u32, tag: &mut Tag) {
-        horizon_client::nether_portal::put_portal_cooldown(
-            tag,
-            horizon_client::nether_portal::portal_cooldown(&self.portals.entities, id),
+        // An entity inside an End gateway counts down on the gateway's state.
+        let cooldown = self.end.gateways.get(&id).map_or_else(
+            || horizon_client::nether_portal::portal_cooldown(&self.portals.entities, id),
+            |traveller| traveller.cooldown(),
         );
+        horizon_client::nether_portal::put_portal_cooldown(tag, cooldown);
     }
-    /// `Entity.saveWithoutId`: the modeled non-arrow projectile codecs
-    /// share the live cooldown between command reads and chunk writes.
+    /// `Entity.saveWithoutId`: the modeled projectile codecs share the live cooldown
+    /// between command reads and chunk writes. Kept under its name and signature for
+    /// the mod points; the body is `save_portal_cooldown`, which arrows use too.
     pub(super) fn save_projectile_portal_cooldown(
         &self,
         projectile: &horizon_client::projectiles::Projectile,
         tag: &mut Tag,
     ) {
-        if projectile.arrow.is_none()
-            && let Tag::Compound(fields) = tag
-        {
-            let cooldown = self
-                .portals
-                .entities
-                .get(&projectile.id)
-                .map_or(0, |portal| portal.cooldown);
-            fields.insert("PortalCooldown".into(), Tag::Int(cooldown));
-        }
+        self.save_portal_cooldown(projectile.id, tag);
     }
     /// `Entity.getDimensionChangingDelay`, by class: boats and minecarts
     /// (`VehicleEntity`) always 10, projectiles (`Projectile`) 2; any other
@@ -2687,6 +2696,9 @@ mod tests {
 #[cfg(test)]
 #[path = "tests/portal_cooldown_tests.rs"]
 mod cooldown_tests;
+#[cfg(test)]
+#[path = "tests/portal_persistence_tests.rs"]
+mod persistence_tests;
 
 #[cfg(test)]
 #[path = "nether_portal/arrival_effects_tests.rs"]
