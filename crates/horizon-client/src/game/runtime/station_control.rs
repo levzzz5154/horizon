@@ -76,9 +76,12 @@ impl Game<'_> {
         )))
     }
     /// Run the window's direct player-state tools on the integrated server's saved owner.
+    /// `selected` is the window's hotbar slot: a `hotbar` in the same control poll has not
+    /// reached the server yet.
     pub(in crate::game) fn owner_station_command(
         &mut self,
         words: &[&str],
+        selected: usize,
     ) -> Result<Option<Value>> {
         let owner = self.serving.as_ref().ok_or("no integrated server")?.owner;
         let guest = self
@@ -92,7 +95,10 @@ impl Game<'_> {
             if game.dim != dimension {
                 return Err("could not enter the owner's level".into());
             }
-            game.as_guest(conn, |game| game.station_command(words))
+            game.as_guest(conn, |game| {
+                game.selected = selected;
+                game.station_command(words)
+            })
                 .ok_or("could not enter the owner's player state")?
         });
         if result.is_ok()

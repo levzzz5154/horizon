@@ -448,10 +448,11 @@ impl Game<'_> {
                 && let Some(server) = &self.integrated
             {
                 let line = line.to_owned();
+                let selected = self.selected;
                 return server
                     .call(move |game| {
                         let words: Vec<&str> = line.split_whitespace().collect();
-                        game.owner_station_command(&words)
+                        game.owner_station_command(&words, selected)
                             .map_err(|e| e.to_string())
                     })
                     .ok_or(super::integrated::NO_ANSWER)?
