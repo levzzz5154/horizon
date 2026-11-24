@@ -252,7 +252,7 @@ pub(super) fn add(mesher: &Mesher<'_>, tints: &mut Tints<'_>, out: &mut SectionM
     };
     let mut budget = Budget::left_after(out);
     for renderer in mesher.tables.section_geometry.iter() {
-        if renderer.failed.load(Ordering::Relaxed) {
+        if renderer.failed() {
             continue;
         }
         let mut context = Context {
@@ -260,12 +260,12 @@ pub(super) fn add(mesher: &Mesher<'_>, tints: &mut Tints<'_>, out: &mut SectionM
             batch: Batch::new(&mesher.render.sprite_layers, &mut budget, &IN_FLIGHT),
         };
         let asked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            renderer.callback.add(origin, &mut context)
+            renderer.callback().add(origin, &mut context)
         }));
         let mut batch = context.batch;
         if asked.is_err() {
             batch.refuse(String::new());
-            if !renderer.failed.swap(true, Ordering::Relaxed) {
+            if renderer.mark_failed() {
                 log::warn!("Horizon: a section geometry renderer panicked; it is asked no more");
             }
             continue;
@@ -278,7 +278,7 @@ pub(super) fn add(mesher: &Mesher<'_>, tints: &mut Tints<'_>, out: &mut SectionM
                 }
             }
             Some(why) => {
-                if !renderer.refused.swap(true, Ordering::Relaxed) {
+                if renderer.mark_refused() {
                     log::warn!(
                         "Horizon: section geometry for the section at {origin:?} was refused: {why}"
                     );

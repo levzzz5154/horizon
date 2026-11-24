@@ -37,7 +37,7 @@ pub(super) fn resolve(index: u32, biome: &BiomeInfo, x: f64, z: f64) -> u32 {
     };
     // A failed resolver stays disabled, avoiding repeated panic-hook output as
     // subsequent columns and sections are meshed.
-    if resolver.warned.load(std::sync::atomic::Ordering::Relaxed) {
+    if resolver.warned() {
         return 0xFF_FFFF;
     }
     let info = ResolverBiome {
@@ -51,14 +51,11 @@ pub(super) fn resolve(index: u32, biome: &BiomeInfo, x: f64, z: f64) -> u32 {
         },
     };
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        resolver.callback.color(&biome.name, &info, x, z)
+        resolver.callback().color(&biome.name, &info, x, z)
     })) {
         Ok(color) => color & 0xFF_FFFF,
         Err(_) => {
-            if !resolver
-                .warned
-                .swap(true, std::sync::atomic::Ordering::Relaxed)
-            {
+            if resolver.mark_warned() {
                 log::warn!("Horizon: colour resolver {index} panicked; using white");
             }
             0xFF_FFFF
