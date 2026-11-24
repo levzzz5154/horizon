@@ -1412,7 +1412,9 @@ impl Goal for FightMelee {
     }
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         // `StopAttackingIfTargetInvalid`: a creative player is no target.
-        if m.target_info(cx.w).is_some_and(|t| t.is_player && t.creative) {
+        if m.target_info(cx.w)
+            .is_some_and(|t| t.is_player && t.creative)
+        {
             m.set_ai_target(cx.w, None);
         }
         self.path_end = None;
