@@ -485,16 +485,34 @@ impl Game<'_> {
     /// `LevelChunk.setBlockState`: finish sculk placement before a command
     /// or `BlockItem.updateCustomBlockEntityTag` loads saved entity fields.
     /// Call `sculk_prepare` before the block write so it is recorded.
-    pub(super) fn sculk_place_entity(&mut self, state: BlockStateId) -> bool {
+    pub(super) fn sculk_place_entity(&mut self, key: (i32, i32, i32), state: BlockStateId) -> bool {
         if self.kind_of_state(state.0) == 0 {
             return false;
         }
-        self.sculk_sync_writes();
+        self.sculk_sync_writes_at(Some(key));
         true
     }
 
     fn sculk_sync_writes(&mut self) {
-        let writes = std::mem::take(&mut self.world.watched_writes);
+        self.sculk_sync_writes_at(None);
+    }
+
+    fn sculk_sync_writes_at(&mut self, only: Option<(i32, i32, i32)>) {
+        let writes = match only {
+            None => std::mem::take(&mut self.world.watched_writes),
+            Some(target) => {
+                let mut matched = Vec::new();
+                self.world.watched_writes.retain(|write| {
+                    if write.0 == target {
+                        matched.push(*write);
+                        false
+                    } else {
+                        true
+                    }
+                });
+                matched
+            }
+        };
         for (key, old, new) in writes {
             let (old_kind, new_kind) = (self.kind_of_state(old), self.kind_of_state(new));
             if old_kind == new_kind {

@@ -651,7 +651,7 @@ impl Game<'_> {
         // `BlockItem.updateCustomBlockEntityTag` reads the new entity. The
         // next sculk tick must not replace the entity after it takes the item data.
         if !self.world.block_entities.stateful_entity(state.0)
-            && !self.sculk_place_entity(state)
+            && !self.sculk_place_entity(key, state)
             && let Some(entity) = self.new_block_entity_for_state(state)
         {
             self.world.block_entities.insert(key, entity);
