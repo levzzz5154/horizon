@@ -114,6 +114,16 @@ impl Game<'_> {
     /// next move outruns the server's player.
     pub(super) fn remote_attacker_extra_knockback(&mut self) {
         let (strength, damage, knockback, sprinting) = self.remote_attack_inputs();
+        self.apply_remote_attacker_extra_knockback(strength, damage, knockback, sprinting);
+    }
+
+    fn apply_remote_attacker_extra_knockback(
+        &mut self,
+        strength: f32,
+        damage: f32,
+        knockback: f32,
+        sprinting: bool,
+    ) {
         if !horizon_client::attack_strength::attacker_slows_after_hit(
             damage, knockback, strength, sprinting,
         ) {
@@ -166,7 +176,7 @@ impl Game<'_> {
         if self.mobs[mob].kind.id != "minecraft:player" {
             return;
         }
-        let (strength, damage, _, _) = self.remote_attack_inputs();
+        let (strength, damage, knockback, sprinting) = self.remote_attack_inputs();
         // attackVisualEffects: a RemotePlayer's hurtClient is true, so a
         // critical hit (full strength, canCriticalAttack) with damage left
         // after baseDamageScaleFactor runs LocalPlayer.crit, this client's
@@ -181,7 +191,7 @@ impl Game<'_> {
                 mob_tracking_body(m),
             );
         }
-        self.remote_attacker_extra_knockback();
+        self.apply_remote_attacker_extra_knockback(strength, damage, knockback, sprinting);
     }
     /// The latency the server's player list gives this player
     /// (`PlayerInfo.getLatency`), none before the server lists it. A new entry reads 0 until the
