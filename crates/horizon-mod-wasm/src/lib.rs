@@ -120,6 +120,10 @@ pub enum Refusal {
     /// doesn't have: it was built against another version of that call. A missing call may be one
     /// this game dropped or one added after it, and the package records nothing that says which.
     Call { call: String, changed: bool },
+    /// The mod imports `call` (`Owner::method`), a call wasm mods may no longer make (the system
+    /// clipboard). A build with this game's mod API has no such call for wasm, so a mod that still
+    /// uses it fails to compile and must drop the call.
+    Denied { call: String },
     /// Two mods of one linked group were built against different mod APIs.
     MixedGroup { first: String, second: String },
     /// The game has no shared Rust standard library beside its executable.
@@ -187,6 +191,10 @@ impl std::fmt::Display for Refusal {
             } => write!(
                 f,
                 "calls `{call}`, which this game doesn't have: it was built for an older or newer game and needs a build for this one"
+            ),
+            Self::Denied { call } => write!(
+                f,
+                "calls `{call}`, which wasm mods may not use: remove the call and rebuild it"
             ),
             Self::MixedGroup { first, second } => write!(
                 f,

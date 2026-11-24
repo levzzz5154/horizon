@@ -982,12 +982,11 @@ impl WasmMod {
                         key,
                         "ClientHost::clipboard_text" | "ClientHost::set_clipboard_text"
                     ) {
-                        // Gate pre-existing Wasm binaries (including older SDK widgets whose Cut
-                        // handler ignores `set_clipboard_text`'s result and deletes the selection)
-                        // until rebuilt against the updated SDK without Wasm clipboard calls.
-                        unlinked.get_or_insert(Refusal::Call {
+                        // Refuse Wasm binaries that import the clipboard calls (older SDK widgets'
+                        // Cut ignores `set_clipboard_text`'s result and deletes the selection).
+                        // The current SDK has neither call on wasm, so a rebuild drops them.
+                        unlinked.get_or_insert(Refusal::Denied {
                             call: key.to_owned(),
-                            changed: true,
                         });
                         return None;
                     }

@@ -248,6 +248,13 @@ pub(super) fn guest(
             } else {
                 ""
             };
+            // A denied call is gated out of the trait on wasm: only a native guest build has it.
+            if super::WASM_DENIED
+                .iter()
+                .any(|(o, n, _)| *o == m.owner && *n == m.name)
+            {
+                out.push_str("#[cfg(not(target_arch = \"wasm32\"))]\n");
+            }
             let name = super::names::import_name(types, m, false);
             writeln!(out, "{}", import_body(types, m, id, &name, prefix)).unwrap();
         }

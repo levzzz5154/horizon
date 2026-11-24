@@ -18,9 +18,11 @@ impl ClientInputClientHost for Fake {
     fn millis(&self) -> u64 {
         self.now.get()
     }
+    #[cfg(not(target_arch = "wasm32"))]
     fn clipboard_text(&self) -> Option<String> {
         Some(self.clipboard.borrow().clone())
     }
+    #[cfg(not(target_arch = "wasm32"))]
     fn set_clipboard_text(&self, text: &str) -> bool {
         *self.clipboard.borrow_mut() = text.to_owned();
         true

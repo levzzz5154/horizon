@@ -99,9 +99,8 @@ fn old_wasm_clipboard_imports_are_refused_until_rebuilt() {
                 load(&[("old_widget", &bytes)])
                     .err()
                     .expect("clipboard import must be refused"),
-                Refusal::Call {
+                Refusal::Denied {
                     call: key.to_owned(),
-                    changed: true,
                 }
             );
         }

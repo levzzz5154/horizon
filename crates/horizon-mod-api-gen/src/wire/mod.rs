@@ -316,6 +316,15 @@ pub(super) struct Surface<'a> {
     pub(super) parts: Vec<(&'static str, String)>,
 }
 
+/// The calls a wasm mod is denied, with the reply the host gives a binary that still imports
+/// one. Their trait methods are `#[cfg(not(target_arch = "wasm32"))]`, so the wasm guest has no
+/// impl of them, and a mod that calls one fails to compile for wasm; the import names stay in the
+/// table so the runtime can refuse a binary built before (#20072).
+pub(super) const WASM_DENIED: &[(&str, &str, &str)] = &[
+    ("ClientHost", "clipboard_text", "None::<String>"),
+    ("ClientHost", "set_clipboard_text", "false"),
+];
+
 /// The line on a method's doc that keeps it off wasm, and says why.
 const NOT_ON_WASM: &str = "Not on wasm: ";
 
