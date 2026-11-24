@@ -1822,6 +1822,10 @@ fn a_chunk_is_written_with_the_selected_region_version() {
     });
     let records = [((3, 4), Record::Tag(Arc::clone(&tag)))];
     let refs: Vec<_> = records.iter().map(|(k, r)| (*k, r)).collect();
+    // Every other reader of the setting waits until the default is back.
+    let _codec = super::compression_pool::SELECTED_CODEC
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     for name in ["none", "lz4", "gzip", "deflate"] {
         assert!(Compression::configure(name), "{name}");
         let written = compress_records(&refs, 99)
@@ -1859,6 +1863,7 @@ fn records_compressed_on_helpers_match_one_thread_in_order() {
         })
         .collect();
     let refs: Vec<_> = records.iter().map(|(k, r)| (*k, r)).collect();
+    let _codec = super::compression_pool::holding_selected_codec();
     let compressed = compress_records(&refs, 1234);
     assert_eq!(compressed.len(), records.len());
     for ((_, record), got) in records.iter().zip(compressed) {
@@ -1919,6 +1924,33 @@ fn region_files_kept_open_stay_under_vanillas_cache_size() {
     )
     .unwrap()
     .unwrap();
+    // A region whose write a failed sync left staged, held by no one, is
+    // not closed for room either: the next write finishes that commit.
+    let staged = super::cached_region(
+        &save.regions,
+        (-1, 0),
+        &save.region_path("region", -1, 0),
+        true,
+    )
+    .unwrap()
+    .unwrap();
+    staged
+        .lock()
+        .unwrap()
+        .write(
+            ChunkPos::new(-32, 0),
+            &horizon_world::region::ChunkRecord {
+                compression: horizon_world::compression::Compression::None,
+                compressed: vec![1; 10],
+                timestamp: 1,
+            },
+        )
+        .unwrap();
+    let staged = {
+        let weak = Arc::downgrade(&staged);
+        drop(staged);
+        weak
+    };
     for x in 1..=600 {
         super::cached_region(
             &save.regions,
@@ -1946,6 +1978,10 @@ fn region_files_kept_open_stay_under_vanillas_cache_size() {
         &cache.regions[&(0, 0)].0.clone().unwrap(),
         &held
     ));
+    let kept = cache.regions[&(-1, 0)].0.clone().unwrap();
+    assert!(std::ptr::eq(Arc::as_ptr(&kept), staged.as_ptr()));
+    assert!(kept.lock().unwrap().has_staged_changes());
+    drop(kept);
     drop(cache);
     // What was written to regions since closed reads back from the disk.
     let entity = |x: i32| Tag::compound([("x", Tag::Int(x))]);
