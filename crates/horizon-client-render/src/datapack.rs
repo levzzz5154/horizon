@@ -1366,16 +1366,16 @@ pub fn initial_pack_selection(
     );
     features.sort();
     features.dedup();
-    let mut disabled: Vec<String> = excluded
-        .iter()
-        .filter(|id| !enabled.contains(id))
-        .cloned()
+    // `MinecraftServer.getSelectedPacks`: every available pack left out, in
+    // the repository's id order. An excluded id no pack has (the empty entry
+    // of a blank `initial-disabled-packs`) is not saved.
+    let mut disabled: Vec<String> = std::iter::once("vanilla")
+        .chain(packs.iter().map(|p| p.id.as_str()))
+        .filter(|id| !enabled.iter().any(|e| e == id))
+        .map(str::to_owned)
         .collect();
-    for pack in packs {
-        if !enabled.contains(&pack.id) && !disabled.contains(&pack.id) {
-            disabled.push(pack.id.clone());
-        }
-    }
+    disabled.sort();
+    disabled.dedup();
     InitialPackSelection {
         enabled,
         disabled,
@@ -1992,6 +1992,37 @@ mod tests {
         install_new_world_packs(&game, &old).unwrap();
         assert!(discover(&old).is_empty());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn initial_selection_saves_only_available_packs_as_disabled() {
+        let dir = std::env::temp_dir().join(format!("hz-datapack-initial-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for pack in ["z", "a"] {
+            let path = dir.join("datapacks").join(pack);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(
+                path.join("pack.mcmeta"),
+                r#"{"pack":{"description":"fixture"}}"#,
+            )
+            .unwrap();
+        }
+        let packs = discover(&dir);
+        let ids = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // server.properties' blank initial-disabled-packs splits into one empty id.
+        let selection =
+            initial_pack_selection(&dir, &packs, &ids(&["vanilla"]), &ids(&["", "file/z"]));
+        assert_eq!(selection.enabled, ["vanilla", "file/a"]);
+        assert_eq!(selection.disabled, ["file/z"]);
+        let selection = initial_pack_selection(
+            &dir,
+            &packs,
+            &ids(&["file/z"]),
+            &ids(&["vanilla", "missing"]),
+        );
+        assert_eq!(selection.enabled, ["file/z", "file/a"]);
+        assert_eq!(selection.disabled, ["vanilla"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
