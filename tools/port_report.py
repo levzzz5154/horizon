@@ -181,17 +181,20 @@ def blocking_items(diff, mapping, pinned_facts, root, regen=None):
                           f"Item default components: {len(items_changed)} items changed ({', '.join(item_names)}{suffix}){comp_text}",
                           files=files_naming(comp_names[:12], root),
                           details={"items": items_changed, "components": comp_summary}))
-    if regen is None:
-        for output, command, stale in GENERATORS:
-            if stale(diff):
-                items.append(item(1, "regenerate", f"Regenerate {output}", files=[output], command=command))
-    else:
+    covered = set()
+    if regen is not None:
         for name, entry in regen["generators"].items():
             if entry["status"] == "failed":
                 errors = entry.get("compile_errors", [])
                 what = "its vanilla exporter no longer compiles" if errors else "failed"
                 items.append(item(1, "regen-failed", f"Generator {name}: {what} on {regen['new']}",
                                   files=entry["outputs"], error=entry["error"], compile_errors=errors))
+                covered.update(entry.get("outputs", []))
+            elif entry["status"] in ("regenerated", "unchanged"):
+                covered.update(entry.get("outputs", []))
+    for output, command, stale in GENERATORS:
+        if output not in covered and stale(diff):
+            items.append(item(1, "regenerate", f"Regenerate {output}", files=[output], command=command))
     return items
 
 
@@ -332,8 +335,10 @@ def build(diff, mapping, old, new, pinned_facts, results=None, root=ROOT, regen=
             "classes": {"added": len(classes["added"]), "removed": len(classes["removed"]),
                         "moved": len(classes["moved"]), "changed": len(classes["changed"]),
                         "horizon": len(classes["horizon"])},
-            "generators": ({name: e["status"] for name, e in regen["generators"].items()} if regen
-                           else {i["files"][0]: "stale" for i in items if i["kind"] == "regenerate"}),
+            "generators": {
+                **({name: e["status"] for name, e in regen["generators"].items()} if regen else {}),
+                **{i["files"][0]: "stale" for i in items if i["kind"] == "regenerate"},
+            },
         },
         "harnesses": harnesses["summary"] if harnesses else None,
         "regen": {"candidate": regen["candidate"], "commit": regen["commit"],
@@ -361,9 +366,11 @@ def markdown(report, limit=12):
         lines.append(f"- unchanged: {', '.join(report['clean'])}")
     if report.get("regen"):
         generators = summary["generators"]
+        statuses = ("regenerated", "unchanged", "failed")
+        if any(v == "stale" for v in generators.values()):
+            statuses += ("stale",)
         lines.append(f"- generators in `{report['regen']['candidate']}` at {report['regen']['commit'][:10]}: "
-                     + ", ".join(f"{s} {sum(1 for v in generators.values() if v == s)}"
-                                 for s in ("regenerated", "unchanged", "failed")))
+                     + ", ".join(f"{s} {sum(1 for v in generators.values() if v == s)}" for s in statuses))
         for path, (added, removed) in report["regen"]["stat"].items():
             lines.append(f"  - regenerated `{path}` (+{added} -{removed})")
     if report.get("harnesses"):
