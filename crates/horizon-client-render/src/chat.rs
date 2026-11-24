@@ -564,7 +564,7 @@ impl Chat {
                 self.new_since_scroll = true;
                 // Vanilla scrolls against the pre-trim size, including earlier lines
                 // of this message. Keep that anchor without allocating those extra slots.
-                self.scroll_by_with_line_count(1, focused, previous_lines + count);
+                self.scroll_by_len(1, previous_lines + count, focused);
             }
             count += 1;
             if self.lines.len() == capacity {
@@ -796,10 +796,11 @@ impl Chat {
         self.new_since_scroll = false;
     }
     pub fn scroll_by(&mut self, dir: i32, focused: bool) {
-        self.scroll_by_with_line_count(dir, focused, self.lines.len());
+        self.scroll_by_len(dir, self.lines.len(), focused);
     }
-    fn scroll_by_with_line_count(&mut self, dir: i32, focused: bool, line_count: usize) {
-        let max = line_count.saturating_sub(self.lines_per_page(focused)) as i32;
+    /// [`Chat::scroll_by`] for a list of `len` lines.
+    fn scroll_by_len(&mut self, dir: i32, len: usize, focused: bool) {
+        let max = len.saturating_sub(self.lines_per_page(focused)) as i32;
         let pos = (self.scroll as i32 + dir).min(max);
         if pos <= 0 {
             self.scroll = 0;
