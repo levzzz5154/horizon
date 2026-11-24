@@ -198,7 +198,7 @@ impl ItemPart for Decorator {
         draw.gui_draw_item_decorations_with(event.stack, [8.0, 20.0], Some("7"));
         draw.pop_clip().unwrap();
         draw.gui_draw_item_decorations_with(event.stack, [32.0, 20.0], Some("7"));
-        // Leave a shifted clip and a pushed translation open: neither affects later callbacks.
+        // Leave a shifted clip and a pushed translation open: neither affects later hook calls.
         draw.push_clip([0.0, 0.0, 1.0, 1.0]).unwrap();
     }
 }
