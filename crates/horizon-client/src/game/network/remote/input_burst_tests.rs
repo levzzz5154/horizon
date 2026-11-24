@@ -64,10 +64,9 @@ fn a_players_burst_acts_on_the_next_tick_in_the_order_pressed() {
     });
 }
 
-/// A mod's loop queues 150 attack clicks, 150 drops and hotbar clicks before a tick: attack and
-/// drop queues act on 64 entries a tick, oldest first, while hotbar keys process slots 0..9 in
-/// ascending order with at most one click per key per tick, and the tick's first drop tells the
-/// server of any slot change.
+/// A mod's loop queues 150 attack clicks, 150 drops and 70 number keys before a tick: each tick
+/// acts on 64 of each queue, oldest first, until all have acted. The number keys select the slot
+/// of the last press each tick takes, and the tick's first drop tells the server of it.
 #[test]
 #[ignore = "daily"]
 fn a_mods_burst_acts_64_entries_of_each_queue_a_tick() {
@@ -79,9 +78,14 @@ fn a_mods_burst_acts_64_entries_of_each_queue_a_tick() {
             assert_eq!(game.click_mapping("key.attack"), Ok(()));
             assert_eq!(game.click_mapping("key.drop"), Ok(()));
         }
-        assert_eq!(game.click_mapping("key.hotbar.7"), Ok(()));
-        assert_eq!(game.click_mapping("key.hotbar.4"), Ok(()));
-        assert_eq!(game.click_mapping("key.hotbar.4"), Ok(()));
+        for press in 0..70 {
+            let key = if press < 64 {
+                "key.hotbar.4"
+            } else {
+                "key.hotbar.7"
+            };
+            assert_eq!(game.click_mapping(key), Ok(()));
+        }
         let mut ticks = Vec::new();
         let mut selected = Vec::new();
         for _ in 0..4 {
@@ -90,7 +94,7 @@ fn a_mods_burst_acts_64_entries_of_each_queue_a_tick() {
             selected.push(game.selected);
         }
         assert_eq!(ticks, [[64, 64, 1], [64, 64, 1], [22, 22, 0], [0, 0, 0]]);
-        assert_eq!(selected, [6, 3, 3, 3]);
+        assert_eq!(selected, [3, 6, 6, 6]);
         assert_eq!(triggered.lock().unwrap().len(), 150);
     });
 }
@@ -113,7 +117,7 @@ fn a_full_queue_refuses_the_entry_and_the_call_returns() {
             game.remote.as_ref().unwrap().pending_keys.entries().len(),
             1024
         );
-        assert_eq!(game.hotbar_presses.count(1), 1024);
+        assert_eq!(game.hotbar_presses.entries().len(), 1024);
         let mut acted = [0; 3];
         for _ in 0..17 {
             game.remote_handle_input();
@@ -123,6 +127,6 @@ fn a_full_queue_refuses_the_entry_and_the_call_returns() {
         }
         acted[2] = triggered.lock().unwrap().len();
         assert_eq!(acted, [1024, 1024, 1024]);
-        assert_eq!(game.hotbar_presses.count(1), 1024 - 17);
+        assert!(game.hotbar_presses.entries().is_empty());
     });
 }

@@ -210,7 +210,26 @@ fn pad_number_actions_select_the_hotbar_as_their_keys_do() {
         // This tests the one-shot number action, not all actions sharing D-pad up
         // (the default chat binding would open a screen before the number action).
         game.pad_action("key.hotbar.3", true).unwrap();
-        assert_eq!(game.hotbar_presses.take_tick(), [2]);
+        assert_eq!(game.physical_hotbar_presses.take_tick(), [2]);
+        game.release_tick_targets();
+
+        // Physical hotbar presses drain in ascending slot order (0..9), at most once per slot per
+        // tick even when `select_queued_hotbar` is called multiple times (before drop/swap/pick).
+        game.key_pressed(KeyCode::Digit7, KeyCode::Digit7).unwrap();
+        game.key_pressed(KeyCode::Digit2, KeyCode::Digit2).unwrap();
+        game.key_pressed(KeyCode::Digit2, KeyCode::Digit2).unwrap();
+        game.key_pressed(KeyCode::Digit5, KeyCode::Digit5).unwrap();
+        game.select_queued_hotbar();
+        assert_eq!(game.selected, 6);
+        // Second drain in the same tick must not consume the repeated Digit2 press.
+        game.select_queued_hotbar();
+        assert_eq!(game.selected, 6);
+        assert_eq!(game.physical_hotbar_presses.count(1), 1);
+        game.release_tick_targets();
+        // Next tick consumes the retained repeat of Digit2.
+        game.select_queued_hotbar();
+        assert_eq!(game.selected, 1);
+        assert!(game.physical_hotbar_presses.is_empty());
     });
 }
 

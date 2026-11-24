@@ -17,9 +17,16 @@ use horizon_client::{
 /// (`CLICK_QUEUES`).
 pub(super) const ATTACK_CLICKS: ClickQueue = click_queue(Button::Attack);
 pub(super) const USE_CLICKS: ClickQueue = click_queue(Button::Use);
-/// The bounds of each slot in `Game::hotbar_presses`: each tick consumes at most one click per
-/// key in ascending slot order (`0..9`), and each slot holds 1024 clicks at most.
+/// The bounds of `Game::hotbar_presses` (mod `ClientHost::click_mapping`): each drain takes 64
+/// number keys, FIFO, and 1024 wait at most.
 pub(super) const HOTBAR_PRESSES: QueueLimits = QueueLimits {
+    name: "number keys",
+    max_len: 1024,
+    per_tick: 64,
+};
+/// The bounds of each slot in `Game::physical_hotbar_presses`: each tick consumes at most one
+/// click per key in ascending slot order (`0..9`), and each slot holds 1024 clicks at most.
+pub(super) const PHYSICAL_HOTBAR_PRESSES: QueueLimits = QueueLimits {
     name: "number keys",
     max_len: 1024,
     per_tick: 1,
@@ -354,6 +361,9 @@ impl Game<'_> {
     }
     /// `handleKeybinds`' number keys (`keyHotbarSlots[i].consumeClick`).
     pub(super) fn select_queued_hotbar(&mut self) {
+        for slot in self.physical_hotbar_presses.take_tick() {
+            self.selected = slot;
+        }
         for slot in self.hotbar_presses.take_tick() {
             self.selected = slot;
         }
@@ -362,6 +372,7 @@ impl Game<'_> {
     pub(super) fn release_tick_targets(&mut self) {
         self.tick_hit.set(None);
         self.tick_mob = None;
+        self.physical_hotbar_presses.end_tick();
     }
     /// `Minecraft.startAttack` on an entity: a main-hand item with an
     /// `attack_range` attacks only a hit inside it.
@@ -489,6 +500,7 @@ impl Game<'_> {
             self.attack_clicks.clear();
             self.use_clicks.clear();
             self.hotbar_presses.clear();
+            self.physical_hotbar_presses.clear();
         }
         let d = &self.clicks.destroying;
         self.mining = d.active.then_some(Mining {

@@ -278,20 +278,7 @@ impl Game<'_> {
                     KeyCode::Digit8 => 7,
                     _ => 8,
                 };
-                // Minecraft.handleKeybinds: a spectator's number keys drive
-                // the spectator menu, not the hotbar; a creative player
-                // holding the load or save toolbar key loads or saves a
-                // toolbar instead (load first when both are held).
-                let load = self.mapped_key_down("key.loadToolbarActivator");
-                if self.spectator() {
-                    self.spectator_hotbar_key(slot as i32);
-                } else if self.creative
-                    && (load || self.mapped_key_down("key.saveToolbarActivator"))
-                {
-                    self.hotbar_load_or_save(slot, load);
-                } else {
-                    self.hotbar_presses.push(slot);
-                }
+                self.press_hotbar_slot(slot, false);
             }
             _ if self.screen == Screen::Paused && self.pause_menu => {
                 self.pause_key(key)?;
@@ -303,6 +290,26 @@ impl Game<'_> {
             _ => {}
         }
         Ok(())
+    }
+
+    /// Handle a hotbar number key (`0..9`) while playing. Physical/gamepad presses queue into
+    /// `physical_hotbar_presses` (ascending `0..9`, once per key per tick), while mod
+    /// `ClientHost::click_mapping` calls queue into `hotbar_presses` (FIFO, 64/drain, 1,024 max).
+    pub(in crate::game) fn press_hotbar_slot(&mut self, slot: usize, from_mod: bool) {
+        // Minecraft.handleKeybinds: a spectator's number keys drive
+        // the spectator menu, not the hotbar; a creative player
+        // holding the load or save toolbar key loads or saves a
+        // toolbar instead (load first when both are held).
+        let load = self.mapped_key_down("key.loadToolbarActivator");
+        if self.spectator() {
+            self.spectator_hotbar_key(slot as i32);
+        } else if self.creative && (load || self.mapped_key_down("key.saveToolbarActivator")) {
+            self.hotbar_load_or_save(slot, load);
+        } else if from_mod {
+            self.hotbar_presses.push(slot);
+        } else {
+            self.physical_hotbar_presses.push(slot);
+        }
     }
     /// handlePlayerAction SWAP_ITEM_WITH_OFFHAND for the window's own player
     /// with no server: the mods hear it as a server's players

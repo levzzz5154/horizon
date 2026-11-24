@@ -34,6 +34,7 @@ impl Game<'_> {
         if !ready {
             // A screen's opening released the keys (`KeyMapping.releaseAll`).
             self.hotbar_presses.clear();
+            self.physical_hotbar_presses.clear();
             return;
         }
         let (attack, use_item) = (self.left, self.right);

@@ -132,9 +132,12 @@ pub const HOTBAR_SLOTS: usize = 9;
 ///
 /// Mirrors vanilla `Minecraft.handleKeybinds`: each tick visits slots `0..9` in ascending order
 /// and calls `consumeClick()` at most once per key, leaving additional clicks for later ticks.
+/// Repeated drains within the same tick (before pick, drop, swap or inventory) do not consume the
+/// same slot a second time until [`end_tick`](Self::end_tick) marks the tick boundary.
 #[derive(Clone, Copy, Debug)]
 pub struct HotbarQueue {
     slots: [ClickQueue; HOTBAR_SLOTS],
+    consumed_this_tick: u16,
 }
 
 impl HotbarQueue {
@@ -145,6 +148,7 @@ impl HotbarQueue {
         };
         Self {
             slots: [ClickQueue::new(per_slot); HOTBAR_SLOTS],
+            consumed_this_tick: 0,
         }
     }
     /// Queue one click for hotbar slot `slot` (`0..9`); out-of-range slots are ignored.
@@ -154,21 +158,32 @@ impl HotbarQueue {
         }
     }
     /// Slots clicked this tick in ascending slot order (`0..9`), consuming at most one click per
-    /// key; additional clicks stay queued for subsequent ticks.
+    /// key per tick; additional clicks stay queued for subsequent ticks even if `take_tick` is
+    /// called more than once before [`end_tick`](Self::end_tick).
     pub fn take_tick(&mut self) -> Vec<usize> {
         let mut selected = Vec::new();
         for (slot, queue) in self.slots.iter_mut().enumerate() {
+            let bit = 1u16 << slot;
+            if self.consumed_this_tick & bit != 0 {
+                continue;
+            }
             if queue.take_tick() > 0 {
+                self.consumed_this_tick |= bit;
                 selected.push(slot);
             }
         }
         selected
+    }
+    /// End the current tick so queued repeat clicks can act on the next tick.
+    pub fn end_tick(&mut self) {
+        self.consumed_this_tick = 0;
     }
     /// Drop every queued click across all nine slots (`KeyMapping.releaseAll`).
     pub fn clear(&mut self) {
         for queue in &mut self.slots {
             queue.clear();
         }
+        self.consumed_this_tick = 0;
     }
     /// Queued clicks for `slot` (`0` if out of range).
     pub fn count(&self, slot: usize) -> u32 {
@@ -245,8 +260,14 @@ mod tests {
         hotbar.push(9); // out of range: ignored
         assert_eq!(hotbar.total(), 4);
         assert_eq!(hotbar.take_tick(), [1, 4, 6]);
+        // Repeated drains in the same tick (e.g. before drop/swap/pick) must not consume the
+        // remaining repeat of slot 1 until `end_tick()`.
+        assert_eq!(hotbar.take_tick(), Vec::<usize>::new());
+        assert_eq!(hotbar.count(1), 1);
+        hotbar.end_tick();
         assert_eq!(hotbar.take_tick(), [1]);
         assert!(hotbar.is_empty());
+        hotbar.end_tick();
         assert_eq!(hotbar.take_tick(), Vec::<usize>::new());
     }
 }
