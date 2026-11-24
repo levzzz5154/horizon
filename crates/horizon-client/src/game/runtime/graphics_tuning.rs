@@ -18,7 +18,6 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const STATE_DIR: &str = "graphics-benchmark";
-const UNDO: &str = "undo.json";
 const WORKER_ENV: &str = "HORIZON_GRAPHICS_BENCHMARK_WORKER";
 
 /// A single writer per instance. The lock is released by the OS if the supervisor dies.
@@ -39,6 +38,7 @@ impl Journal {
             .write(true)
             .open(dir.join("session.lock"))?;
         lock.try_lock().map_err(io::Error::from)?;
+        reclaim_abandoned_trials(&dir);
         let path = session_path(&dir, identity);
         Ok(Self {
             dir,
@@ -133,17 +133,57 @@ fn read_report(dir: &Path) -> Result<Report, Failure> {
     Report::parse(&contents).map_err(|_| Failure::Unavailable)
 }
 
-fn session_path(dir: &Path, identity: &Identity) -> PathBuf {
-    let key =
-        Sha256::digest(serde_json::to_vec(identity).expect("serializable benchmark identity"));
-    let short = key[..16]
+fn short_hash(bytes: &[u8]) -> String {
+    let key = Sha256::digest(bytes);
+    key[..16]
         .iter()
         .fold(String::with_capacity(32), |mut name, byte| {
             use std::fmt::Write;
             write!(name, "{byte:02x}").expect("writing to string");
             name
-        });
-    dir.join(format!("session-{short}.json"))
+        })
+}
+
+fn session_path(dir: &Path, identity: &Identity) -> PathBuf {
+    let bytes = serde_json::to_vec(identity).expect("serializable benchmark identity");
+    dir.join(format!("session-{}.json", short_hash(&bytes)))
+}
+
+fn undo_path(dir: &Path, options_path: &Path) -> PathBuf {
+    dir.join(format!(
+        "undo-{}.json",
+        short_hash(options_path.to_string_lossy().as_bytes())
+    ))
+}
+
+fn resolve_resources(dir: &Path, resources: PathBuf) -> PathBuf {
+    let absolute = if resources.is_relative() {
+        std::env::current_dir()
+            .map_or_else(|_| dir.join(&resources), |cwd| cwd.join(&resources))
+    } else {
+        resources
+    };
+    fs::canonicalize(&absolute).unwrap_or(absolute)
+}
+
+fn reclaim_abandoned_trials(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let is_trial = entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with("trial-"));
+        if is_trial && entry.path().is_dir() {
+            if let Err(error) = fs::remove_dir_all(entry.path()) {
+                log::warn!(
+                    "Horizon graphics benchmark: couldn't reclaim abandoned trial folder {}: {error}",
+                    entry.path().display()
+                );
+            }
+        }
+    }
 }
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> io::Result<Option<T>> {
@@ -264,10 +304,12 @@ static TUNING: OnceLock<Mutex<Tuning>> = OnceLock::new();
 
 struct Tuning {
     dir: PathBuf,
+    options_path: PathBuf,
     resources: PathBuf,
     identity: Identity,
     backend: String,
     current: Profile,
+    vsync: bool,
     session: Option<Session>,
     undo: Option<Undo>,
     previous_hardware: bool,
@@ -277,14 +319,15 @@ struct Tuning {
     view: Arc<BenchmarkView>,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 struct Undo {
     before: Profile,
     after: Profile,
 }
 
 impl Tuning {
-    fn open(dir: PathBuf, resources: PathBuf, settings: &Settings) -> Option<Self> {
+    fn open(dir: PathBuf, options_path: PathBuf, resources: PathBuf, settings: &Settings) -> Option<Self> {
+        let resources = resolve_resources(&dir, resources);
         let adapter = horizon_client::gfx::adapter()?;
         let build = option_env!("HORIZON_COMMIT").map_or_else(
             || {
@@ -332,13 +375,17 @@ impl Tuning {
                     })
                 })
             });
-        let undo = read_json(&dir.join(STATE_DIR).join(UNDO)).ok().flatten();
+        let undo = read_json(&undo_path(&dir.join(STATE_DIR), &options_path))
+            .ok()
+            .flatten();
         let mut tuning = Self {
             dir,
+            options_path,
             resources,
             identity,
             backend,
             current: profile(&settings.horizon),
+            vsync: settings.vsync,
             session,
             undo,
             previous_hardware,
@@ -351,9 +398,18 @@ impl Tuning {
         Some(tuning)
     }
 
+    fn effective_recommendation(&self) -> Option<Profile> {
+        let mut next = self.session.as_ref().and_then(Session::recommendation)?.clone();
+        // With VSync enabled the renderer forces FIFO, so skip recommending an overridden present mode.
+        if self.vsync {
+            next.present_mode = self.current.present_mode.clone();
+        }
+        Some(next)
+    }
+
     fn refresh(&mut self) {
-        let suggestion = self.session.as_ref().and_then(Session::recommendation);
-        let different = suggestion.is_some_and(|next| {
+        let suggestion = self.effective_recommendation();
+        let different = suggestion.as_ref().is_some_and(|next| {
             next != &self.current
                 && !(next.graphics_api == "metal"
                     && profile_with_api(self.current.clone(), "metal") == *next)
@@ -431,6 +487,7 @@ impl Tuning {
             })
             .collect();
         let changes = suggestion
+            .as_ref()
             .filter(|_| different)
             .map_or_else(Vec::new, |next| changes(&self.current, next));
         self.view = Arc::new(BenchmarkView {
@@ -530,7 +587,12 @@ pub(super) fn ready_at_title(resources: &Path, settings: &Settings) {
     {
         return;
     }
-    let Some(tuning) = Tuning::open(super::Game::game_dir(), resources.to_owned(), settings) else {
+    let Some(tuning) = Tuning::open(
+        super::Game::game_dir(),
+        super::Game::options_path(),
+        resources.to_owned(),
+        settings,
+    ) else {
         return;
     };
     if TUNING.set(Mutex::new(tuning)).is_ok() {
@@ -576,8 +638,10 @@ pub(super) fn view(settings: &Settings) -> Option<Arc<BenchmarkView>> {
         || g.texture_budget_mib != p.texture_budget_mib
         || g.lod_distance != p.lod_distance
         || g.present_mode.name() != p.present_mode
+        || settings.vsync != tuning.vsync
     {
         tuning.current = profile(g);
+        tuning.vsync = settings.vsync;
         tuning.refresh();
     }
     Some(Arc::clone(&tuning.view))
@@ -596,31 +660,51 @@ pub(super) fn action(action: BenchmarkAction, settings: &mut Settings) -> bool {
         BenchmarkAction::Quick => start(&mut tuning, Some(Mode::Quick)),
         BenchmarkAction::Thorough => start(&mut tuning, Some(Mode::Thorough)),
         BenchmarkAction::Apply | BenchmarkAction::Undo => {
+            tuning.vsync = settings.vsync;
             let before = profile(&settings.horizon);
-            let in_session = tuning.session.as_ref().and_then(Session::recommendation);
+            tuning.current = before.clone();
+            let in_session = tuning.effective_recommendation();
             let Some(next) = (match action {
                 BenchmarkAction::Apply => in_session,
                 BenchmarkAction::Undo => tuning
                     .undo
                     .as_ref()
                     .filter(|u| u.after == before)
-                    .map(|u| &u.before),
+                    .map(|u| u.before.clone()),
                 _ => unreachable!(),
             }) else {
                 return false;
             };
             let mut g = settings.horizon.clone();
-            if !set_profile(&mut g, next) {
+            if !set_profile(&mut g, &next) {
                 return false;
             }
             let after = profile(&g);
             if before == after {
                 return false;
             }
+            let options_dir = tuning
+                .options_path
+                .parent()
+                .unwrap_or(&tuning.dir)
+                .to_path_buf();
             let result = Journal::lock(&tuning.dir, &tuning.identity).and_then(|journal| {
-                let undo = (action == BenchmarkAction::Apply).then_some(Undo { before, after });
-                write_json(&journal.dir.join(UNDO), &undo)?;
-                tuning.undo = undo;
+                let undo_file = undo_path(&journal.dir, &tuning.options_path);
+                if action == BenchmarkAction::Apply {
+                    let previous_undo = tuning.undo.clone();
+                    let undo = Some(Undo { before, after });
+                    write_json(&undo_file, &undo)?;
+                    if let Err(error) = g.try_save(&options_dir) {
+                        let _ = write_json(&undo_file, &previous_undo);
+                        return Err(error);
+                    }
+                    tuning.undo = undo;
+                } else {
+                    // Keep the undo record durable until the restored graphics file is written.
+                    g.try_save(&options_dir)?;
+                    write_json(&undo_file, &None::<Undo>)?;
+                    tuning.undo = None;
+                }
                 Ok(())
             });
             if let Err(error) = result {
@@ -642,7 +726,23 @@ pub(super) fn action(action: BenchmarkAction, settings: &mut Settings) -> bool {
 fn start(tuning: &mut Tuning, mode: Option<Mode>) {
     let setup = (|| {
         let journal = Journal::lock(&tuning.dir, &tuning.identity)?;
-        let current = Journal::load(&tuning.dir, &tuning.identity)?;
+        let current = match Journal::load(&tuning.dir, &tuning.identity) {
+            Ok(session) => session,
+            Err(error) if error.kind() == io::ErrorKind::InvalidData && mode.is_some() => {
+                let stamp = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let backup = journal.path.with_extension(format!("corrupt-{stamp}.json"));
+                let _ = fs::rename(&journal.path, &backup);
+                log::warn!(
+                    "Horizon graphics benchmark: preserved invalid journal at {}: {error}",
+                    backup.display()
+                );
+                None
+            }
+            Err(error) => return Err(error),
+        };
         let session = match current {
             Some(session) if session.version() == SESSION_VERSION && !session.is_complete() => {
                 session

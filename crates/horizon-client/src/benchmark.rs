@@ -279,17 +279,23 @@ fn run(control: &Control, setup: Setup) -> Result<PathBuf, String> {
     })?;
     report.metric("startup.title_ms", &[ms(setup.started.elapsed())]);
     let renderer = &title["renderer"];
-    if matches!(scenario, Scenario::Autotune { .. }) && !setup.offscreen {
-        let requested = crate::graphics::Graphics::load(&setup.game_dir).present_mode;
-        if requested != crate::graphics::PresentMode::Auto
+    if matches!(scenario, Scenario::Autotune { .. }) {
+        let graphics = crate::graphics::Graphics::load(&setup.game_dir);
+        if !setup.offscreen
+            && graphics.present_mode != crate::graphics::PresentMode::Auto
             && !renderer["present_mode"]
                 .as_str()
-                .is_some_and(|active| active.eq_ignore_ascii_case(requested.name()))
+                .is_some_and(|active| active.eq_ignore_ascii_case(graphics.present_mode.name()))
         {
             return Err(format!(
                 "the requested {} present mode is not supported by this surface",
-                requested.name()
+                graphics.present_mode.name()
             ));
+        }
+        if graphics.gpu_culling == crate::graphics::GpuCullingMode::On
+            && renderer["gpu_culling"].as_bool() != Some(true)
+        {
+            return Err("the requested GPU culling mode is not active on this adapter".into());
         }
     }
     report.hardware.gpu = Some(horizon_bench::Gpu {

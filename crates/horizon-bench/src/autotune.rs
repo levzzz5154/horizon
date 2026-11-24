@@ -48,6 +48,8 @@ impl Profile {
 pub struct Identity {
     pub gpu_vendor: String,
     pub gpu_name: String,
+    #[serde(default)]
+    pub gpu_backend: String,
     pub driver: String,
     pub game_build: String,
     pub workload_revision: u32,
@@ -58,6 +60,7 @@ impl Identity {
         Self {
             gpu_vendor: gpu.vendor.clone(),
             gpu_name: gpu.name.clone(),
+            gpu_backend: gpu.backend.to_ascii_lowercase(),
             driver: gpu.driver.clone(),
             game_build: game_build.into(),
             workload_revision: WORKLOAD_REVISION,
@@ -449,6 +452,8 @@ impl Measurement {
     ) -> Option<Self> {
         let repeats = mode.repeats() as usize;
         let gpu = report.hardware.gpu.as_ref()?;
+        let same_backend = identity.gpu_backend.is_empty()
+            || gpu.backend.eq_ignore_ascii_case(&identity.gpu_backend);
         if report.kind != Kind::Game
             || report.conditions.scenario.as_deref() != Some(mode.scenario())
             || report
@@ -460,6 +465,12 @@ impl Measurement {
                 .name
                 .trim()
                 .eq_ignore_ascii_case(identity.gpu_name.trim())
+            || (same_backend
+                && !identity.driver.trim().is_empty()
+                && !gpu
+                    .driver
+                    .trim()
+                    .eq_ignore_ascii_case(identity.driver.trim()))
             || report.frames.len() != SCENES.len() * repeats
         {
             return None;

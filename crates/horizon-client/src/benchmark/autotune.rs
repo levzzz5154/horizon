@@ -307,9 +307,6 @@ pub(super) fn measure(
             "far-terrain-repeat"
         };
         load_scene(control, load_name, start, end, 25.0, report)?;
-        let mut sample = fly(control, phase, start, end, f64::from(seconds), 25.0, steady)?;
-        sample.repeat = repeat as u32;
-        frames.push(sample);
         let status = control.call("status")?;
         let distance = status["lod"]["effective_distance"]
             .as_u64()
@@ -328,6 +325,9 @@ pub(super) fn measure(
                 Ok(lod["source"] == "integrated" && sampled > 0)
             })?;
         }
+        let mut sample = fly(control, phase, start, end, f64::from(seconds), 25.0, steady)?;
+        sample.repeat = repeat as u32;
+        frames.push(sample);
         sampled_tiles.push(sampled as f64);
     }
     report.metric("workload.far-terrain.sampled_tiles", &sampled_tiles);

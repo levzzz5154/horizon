@@ -1739,7 +1739,10 @@ mod tests {
             assert!(all.iter().any(|(_, i)| *i == Item::Vanilla(opt)), "{opt:?}");
         }
         // The benchmark is an optional live sheet, not a collection of settings.
-        for page in Page::ALL.into_iter().filter(|page| *page != Page::Benchmark) {
+        for page in Page::ALL
+            .into_iter()
+            .filter(|page| *page != Page::Benchmark)
+        {
             assert!(all.iter().any(|(p, _)| *p == page), "{page:?} is empty");
         }
         for (_, groups) in rows() {
@@ -1866,7 +1869,10 @@ mod tests {
             [general(Item::Vanilla(Opt::FovEffects))]
         );
         ui.set_search("hdr");
-        let hdr = Page::ALL.iter().position(|page| *page == Page::Hdr).unwrap();
+        let hdr = Page::ALL
+            .iter()
+            .position(|page| *page == Page::Hdr)
+            .unwrap();
         let [x, y, w, h] = cols.page(hdr);
         press(&mut ui, &mut s, (x + w / 2.0, y + h / 2.0));
         assert_eq!(ui.current_page(&s, SIZE), Some(Page::Hdr));
