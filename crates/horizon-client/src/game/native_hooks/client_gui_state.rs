@@ -15,7 +15,7 @@ impl Game<'_> {
 
     pub(in crate::game) fn title_splash(&self) -> Option<String> {
         let title = self.title.as_ref()?;
-        if !self.title_screen_uncovered() {
+        if !self.title_screen_render_uncovered() {
             return None;
         }
         title
