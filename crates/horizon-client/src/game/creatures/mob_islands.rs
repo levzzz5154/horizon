@@ -108,9 +108,10 @@ fn capped_lanes(requested: usize, hardware: Option<usize>) -> usize {
     requested.clamp(1, 8).min(hardware.unwrap_or(1).max(1))
 }
 
-/// The threads the loop may run on, capped at the machine's available parallelism.
+/// The threads the loop may run on, capped at the machine's available parallelism: the whole
+/// CPU set, as the lanes other than the server's leave its reserved core.
 fn lanes() -> usize {
-    let hardware = std::thread::available_parallelism().ok().map(usize::from);
+    let hardware = horizon_threads::available_parallelism().ok().map(usize::from);
     #[cfg(test)]
     if let Some(lanes) = LANES.with(Cell::get) {
         return capped_lanes(lanes, hardware);
@@ -121,7 +122,13 @@ fn lanes() -> usize {
 /// Whether a native mod can run in a mob's turn: the typed hook modules currently have no
 /// deferred-hook replay route, so any loaded native mod keeps the mob loop serial.
 fn mods_hook_turns() -> bool {
-    option_env!("HORIZON_MOB_TURN") == Some("hooked") || !mod_api::__private::mods().is_empty()
+    option_env!("HORIZON_MOB_TURN") == Some("hooked") || defers()
+}
+
+/// Whether native mods are loaded at all. A grouped turn would have to keep their hooks for the
+/// join, and nothing replays them there, so they keep the loop serial ([`mods_hook_turns`]).
+fn defers() -> bool {
+    !mod_api::__private::mods().is_empty()
 }
 
 /// The mobs of each group, by their place in the list, ascending.
@@ -301,6 +308,7 @@ impl Islands<'_> {
         }
         let mut pushes = horizon_client::mobs::PendingPushes::default();
         for g in &mut groups {
+            debug_assert!(g.deferred.is_empty(), "a grouped turn ran with native mods loaded");
             // Each member's binding and death mark as its group left them.
             for m in g.mobs.iter().map(MobSlot::mob) {
                 match g.bindings.get(&m.id) {
@@ -364,12 +372,13 @@ impl Islands<'_> {
         let (nearest, single_player, difficulty) =
             (turns.nearest, turns.single_player, turns.difficulty);
         let lookup = LoopLookup(self.uuid);
-        let canceled = turns.canceled;
+        let (defers, canceled) = (defers(), turns.canceled);
         let sampling = super::super::tick_profile::sampling();
         let run = |g: &mut Group<&mut Mob>, ticking: Box<dyn Fn(i32, i32) -> bool + Send>| {
             let foreign = Foreign {
                 board,
                 reader: Cell::new(0),
+                defers,
             };
             let mut base = rebuild();
             base.who_lookup = Some(&lookup);
@@ -424,6 +433,10 @@ impl Islands<'_> {
                 let handle = std::thread::Builder::new()
                     .name("mob-island".into())
                     .spawn_scoped(s, move || {
+                        // Born on the server thread, so on its reserved core when one is held:
+                        // off it, or every lane would share the server's two CPUs. The keeper's
+                        // scan never sees a thread that lives one tick.
+                        horizon_threads::server_core::leave_reserved();
                         let _done = done;
                         #[cfg(test)]
                         if let Some(failure) = &failure
@@ -515,10 +528,11 @@ fn jump(species: Species) -> f64 {
 /// lands within half of it on each axis, then drops to the ground. None when it holds none; a
 /// diameter that isn't finite is returned as it is, and keeps the tick serial.
 fn teleport_consumable(m: &Mob, items: &horizon_client::items::Items) -> Option<f64> {
-    [m.extra.main_hand_id(), m.extra.off_hand_id()]
+    use horizon_items::equipment::{MAINHAND, OFFHAND};
+    [MAINHAND, OFFHAND]
         .into_iter()
-        .flatten()
-        .filter_map(|id| items.items.get(id)?.consumable.as_ref())
+        .filter_map(|slot| m.extra.slot_stack(slot))
+        .filter_map(|stack| stack.consumable(items.items.get(&stack.item)))
         .flat_map(|c| &c.effects)
         .filter_map(|e| match e {
             horizon_client::items::ConsumeEffect::TeleportRandomly(t) => {
@@ -1231,6 +1245,8 @@ impl Board {
 pub(super) struct Foreign<'b> {
     board: &'b Board,
     pub reader: Cell<usize>,
+    /// Whether native mods are loaded, so the turns would keep their hooks for the join ([`defers`]).
+    pub defers: bool,
 }
 impl Foreign<'_> {
     /// A turn's new RNGs, including projectile RNGs and long-jump angle shuffles, follow list
@@ -1852,6 +1868,7 @@ mod tests {
             let foreign = Foreign {
                 board: &board,
                 reader: Cell::new(0),
+                defers: false,
             };
             assert_eq!(foreign.seen(11).unwrap().position, board.frozen[1].position);
             assert!(foreign.seen(999).is_none());
@@ -1863,6 +1880,7 @@ mod tests {
                     let publisher = Foreign {
                         board: &board,
                         reader: Cell::new(0),
+                        defers: false,
                     };
                     let mut moved = board.frozen[0].clone();
                     moved.position.x = 42.0;
@@ -1871,6 +1889,7 @@ mod tests {
                 let later = Foreign {
                     board: &board,
                     reader: Cell::new(1),
+                    defers: false,
                 };
                 assert_eq!(later.seen(10).unwrap().position.x, 42.0);
             });
@@ -1888,6 +1907,7 @@ mod tests {
                 let later = Foreign {
                     board: &missing,
                     reader: Cell::new(1),
+                    defers: false,
                 };
                 assert!(later.seen(10).is_none());
                 assert!(earlier.join().is_err());

@@ -42,6 +42,7 @@ pub(super) struct Group<M: MobSlot> {
     /// The first slot of each id, as a scan would find it.
     index: FxHashMap<u32, u32>,
     villager_slots: Vec<u32>,
+    village: horizon_client::mobs::village_index::VillageIndex,
     species_slots: horizon_client::mobs::species_slots::SpeciesSlots,
     solid_slots: Vec<u32>,
     pub pushes: PendingPushes,
@@ -65,6 +66,10 @@ pub(super) struct Group<M: MobSlot> {
     pub corpses: Vec<Mob>,
     pub gone: Vec<Gone>,
     pub guest_events: Vec<(u32, u32, MobEvent)>,
+    /// The turns that ran while native mods were loaded, by their place in the whole list
+    /// (`mob_islands::Foreign::defers`). Nothing replays a turn's hooks at the join, so the loop
+    /// stays serial with mods loaded and this stays empty.
+    pub deferred: Vec<usize>,
     /// Whether each turn draws its level-random rolls from a stream of its own, so that it waits
     /// for no other lane (`parallel::mobs_own_random`, read once where the group is made).
     own_random: bool,
@@ -139,6 +144,7 @@ impl<M: MobSlot> Group<M> {
             grid,
             index,
             villager_slots,
+            village: Default::default(),
             species_slots,
             solid_slots,
             pushes: PendingPushes::default(),
@@ -155,6 +161,7 @@ impl<M: MobSlot> Group<M> {
             corpses: Vec::new(),
             gone: Vec::new(),
             guest_events: Vec::new(),
+            deferred: Vec::new(),
             own_random: own_random(),
         }
     }
@@ -192,6 +199,9 @@ impl<M: MobSlot> Group<M> {
                 foreign.reader.set(at);
             }
             if let Some(foreign) = foreign {
+                if foreign.defers {
+                    self.deferred.push(at);
+                }
                 foreign.in_seed_order(at, || {
                     self.turn(i, turns, shared);
                 });
@@ -331,6 +341,7 @@ impl<M: MobSlot> Group<M> {
             others_grid: Some(&self.grid),
             others_index: Some(&self.index),
             others_villagers: Some(&self.villager_slots),
+            village: Some(&self.village),
             species_slots: Some(&self.species_slots),
             others_solid: Some(&self.solid_slots),
             difficulty,
@@ -441,6 +452,7 @@ impl<M: MobSlot> Group<M> {
         // after this mob see it as it is now.
         let collisions = self.snapshot[i].collisions;
         let fresh = seen(m, shared.uuid, base.items.expect("mob world has items"));
+        self.village.mark(i, &self.snapshot[i], &fresh);
         let reclassified = self.snapshot[i].species != fresh.species;
         self.snapshot[i] = fresh;
         if reclassified {
