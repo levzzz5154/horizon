@@ -1,5 +1,5 @@
 //! Declarations for the container mouse input hook (see `hooks/mod.rs`).
-// catalog-order: 0358
+// catalog-order: 0359
 
 pub trait Hooks {
     /// Real mouse input on an open non-creative container screen, after the matching
