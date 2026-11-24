@@ -1,5 +1,5 @@
 //! The `container_opening` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0353
+// catalog-order: 0359
 
 pub trait Hooks {
     /// A player is about to open a menu allowed by `container_opened`. The event
