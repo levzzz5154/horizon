@@ -515,19 +515,11 @@ mod tests {
 
     fn encoder_fixture(game: &Path, probe: &str, encode: &str, options: &str) -> EncoderConfig {
         let script = game.join("test-encoder");
-        // Write from a separate process so no concurrent spawn in this test
-        // process can inherit the writable fd and make exec fail with ETXTBSY.
-        let contents =
-            format!("#!/bin/sh\nif [ \"$1\" = -protocols ]; then\n{probe}\nexit 0\nfi\n{encode}\n");
-        assert!(
-            Command::new("/bin/sh")
-                .args(["-c", "printf '%s' \"$1\" > \"$2\"", "write-encoder"])
-                .arg(contents)
-                .arg(&script)
-                .status()
-                .unwrap()
-                .success()
-        );
+        fs::write(
+            &script,
+            format!("#!/bin/sh\nif [ \"$1\" = -protocols ]; then\n{probe}\nexit 0\nfi\n{encode}\n"),
+        )
+        .unwrap();
         fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
         fs::write(
             game.join("horizon-export.txt"),
