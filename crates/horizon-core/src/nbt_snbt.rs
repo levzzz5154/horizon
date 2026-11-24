@@ -877,7 +877,11 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn create_integer(&self, integer: IntegerLiteral<'_>, array: Option<u8>) -> Result<Tag, SnbtError> {
+    fn create_integer(
+        &self,
+        integer: IntegerLiteral<'_>,
+        array: Option<u8>,
+    ) -> Result<Tag, SnbtError> {
         let IntegerLiteral {
             digits,
             radix,
