@@ -986,7 +986,12 @@ impl Game<'_> {
         ) {
             return false;
         }
-
+        // ArmorStand.hurtServer, after isInvulnerableTo: an invisible or
+        // marker stand refuses the hit before any creative break or wobble:
+        // no sound, no wobble, no drops.
+        if self.armor_stands[i].invisible || self.armor_stands[i].marker {
+            return false;
+        }
         self.break_armor_stand_by_hit(
             i,
             self.creative,
@@ -1048,7 +1053,7 @@ impl Game<'_> {
         self.audio
             .play("minecraft:entity.armor_stand.break", Some(at), 1.0, 1.0);
         self.armor_stand_death_drops(&a, "minecraft:player_attack", self.own_entity_id() as u32);
-        let (above, drops) = broken_armor_stand_equipment(a);
+        let (above, drops) = broken_armor_stand_equipment(a, &world_stations!(self).enchantments);
         for stack in drops {
             self.pop_resource(above, stack);
         }
@@ -1621,7 +1626,7 @@ impl Game<'_> {
         let source = self
             .level_entity(causing as i32)
             .or(Some(super::commands::Target::Stand(a.id)));
-        let (pos, drops) = broken_armor_stand_equipment(a);
+        let (pos, drops) = broken_armor_stand_equipment(a, &world_stations!(self).enchantments);
         for stack in drops {
             self.pop_resource(pos, stack);
         }
@@ -1832,6 +1837,9 @@ impl Game<'_> {
         alpha: f64,
         out: &mut Vec<Vertex>,
     ) {
+        if self.armor_stands.is_empty() {
+            return;
+        }
         // The stands' models posed on the GPU path (`mobs::skin`), when it runs this frame.
         let skinning = self.skinning();
         for a in self
@@ -1947,11 +1955,19 @@ impl Game<'_> {
         let Some(model) = (if a.small { &assets.small } else { &assets.main }) else {
             return;
         };
-        let mut poses = Poses::new(model);
+        let mut poses = Poses::pooled();
+        poses.reset(model);
         // ArmorStandModel.setupAnim: the stand's pose and part visibility.
         apply_pose(&mut poses, &a.pose);
         // Item layers pose from the hidden arms too (`visible` only skips drawing).
-        let posed = poses.clone();
+        let need_items =
+            a.equipment[0].is_some() || a.equipment[1].is_some() || a.equipment[5].is_some();
+        let mut posed_buf = Option::<horizon_client::mobs::anim::PooledPoses>::None;
+        let has_hidden = !a.show_arms || a.no_base_plate;
+        if need_items && has_hidden {
+            let p = posed_buf.get_or_insert_with(Poses::pooled);
+            p.copy_from(&poses);
+        }
         let mut hide = |name: &str| {
             if poses.has(name) {
                 let pose = poses.get(name);
@@ -1998,10 +2014,13 @@ impl Game<'_> {
                 );
             }
         }
-        self.armor_stand_items(a, model, base, &posed, packed, skin.as_deref_mut(), out);
+        if need_items {
+            let item_poses: &Poses = posed_buf.as_deref().unwrap_or(&poses);
+            self.armor_stand_items(a, model, base, item_poses, packed, skin.as_deref_mut(), out);
+        }
         // HumanoidArmorLayer: head, chest, legs, feet. One pose map for every layer
-        // (`reset` keeps its capacity).
-        let mut layer_poses = Poses::default();
+        // (`reset` keeps its capacity), borrowed from the pool only when worn.
+        let mut layer_poses = Option::<horizon_client::mobs::anim::PooledPoses>::None;
         for (slot, layer, worn) in [
             (5usize, "helmet", "head"),
             (4, "chestplate", "chest"),
@@ -2045,8 +2064,9 @@ impl Game<'_> {
                 0
             };
             // ArmorStandArmorModel.setupAnim: the same pose as the stand.
-            layer_poses.reset(part);
-            apply_pose(&mut layer_poses, &a.pose);
+            let lp = layer_poses.get_or_insert_with(Poses::pooled);
+            lp.reset(part);
+            apply_pose(lp, &a.pose);
             // EquipmentLayerRenderer: every layer of the asset, the leather overlay
             // too; the shader glint goes on the first layer only (renderShaderGlint).
             let cit = self.cit_worn_rule(Kind::Armor, stack);
@@ -2059,7 +2079,7 @@ impl Game<'_> {
                     &mut skin,
                     part,
                     base,
-                    &layer_poses,
+                    lp,
                     uv,
                     0.0,
                     color,
@@ -2073,7 +2093,7 @@ impl Game<'_> {
                         &mut skin,
                         part,
                         base,
-                        &layer_poses,
+                        lp,
                         glow,
                         0.0,
                         color,
@@ -2092,7 +2112,7 @@ impl Game<'_> {
                     &mut skin,
                     part,
                     base,
-                    &layer_poses,
+                    lp,
                     trim,
                     0.0,
                     0xFFFF_FFFF,
@@ -2586,7 +2606,10 @@ pub(super) fn spared_by_blast(a: &ArmorStand) -> bool {
 
 /// `ArmorStand.brokenByAnything`: the equipment, less what curse of vanishing
 /// keeps (`PREVENT_EQUIPMENT_DROP`), popped at `blockPosition().above()`.
-fn broken_armor_stand_equipment(a: ArmorStand) -> ([i32; 3], Vec<ItemStack>) {
+fn broken_armor_stand_equipment(
+    a: ArmorStand,
+    enchantments: &horizon_items::enchant::Enchantments,
+) -> ([i32; 3], Vec<ItemStack>) {
     let pos = [
         a.position.x.floor() as i32,
         a.position.y.floor() as i32 + 1,
@@ -2596,7 +2619,7 @@ fn broken_armor_stand_equipment(a: ArmorStand) -> ([i32; 3], Vec<ItemStack>) {
         .equipment
         .into_iter()
         .flatten()
-        .filter(|stack| stack.enchantment_level("minecraft:vanishing_curse") == 0)
+        .filter(|stack| !enchantments.has_component(stack, "minecraft:prevent_equipment_drop"))
         .collect();
     (pos, drops)
 }

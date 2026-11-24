@@ -165,7 +165,10 @@ impl Game<'_> {
     fn water_level_above(&self, b: &Boat) -> f32 {
         let bb = b.bounds();
         let (lo, hi) = (bb.min_position(), bb.max_position());
-        let (y0, y1) = (hi.y.floor() as i32, hi.y.ceil() as i32);
+        // AbstractBoat.getWaterLevelAbove: ceil(maxY - lastYd), so a boat
+        // falling into water scans up to the real surface instead of stopping
+        // one row short.
+        let (y0, y1) = (hi.y.floor() as i32, (hi.y - b.last_yd).ceil() as i32);
         'rows: for y in y0..y1 {
             let mut height = 0.0f32;
             for x in lo.x.floor() as i32..hi.x.ceil() as i32 {
@@ -516,6 +519,8 @@ impl Game<'_> {
                 b.position.z + moved.z,
             );
             b.on_ground = movement.y < 0.0 && moved.y > movement.y;
+            // checkFallDamage saves lastYd before the collisions below zero it.
+            b.last_yd = b.velocity.y;
             b.fall_distance = self.boat_fall(&b, moved.y);
             if (moved.x - movement.x).abs() > 1.0e-7 {
                 b.velocity.x = 0.0;
@@ -1662,11 +1667,17 @@ impl Game<'_> {
     }
     /// AbstractBoatRenderer.
     pub(super) fn boat_geometry(&self, camera: glam::DVec3, alpha: f64, out: &mut Vec<Vertex>) {
+        if self.boats.is_empty() {
+            return;
+        }
         let a = alpha as f32;
         let range = super::entity_culling::default_range(
             glam::DVec3::new(WIDTH, HEIGHT, WIDTH),
             self.view_scale(),
         );
+        let mut poses = Poses::pooled();
+        let mut patch_poses = Option::<horizon_client::mobs::anim::PooledPoses>::None;
+        let mut sprite = String::with_capacity(32);
         for b in &self.boats {
             // LevelExtractor: the camera entity is not drawn from its own eyes.
             if self.hides_as_camera(b.id) {
@@ -1693,12 +1704,18 @@ impl Game<'_> {
             let Some(model) = models.get(&*b.wood) else {
                 continue;
             };
-            let folder = if b.chest { "chest_boat" } else { "boat" };
+            sprite.clear();
+            sprite.push_str(if b.chest {
+                "entity/chest_boat/"
+            } else {
+                "entity/boat/"
+            });
+            sprite.push_str(&b.wood);
             let Some(uv) = self
                 .gui
                 .atlas
                 .sprites
-                .get(&format!("entity/{folder}/{}", b.wood))
+                .get(sprite.as_str())
                 .map(|r| [r.u0, r.v0, r.u1, r.v1])
             else {
                 continue;
@@ -1731,7 +1748,7 @@ impl Game<'_> {
             }
             base *= glam::Mat4::from_scale(glam::Vec3::new(-1.0, -1.0, 1.0))
                 * glam::Mat4::from_rotation_y(90f32.to_radians());
-            let mut poses = Poses::new(model);
+            poses.reset(model);
             // AbstractBoatModel.animatePaddle
             for (side, name) in [(0usize, "left_paddle"), (1, "right_paddle")] {
                 if !poses.has(name) {
@@ -1775,10 +1792,15 @@ impl Game<'_> {
                     let (u, v) = ((r.u0 + r.u1) / 2.0, (r.v0 + r.v1) / 2.0);
                     [u, v, u, v]
                 });
+                let pp = patch_poses.get_or_insert_with(|| {
+                    let mut p = Poses::pooled();
+                    p.reset(patch);
+                    p
+                });
                 horizon_client::mobs::render::draw(
                     patch,
                     base,
-                    &Poses::new(patch),
+                    pp,
                     white,
                     0xFFFF_FFFF,
                     packed,
@@ -1798,6 +1820,39 @@ mod tests {
 
     fn boat() -> Boat {
         Boat::new(1, Arc::from("oak"), Vec3::ZERO, 0.0)
+    }
+
+    /// `AbstractBoat.getWaterLevelAbove` scans up to `ceil(maxY - lastYd)`,
+    /// with the velocity `checkFallDamage` saved before the move's collisions
+    /// zeroed it: a boat whose fall clips on the pool floor still finds the
+    /// water's surface, not the air a row higher.
+    #[test]
+    #[ignore = "daily"]
+    fn a_boat_landing_on_a_pool_floor_scans_up_to_the_water_surface() {
+        crate::game::native_entity_refs::tests::with_game(|game| {
+            game.world.chunks.insert(
+                (0, 0),
+                std::sync::Arc::new(horizon_client::chunk::Chunk::empty(0, 0)),
+            );
+            let registry = &game.pack.assets.registry;
+            let water = registry.default_state("minecraft:water").unwrap();
+            let stone = registry.default_state("minecraft:stone").unwrap();
+            for x in 0..3 {
+                for z in 0..3 {
+                    game.world.set(x, 199, z, stone).unwrap();
+                    game.world.set(x, 200, z, water).unwrap();
+                    game.world.set(x, 201, z, water).unwrap();
+                }
+            }
+            let mut b = boat();
+            b.position = Vec3::new(1.5, 200.2, 1.5);
+            b.velocity.y = -0.6;
+            let b = game.tick_boat(b, false);
+            assert_eq!(b.position.y, 200.0, "the fall clips on the floor");
+            assert_eq!(b.velocity.y, 0.0, "and the collision zeroes it");
+            // The source at y=201 has air above: 201 + 8/9.
+            assert_eq!(game.water_level_above(&b), 201.0 + 8.0 / 9.0);
+        });
     }
 
     /// `controlBoat`'s push with `Mth`'s sine table (`(float) Math.sin(i /
