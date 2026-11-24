@@ -114,6 +114,7 @@ pub(super) fn build_renderer(
         atlas.stars_shader.as_deref(),
         atlas.sunrise_shader.as_deref(),
     );
+    renderer.set_lightmap_shader(atlas.lightmap_shader.as_deref());
     renderer.set_custom_sky(&*pack.custom_sky);
     renderer.set_shared_material_maps(&atlas.material_maps);
     let cit_glints = pack.item_renderer.cit.as_ref().map(|c| &c.glint_textures);
@@ -222,6 +223,7 @@ pub(super) fn loading_frame(hud: &HudBatch) -> Frame<'_> {
         water_plane: None,
         cave_culling: false,
         title: true,
+        gui_only: false,
         sky_blocked: false,
         skybox: false,
         end_sky: false,
